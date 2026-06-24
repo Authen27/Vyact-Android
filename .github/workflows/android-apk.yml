@@ -91,20 +91,17 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
-            adb install -r app-debug.apk || { echo "FAIL: install failed"; exit 1; }
+            adb install -r app-debug.apk
             adb logcat -c
             adb shell monkey -p com.vyact.consumer -c android.intent.category.LAUNCHER 1
             sleep 30
-            # capture evidence first, so it's available even when a gate fails
             adb exec-out screencap -p > smoke-screenshot.png
             adb logcat -d > logcat.txt
-            echo "===== health gates ====="
-            PID=$(adb shell pidof com.vyact.consumer || true)
-            if [ -z "$PID" ]; then echo "FAIL: app process not running (crashed on launch)"; tail -n 120 logcat.txt; exit 1; fi
-            echo "app pid: $PID"
-            if grep -E "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" logcat.txt; then echo "FAIL: fatal crash in logcat"; exit 1; fi
-            if grep -E "net::ERR_|ERR_FILE_NOT_FOUND|Unable to open asset|Webpage not available" logcat.txt; then echo "FAIL: WebView could not load assets (white-screen)"; exit 1; fi
-            echo "SMOKE OK: installed, launched, process alive, no fatal crash, assets loaded."
+            adb shell pidof com.vyact.consumer || { echo "FAIL: app process not running (crashed on launch)"; tail -n 150 logcat.txt; exit 1; }
+            if grep -Eq "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" logcat.txt; then echo "FAIL: fatal native crash"; tail -n 150 logcat.txt; exit 1; fi
+            if grep -Eq "net::ERR_|ERR_FILE_NOT_FOUND|Unable to open asset" logcat.txt; then echo "FAIL: WebView could not load its assets"; exit 1; fi
+            if grep -Eq "js\.error|Uncaught Error" logcat.txt; then echo "FAIL: uncaught JS error during boot (app likely blank)"; grep -E "Uncaught|js\.error|Capacitor/Console" logcat.txt | tail -n 30; exit 1; fi
+            echo "SMOKE OK: launched, process alive, no native crash, no uncaught JS error"
 
       - name: Upload smoke logs + screenshot
         if: always()
