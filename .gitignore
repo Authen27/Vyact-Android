@@ -1,0 +1,10 @@
+.vercel
+
+# Playwright E2E artifacts
+/playwright-report/
+/e2e/.results/
+/blob-report/
+/test-results/
+.cache/
+android/
+ios/

@@ -1,0 +1,442 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ════════════════════════════════════════════════════════════════
+   Theme tokens — HSL triplets so Tailwind colors interpolate cleanly.
+   Default = Paper Warm (from FinFlow Designs wireframes).
+   ════════════════════════════════════════════════════════════════ */
+
+:root, [data-theme="warm"] {
+  --bg:        37 35% 94%;     /* #F5EFE6 cream */
+  --bg2:       38 50% 96%;     /* #FBF7EE bone */
+  --bg3:       39 30% 88%;     /* #EDE5D6 paper-3 */
+  --bg4:       40 24% 85%;     /* #E5DCC9 paper-4 */
+  --ink:        15 12% 15%;    /* #2A2522 */
+  --ink-mid:    20  8% 39%;    /* #6B635C */
+  --ink-dim:    20  6% 55%;
+  --coral:       9 71% 62%;    /* #E26D5C */
+  --coral-tint:  9 71% 90%;
+  --terra:       6 58% 49%;    /* #C44536 */
+  --honey:      24 71% 70%;    /* #E8A87C */
+  --butter:     45 84% 72%;    /* #F4D27A */
+  --sage:      127 18% 59%;    /* #85A88A */
+  --olive:      83 20% 41%;    /* #6B7C53 */
+  --denim:     217 38% 47%;    /* #4A6FA5 */
+  --plum:      336 23% 35%;    /* #6E4555 */
+  --line:       15 12% 15% / .10;
+  --line2:      15 12% 15% / .20;
+  --shadow:     15 12% 15%;
+  --primary-text: 0 0% 100%;
+
+  /* ════════════════════════════════════════════════════════════
+     FinFlow Design System v2 tokens (from claude.ai/design handoff).
+     Exact hex values — the contract. Component classes + brand marks
+     consume these directly; the HSL vars above remain for Tailwind
+     utilities (visually equivalent palette).
+     ════════════════════════════════════════════════════════════ */
+  /* Surfaces */
+  --ff-canvas: #F5EFE6;  --ff-canvas-2: #EDE5D6;
+  --ff-surface: #FBF7EE; --ff-surface-2: #F5EFE6; --ff-surface-3: #EDE5D6;
+  --ff-shell: #1F1B17;   --ff-shell-2: #2A2520;   --ff-overlay: rgba(42,37,34,.55);
+  /* Ink */
+  --ff-ink: #2A2522; --ff-ink-2: #5C544D; --ff-ink-3: #8A8077; --ff-ink-4: #B0A89E;
+  --ff-ink-on-shell: #E8DECF; --ff-ink-on-shell-2: rgba(232,222,207,.55);
+  /* Lines */
+  --ff-line: #E6DDCF; --ff-line-2: #D5C9B4; --ff-line-strong: #C9BBA2;
+  --ff-line-on-shell: rgba(232,222,207,.12);
+  /* Brand */
+  --ff-coral: #E26D5C; --ff-coral-soft: #F4B6A8; --ff-coral-tint: #FBE4DD;
+  --ff-coral-deep: #C44536; --ff-coral-deep-tint: #F2C7BF;
+  /* Semantic */
+  --ff-sage: #85A88A; --ff-sage-tint: #DDE8DE; --ff-olive: #6B7C53; --ff-olive-tint: #D8DECA;
+  --ff-honey: #E8A87C; --ff-honey-tint: #F8E2CF; --ff-butter: #F4D27A;
+  --ff-denim: #4A6FA5; --ff-denim-tint: #D5DEEA; --ff-plum: #6E4555; --ff-plum-tint: #E4D4D8;
+  /* Type */
+  --ff-serif: 'Newsreader','Cormorant Garamond',Georgia,serif;
+  --ff-sans:  'Inter Tight','Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --ff-mono:  'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  /* Radii */
+  --ff-r-1: 4px; --ff-r-2: 6px; --ff-r-3: 8px; --ff-r-4: 14px; --ff-r-5: 20px; --ff-r-pill: 9999px;
+  /* Shadows — paper-soft */
+  --ff-shadow-1: 0 1px 0 rgba(42,37,34,.04);
+  --ff-shadow-2: 0 1px 2px rgba(42,37,34,.06), 0 2px 8px rgba(42,37,34,.06);
+  --ff-shadow-3: 0 8px 20px rgba(42,37,34,.12), 0 2px 6px rgba(42,37,34,.06);
+  --ff-shadow-4: 0 24px 60px rgba(42,37,34,.20), 0 6px 16px rgba(42,37,34,.08);
+  /* Motion */
+  --ff-ease-out: cubic-bezier(.2,.7,.2,1); --ff-ease-in-out: cubic-bezier(.6,.1,.3,.9);
+  --ff-spring: cubic-bezier(.5,1.4,.5,1);
+  --ff-dur-1: 80ms; --ff-dur-2: 180ms; --ff-dur-3: 320ms; --ff-dur-4: 520ms;
+}
+
+/* Dark theme remaps FF surface/ink tokens onto the shell palette so
+   component classes stay correct in dark mode. */
+[data-theme="dark"] {
+  --ff-canvas: #1A1612; --ff-canvas-2: #221C17;
+  --ff-surface: #221C17; --ff-surface-2: #2A2520; --ff-surface-3: #322A22;
+  --ff-ink: #F3ECE0; --ff-ink-2: rgba(243,236,224,.72); --ff-ink-3: rgba(243,236,224,.5); --ff-ink-4: rgba(243,236,224,.34);
+  --ff-line: rgba(243,236,224,.1); --ff-line-2: rgba(243,236,224,.18); --ff-line-strong: rgba(243,236,224,.28);
+  --ff-coral: #EE8A78; --ff-coral-tint: rgba(238,138,120,.16); --ff-coral-deep: #E26D5C;
+}
+
+[data-theme="dark"] {
+  --bg:         24 17%  9%;   /* #1A1612 */
+  --bg2:        20 17% 11%;   /* #221C17 */
+  --bg3:        18 15% 14%;
+  --bg4:        18 14% 18%;
+  --ink:        37 35% 94%;
+  --ink-mid:    37 35% 94% / .65;
+  --ink-dim:    37 35% 94% / .38;
+  --coral:       8 84% 70%;
+  --coral-tint:  8 84% 70% / .14;
+  --terra:       9 71% 62%;
+  --honey:      24 71% 70%;
+  --butter:     45 84% 72%;
+  --sage:      127 23% 68%;
+  --olive:      83 31% 67%;
+  --denim:     217 47% 60%;
+  --plum:      336 30% 55%;
+  --line:       38 50% 96% / .08;
+  --line2:      38 50% 96% / .18;
+  --shadow:      0  0%  0%;
+  --primary-text: 24 17%  9%;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: hsl(var(--bg));
+  color: hsl(var(--ink));
+  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color .3s, color .3s;
+  overflow-x: hidden;
+}
+
+/* Blueprint grid backdrop */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image:
+    linear-gradient(hsl(var(--ink) / .025) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--ink) / .025) 1px, transparent 1px),
+    linear-gradient(hsl(var(--ink) / .012) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--ink) / .012) 1px, transparent 1px);
+  background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--line2)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--ink-dim)); }
+
+/* Recharts — match theme */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+.recharts-default-tooltip {
+  background: hsl(var(--bg2)) !important;
+  border: 1px solid hsl(var(--line2)) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 8px 20px hsl(var(--shadow) / .15) !important;
+  font-family: 'Inter Tight', system-ui, sans-serif !important;
+  padding: 8px 12px !important;
+}
+.recharts-tooltip-label {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 0.62rem !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  color: hsl(var(--ink-dim)) !important;
+  margin-bottom: 4px !important;
+}
+.recharts-tooltip-item {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 0.78rem !important;
+  color: hsl(var(--ink)) !important;
+  padding: 2px 0 !important;
+}
+.recharts-cartesian-axis-tick-value {
+  fill: hsl(var(--ink-dim)) !important;
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 10px !important;
+}
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: hsl(var(--line)) !important;
+}
+.recharts-legend-item-text {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 0.6rem !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  color: hsl(var(--ink-mid)) !important;
+}
+
+/* Component layer */
+@layer components {
+  /* Design-system component classes — aligned to FinFlow Design System v2
+     (lib.jsx FF.* specs). Use --ff-* tokens directly for exact fidelity. */
+  /* Display headings — Newsreader serif at light regular weight, NOT italic.
+     v7.4.0: italic display titles were replaced with a light upright treatment
+     after consistent feedback that the kerning of italic Newsreader at small
+     sizes was hurting scannability. Class name kept for callsite stability. */
+  .display-italic {
+    font-family: var(--ff-serif);
+    font-style: normal;
+    font-weight: 300;
+    letter-spacing: -0.015em;
+  }
+  /* Canonical money / numeric-figure treatment — the single source of truth
+     for every currency amount in the app (KPI tiles, list rows, section
+     totals, hero numbers). Deliberately NON-italic UI sans with tabular,
+     lining figures so:
+       • digits occupy equal width → columns align and a value never
+         reflows its neighbours as it changes (low cognitive load);
+       • the same amount reads identically on Dashboard, Budgets, Splits,
+         Transactions, Net Worth — one design language, not three fonts;
+       • it stays compact at any size from a 0.8rem row to a 3rem hero,
+         which protects mobile real-estate.
+     Size, weight and colour are applied per call-site via Tailwind
+     utilities; this class owns only the family / style / figure shaping.
+     The adaptive <Money> component applies this automatically; use the
+     `num` class directly when rendering a raw fmt() string. */
+  .num {
+    /* v7.4.1 — switched to JetBrains Mono so every row-level money
+       value (Transactions, Splits, Recurring, Budgets, Assets,
+       Liabilities) reads with the same dense tabular treatment used
+       by the Reports → Period Summary table. Display heroes can opt
+       back into Inter Tight via `.num-display` below. */
+    font-family: var(--ff-mono);
+    font-style: normal;
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: 'tnum' 1, 'lnum' 1;
+    letter-spacing: 0;
+  }
+  /* Optional: preserve Inter Tight for hero / oversized amounts where
+     the mono rhythm starts to feel ledger-y. Add `.num-display` to a
+     Money component or a raw .num span. */
+  .num-display {
+    font-family: var(--ff-sans);
+    letter-spacing: -0.01em;
+  }
+  .mono-label {
+    font-family: var(--ff-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ff-ink-3);
+  }
+  /* FF.Card */
+  .panel {
+    background: var(--ff-surface);
+    border: 1px solid var(--ff-line);
+    border-radius: var(--ff-r-3);
+    box-shadow: var(--ff-shadow-1);
+  }
+
+  /* ── Buttons — FF.Button spec: radius 9, JetBrains Mono uppercase ──
+     v7.4.0: button label typography was unified across the app. All five
+     kinds (primary / ink / ghost / secondary/subtle / danger) share the
+     same height (38px), padding, mono font, uppercase casing and tracking
+     so a row of mixed-variant buttons reads as a single typographic unit. */
+  .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-ink, .btn-subtle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    white-space: nowrap;
+    font-family: var(--ff-mono);
+    font-weight: 500;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    height: 38px;
+    padding: 0 16px;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background var(--ff-dur-2) var(--ff-ease-out),
+                transform var(--ff-dur-1) var(--ff-ease-out),
+                box-shadow var(--ff-dur-2) var(--ff-ease-out),
+                border-color var(--ff-dur-2) var(--ff-ease-out);
+    user-select: none;
+  }
+  .btn-primary:disabled, .btn-secondary:disabled, .btn-ghost:disabled,
+  .btn-danger:disabled, .btn-ink:disabled, .btn-subtle:disabled {
+    opacity: 0.5; cursor: not-allowed;
+  }
+  /* primary — coral lead */
+  .btn-primary { background: var(--ff-coral); color: #fff; border-color: var(--ff-coral); }
+  .btn-primary:hover:not(:disabled) { background: var(--ff-coral-soft); border-color: var(--ff-coral-soft); transform: translateY(-1px); box-shadow: var(--ff-shadow-2); }
+  .btn-primary:active:not(:disabled) { transform: translateY(0); }
+  /* ink — dark solid */
+  .btn-ink { background: var(--ff-ink); color: var(--ff-canvas); border-color: var(--ff-ink); }
+  .btn-ink:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--ff-shadow-2); }
+  /* ghost — outline */
+  .btn-ghost { background: transparent; color: var(--ff-ink); border-color: var(--ff-line-2); }
+  .btn-ghost:hover:not(:disabled) { background: var(--ff-surface-3); border-color: var(--ff-line-strong); }
+  /* secondary alias → subtle (surface fill) */
+  .btn-secondary, .btn-subtle { background: var(--ff-surface); color: var(--ff-ink); border-color: var(--ff-line); }
+  .btn-secondary:hover:not(:disabled), .btn-subtle:hover:not(:disabled) { background: var(--ff-surface-3); border-color: var(--ff-line-2); }
+  /* danger / destruct — terracotta */
+  .btn-danger { background: transparent; color: var(--ff-coral-deep); border-color: var(--ff-line-2); }
+  .btn-danger:hover:not(:disabled) { background: var(--ff-coral-deep-tint); border-color: var(--ff-coral-deep); }
+  /* size modifiers */
+  .btn-sm { height: 30px; padding: 0 12px; font-size: 10.5px; gap: 6px; letter-spacing: 0.09em; }
+  .btn-lg { height: 46px; padding: 0 20px; font-size: 13px; gap: 10px; letter-spacing: 0.07em; }
+
+  /* Icon-only buttons — never crunched. Square, generous padding,
+     same hover/border treatment as ghost. Use for header / toolbar
+     actions where the label would be redundant (Theme toggle, Notifs,
+     close, sort, filter). */
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border-radius: 9px;
+    border: 1px solid var(--ff-line-2);
+    background: transparent;
+    color: var(--ff-ink);
+    cursor: pointer;
+    transition: background var(--ff-dur-2) var(--ff-ease-out),
+                border-color var(--ff-dur-2) var(--ff-ease-out),
+                color var(--ff-dur-2) var(--ff-ease-out);
+  }
+  .btn-icon:hover:not(:disabled) {
+    background: var(--ff-surface-3);
+    border-color: var(--ff-line-strong);
+  }
+  .btn-icon.btn-sm { width: 32px; height: 32px; border-radius: 7px; }
+  .btn-icon.btn-lg { width: 46px; height: 46px; border-radius: 11px; }
+  .btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Row-level inline action — the canonical icon button for list rows
+     (Recurring / Transactions / Budgets / Goals / Debts). 32×32, soft
+     hover, no border by default so a tight row of 2-3 actions reads
+     as a discreet cluster rather than a toolbar. Add `.danger` for
+     destructive intent (terracotta on hover). */
+  .row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--ff-ink-2);
+    cursor: pointer;
+    transition: background 150ms var(--ff-ease-out),
+                color 150ms var(--ff-ease-out),
+                border-color 150ms var(--ff-ease-out);
+  }
+  .row-action:hover:not(:disabled) {
+    background: var(--ff-surface-3);
+    color: var(--ff-ink);
+    border-color: var(--ff-line);
+  }
+  .row-action.danger:hover:not(:disabled) {
+    color: var(--ff-coral-deep);
+    border-color: var(--ff-coral-deep);
+    background: var(--ff-coral-deep-tint);
+  }
+  .row-action:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── Inputs — FF.Input spec: h40, r8, surface, line-2 ────────── */
+  .input {
+    width: 100%;
+    height: 40px;
+    background: var(--ff-surface);
+    border: 1px solid var(--ff-line-2);
+    color: var(--ff-ink);
+    border-radius: var(--ff-r-3);
+    padding: 0 12px;
+    font-family: var(--ff-sans);
+    font-size: 14px;
+    outline: none;
+    transition: border-color var(--ff-dur-2) var(--ff-ease-out), box-shadow var(--ff-dur-2) var(--ff-ease-out);
+  }
+  /* multi-line / select keep auto height */
+  textarea.input, select.input { height: auto; min-height: 40px; padding-top: 9px; padding-bottom: 9px; }
+  /* every native <select class="input"> picks up the same chevron + rounded
+     treatment as <Select> via .ff-select — keeps Settings, Recurring filter,
+     onboarding etc. visually identical to in-modal selects (Inter Tight font
+     inherited from .input). */
+  select.input {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%235C544D' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 14px 14px;
+    padding-right: 36px !important;
+    cursor: pointer;
+  }
+  [data-theme="dark"] select.input {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23B0A89E' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+  }
+  select.input::-ms-expand { display: none; }
+  select.input option {
+    background: var(--ff-surface);
+    color: var(--ff-ink);
+    border-radius: var(--ff-r-2);
+    padding: 8px 12px;
+    font-family: var(--ff-sans);
+  }
+  .input::placeholder { color: var(--ff-ink-4); }
+  .input:focus { border-color: var(--ff-coral); box-shadow: 0 0 0 2px var(--ff-coral-tint); }
+
+  /* Userback #7830379 — checkboxes/radios had no themed styling, so the native
+     control rendered with the OS default accent and read as "dark / already
+     selected" in light mode. Pin the brand accent so unchecked is a clear empty
+     box and checked is coral, consistent across light + dark. */
+  input[type="checkbox"], input[type="radio"] {
+    accent-color: var(--ff-coral);
+    width: 1rem;
+    height: 1rem;
+    cursor: pointer;
+  }
+
+  /* ── Select — single canonical treatment app-wide ───────────────
+     Replaces the native browser arrow with an inline SVG chevron so
+     the dropdown reads identically across Chrome / Safari / Firefox
+     and across every page (filters in Transactions, Recurring,
+     Settings, every modal). The chevron sits 12px from the right
+     edge; padding-right is reserved at 36px to match. */
+  .ff-select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%235C544D' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 14px 14px;
+    padding-right: 36px !important;
+    border-radius: var(--ff-r-3);
+  }
+  [data-theme="dark"] .ff-select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23B0A89E' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+  }
+  .ff-select::-ms-expand { display: none; }
+  .ff-select option {
+    background: var(--ff-surface);
+    color: var(--ff-ink);
+    border-radius: var(--ff-r-2);
+    padding: 8px 12px;
+  }
+}

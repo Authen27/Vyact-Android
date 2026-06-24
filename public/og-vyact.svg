@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Vyact — Family finance, made legible">
+  <defs>
+    <radialGradient id="pip" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#F4B6A8"/>
+      <stop offset="100%" stop-color="#E26D5C"/>
+    </radialGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FBF7EE"/>
+      <stop offset="100%" stop-color="#F5EFE6"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="12" fill="#E26D5C"/>
+  <!-- pip mascot logo -->
+  <g transform="translate(110,150) scale(4.6)">
+    <path d="M18 3 C 27 3, 33 9, 33 18 C 33 27, 27 33, 18 33 C 9 33, 3 27, 3 18 C 3 9, 9 3, 18 3 Z" fill="url(#pip)" stroke="#2A2522" stroke-width="1.2"/>
+    <ellipse cx="13" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+    <ellipse cx="23" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+    <circle cx="9.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+    <circle cx="26.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+    <path d="M14 22 Q 18 25, 22 22" stroke="#2A2522" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+    <path d="M18 3 Q 16 -1, 14 1 Q 17 3, 18 3 Z" fill="#85A88A" stroke="#2A2522" stroke-width="0.8"/>
+  </g>
+  <text x="340" y="300" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="120" font-weight="600" fill="#2A2522">Vyact</text>
+  <text x="344" y="372" font-family="Inter, Segoe UI, system-ui, sans-serif" font-size="40" fill="#6B6259">Family finance, made legible.</text>
+  <text x="344" y="430" font-family="Inter, Segoe UI, system-ui, sans-serif" font-size="28" fill="#9A9087">Learn · plan · track — spend, budgets, debt &amp; net worth.</text>
+</svg>

@@ -1,0 +1,66 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Money-Model regression — aggregation golden file (C4.1) > CON-UNIT-MM-001 · aggregation engine baseline is unchanged (pre-Epic-1) 1`] = `
+{
+  "aiSummary": {
+    "budgets": [
+      {
+        "category": "food",
+        "limit": 400,
+        "spentPct": 75,
+      },
+      {
+        "category": "transport",
+        "limit": 200,
+        "spentPct": 75,
+      },
+    ],
+    "debts": [
+      {
+        "aprPct": 7,
+        "balance": 8000,
+        "monthsRemaining": undefined,
+        "type": "loan",
+      },
+    ],
+    "netWorth": {
+      "debtToAssetPct": 38.1,
+      "liquidityMonths": 3.45,
+      "netWorth": 13000,
+      "totalAssets": 21000,
+      "totalLiabilities": 8000,
+    },
+    "thisMonth": {
+      "expense": 1740,
+      "income": 5000,
+      "netSavingsRate": 0.65,
+    },
+  },
+  "monthlyData": {
+    "expense": 1740,
+    "income": 5000,
+    "net": 3260,
+  },
+  "netWorth": 13000,
+  "pulseComponents": {
+    "budget": 25,
+    "debt": 100,
+    "savings": 100,
+    "trend": 0,
+  },
+  "reportableTxnIds": [
+    "e1",
+    "e2",
+    "e3",
+    "e4",
+    "i1",
+  ],
+  "spendByCategory": {
+    "entertainment": 90,
+    "food": 300,
+    "rent": 1200,
+    "transport": 150,
+  },
+  "totalBalance": 3260,
+}
+`;
