@@ -59,3 +59,60 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  # Boots a real Android emulator, installs the APK, launches it, and proves it
+  # actually runs (not just builds). Captures logcat + a screenshot as artifacts,
+  # and FAILS if the app crashes on launch or the WebView can't load its assets.
+  smoke-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Enable KVM (hardware accel for the emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vyact-debug-apk
+          path: .
+
+      - name: Boot emulator, install, launch, capture logs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            adb install -r app-debug.apk || { echo "FAIL: install failed"; exit 1; }
+            adb logcat -c
+            adb shell monkey -p com.vyact.consumer -c android.intent.category.LAUNCHER 1
+            sleep 30
+            # capture evidence first, so it's available even when a gate fails
+            adb exec-out screencap -p > smoke-screenshot.png
+            adb logcat -d > logcat.txt
+            echo "===== health gates ====="
+            PID=$(adb shell pidof com.vyact.consumer || true)
+            if [ -z "$PID" ]; then echo "FAIL: app process not running (crashed on launch)"; tail -n 120 logcat.txt; exit 1; fi
+            echo "app pid: $PID"
+            if grep -E "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" logcat.txt; then echo "FAIL: fatal crash in logcat"; exit 1; fi
+            if grep -E "net::ERR_|ERR_FILE_NOT_FOUND|Unable to open asset|Webpage not available" logcat.txt; then echo "FAIL: WebView could not load assets (white-screen)"; exit 1; fi
+            echo "SMOKE OK: installed, launched, process alive, no fatal crash, assets loaded."
+
+      - name: Upload smoke logs + screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyact-smoke-logs
+          path: |
+            logcat.txt
+            smoke-screenshot.png
+          if-no-files-found: warn
+          retention-days: 14
