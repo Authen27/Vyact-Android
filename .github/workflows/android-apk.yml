@@ -99,7 +99,7 @@ jobs:
             adb logcat -d > logcat.txt
             adb shell pidof com.vyact.consumer || { echo "FAIL: app process not running (crashed on launch)"; tail -n 150 logcat.txt; exit 1; }
             if grep -Eq "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" logcat.txt; then echo "FAIL: fatal native crash"; tail -n 150 logcat.txt; exit 1; fi
-            if grep -Eq "net::ERR_|ERR_FILE_NOT_FOUND|Unable to open asset" logcat.txt; then echo "FAIL: WebView could not load its assets"; exit 1; fi
+            if grep -Eq "Unable to open asset URL: https://localhost/assets/" logcat.txt; then echo "FAIL: app bundle asset failed to load (white-screen)"; tail -n 80 logcat.txt; exit 1; fi
             if grep -Eq "js\.error|Uncaught Error" logcat.txt; then echo "FAIL: uncaught JS error during boot (app likely blank)"; grep -E "Uncaught|js\.error|Capacitor/Console" logcat.txt | tail -n 30; exit 1; fi
             echo "SMOKE OK: launched, process alive, no native crash, no uncaught JS error"
 
