@@ -6,7 +6,12 @@ import { SpeedInsights } from '@vercel/speed-insights/react';
 import App from './App';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { registerPwa } from './lib/pwa';
+import { initNativeShell } from './lib/native';
 import './index.css';
+
+// Wire native (Capacitor) integration before first paint: adds the html.is-native
+// class for safe-area CSS and registers the OAuth deep-link callback. No-op on web.
+initNativeShell();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -86,7 +86,13 @@ export default function Sidebar({ open, onClose }: Props) {
           onClick={onClose}
         />
       )}
-      <aside ref={asideRef} className={`fixed top-0 left-0 bottom-0 w-[260px] lg:w-60 bg-bg2 border-r border-line z-50 flex flex-col transition-transform duration-300 ${open ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+      <aside
+        ref={asideRef}
+        // Inset the drawer's logo header and sign-out footer clear of the
+        // Android status / navigation bars (safe-area). 0px on web = no change.
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        className={`fixed top-0 left-0 bottom-0 w-[260px] lg:w-60 bg-bg2 border-r border-line z-50 flex flex-col transition-transform duration-300 ${open ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
+      >
         {/* Logo — click to return to Dashboard */}
         <div className="flex items-center gap-2.5 px-4 py-5 border-b border-line relative">
           <Link

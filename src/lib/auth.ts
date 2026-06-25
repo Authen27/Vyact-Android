@@ -4,6 +4,9 @@
 
 import { sb, APP_URL } from './supabase';
 import type { Session, User } from '@supabase/supabase-js';
+import { Capacitor } from '@capacitor/core';
+import { Browser } from '@capacitor/browser';
+import { OAUTH_CALLBACK_URL } from './native';
 
 export interface SignUpInput {
   email: string;
@@ -38,11 +41,23 @@ export async function signInMagicLink(email: string) {
 }
 
 export async function signInOAuth(provider: 'google' | 'apple' | 'github') {
-  const { error } = await sb().auth.signInWithOAuth({
+  const native = Capacitor.isNativePlatform();
+  const { data, error } = await sb().auth.signInWithOAuth({
     provider,
-    options: { redirectTo: `${APP_URL}/auth/verified` },
+    options: {
+      // Native: return to the app via the custom-scheme deep link and open the
+      // consent screen in an in-app browser (below) so the user is retained in
+      // the native app. Web: the usual full-page redirect to /auth/verified.
+      redirectTo: native ? OAUTH_CALLBACK_URL : `${APP_URL}/auth/verified`,
+      skipBrowserRedirect: native,
+    },
   });
   if (error) throw error;
+  if (native && data?.url) {
+    // The deep-link callback (see initNativeShell) completes the session and
+    // closes this browser.
+    await Browser.open({ url: data.url });
+  }
 }
 
 export async function signOut() {
