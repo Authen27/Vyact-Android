@@ -1,0 +1,19 @@
+<svg width="2732" height="2732" viewBox="0 0 2732 2732" xmlns="http://www.w3.org/2000/svg">
+  <!-- Launch splash (dark): pip on the dark warm ink canvas. -->
+  <rect width="2732" height="2732" fill="#1B1612"/>
+  <svg x="1046" y="1006" width="640" height="640" viewBox="-3 -4 42 43">
+    <defs>
+      <radialGradient id="pipSplashD" cx="50%" cy="38%" r="62%">
+        <stop offset="0%" stop-color="#F4B6A8"/>
+        <stop offset="100%" stop-color="#E26D5C"/>
+      </radialGradient>
+    </defs>
+    <path d="M18 3 C 27 3, 33 9, 33 18 C 33 27, 27 33, 18 33 C 9 33, 3 27, 3 18 C 3 9, 9 3, 18 3 Z" fill="url(#pipSplashD)" stroke="#0F0C0A" stroke-width="1.2"/>
+    <path d="M18 3 Q 16 -1, 14 1 Q 17 3, 18 3 Z" fill="#85A88A" stroke="#0F0C0A" stroke-width="0.8"/>
+    <ellipse cx="13" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+    <ellipse cx="23" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+    <circle cx="9.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+    <circle cx="26.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+    <path d="M14 22 Q 18 25, 22 22" stroke="#2A2522" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+  </svg>
+</svg>

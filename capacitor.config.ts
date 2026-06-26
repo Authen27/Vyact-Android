@@ -20,6 +20,21 @@ const config: CapacitorConfig = {
     // Finance app: never silently load insecure (http) sub-resources.
     allowMixedContent: false,
   },
+
+  plugins: {
+    // Branded launch splash (pip on the Cream canvas). The generated splash
+    // images come from @capacitor/assets; this controls how it's shown. The
+    // in-HTML pip loader (index.html) covers the brief handoff to React.
+    SplashScreen: {
+      launchShowDuration: 900,
+      launchAutoHide: true,
+      backgroundColor: '#F5EFE6',
+      androidScaleType: 'CENTER_CROP',
+      showSpinner: false,
+      splashFullScreen: true,
+      splashImmersive: true,
+    },
+  },
 };
 
 export default config;

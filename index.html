@@ -49,9 +49,36 @@
       href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400;1,6..72,600&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
+    <style>
+      #root .vyact-boot{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#F5EFE6;z-index:9999}
+      .vyact-boot__pip{animation:vyactBreathe 1.6s ease-in-out infinite;transform-origin:center}
+      .vyact-boot__word{font-family:Newsreader,Georgia,serif;font-size:26px;letter-spacing:-.01em;color:#2A2522}
+      .vyact-boot__sub{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:#9b9489}
+      @keyframes vyactBreathe{0%,100%{transform:scale(1);opacity:.9}50%{transform:scale(1.07);opacity:1}}
+      @media (prefers-reduced-motion:reduce){.vyact-boot__pip{animation:none}}
+      @media (prefers-color-scheme:dark){#root .vyact-boot{background:#1B1612}.vyact-boot__word{color:#F5EFE6}}
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Instant branded loader: shows the pip before React mounts, so there's
+           no white flash between the native splash and the app. React replaces
+           #root's children on first render. -->
+      <div class="vyact-boot" aria-hidden="true">
+        <svg class="vyact-boot__pip" width="88" height="88" viewBox="-3 -4 42 43" xmlns="http://www.w3.org/2000/svg">
+          <defs><radialGradient id="pipBoot" cx="50%" cy="38%" r="62%"><stop offset="0%" stop-color="#F4B6A8"/><stop offset="100%" stop-color="#E26D5C"/></radialGradient></defs>
+          <path d="M18 3 C 27 3, 33 9, 33 18 C 33 27, 27 33, 18 33 C 9 33, 3 27, 3 18 C 3 9, 9 3, 18 3 Z" fill="url(#pipBoot)" stroke="#2A2522" stroke-width="1.2"/>
+          <path d="M18 3 Q 16 -1, 14 1 Q 17 3, 18 3 Z" fill="#85A88A" stroke="#2A2522" stroke-width="0.8"/>
+          <ellipse cx="13" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+          <ellipse cx="23" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+          <circle cx="9.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+          <circle cx="26.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+          <path d="M14 22 Q 18 25, 22 22" stroke="#2A2522" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+        </svg>
+        <div class="vyact-boot__word">Vyact</div>
+        <div class="vyact-boot__sub">Family Finance OS</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

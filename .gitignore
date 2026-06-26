@@ -8,3 +8,6 @@
 .cache/
 android/
 ios/
+
+# Generated launcher/splash PNGs (sources live in assets-src/*.svg)
+/assets/
