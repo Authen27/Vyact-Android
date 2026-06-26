@@ -11,6 +11,7 @@ import {
   upcomingBillNotifs, missedPaymentNotifs, budgetThresholdNotifs,
   goalMilestoneNotifs, DEFAULT_PREFS, isInQuietHours, showWebPush,
 } from '../../lib/notifications';
+import { isNative, fireNativeNotifications } from '../../lib/native';
 import { readLocalJson, setLocalJson } from '../localJson';
 
 export interface NotifySlice {
@@ -43,11 +44,19 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     setLocalJson('notifications', merged);
     set({ notifications: merged });
 
-    // Web Push for high-priority types if outside quiet hours
+    // Push the fresh alerts outside quiet hours. On native (Capacitor) every
+    // alert becomes a tappable local notification that deep-links to its view;
+    // on web we keep the high-priority Web Push behaviour.
     if (notificationPrefs.webPushEnabled && !isInQuietHours(notificationPrefs)) {
-      for (const n of fresh) {
-        if (n.type === 'missed_payment' || n.type === 'goal_milestone') {
-          showWebPush(n.title, n.body);
+      if (isNative()) {
+        void fireNativeNotifications(
+          fresh.map(n => ({ id: n.id, type: n.type, title: n.title, body: n.body })),
+        );
+      } else {
+        for (const n of fresh) {
+          if (n.type === 'missed_payment' || n.type === 'goal_milestone') {
+            showWebPush(n.title, n.body);
+          }
         }
       }
     }

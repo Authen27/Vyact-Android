@@ -4,6 +4,7 @@ import MobileBar from './MobileBar';
 import FloatingTools from './FloatingTools';
 import AddFab from './AddFab';
 import SyncConflictBanner from './SyncConflictBanner';
+import NativeNavBridge from './NativeNavBridge';
 import { useShortcuts, useEdgeSwipe } from '../../hooks';
 import { useStore } from '../../store';
 
@@ -30,6 +31,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative">
+      <NativeNavBridge />
       <Sidebar open={open} onClose={() => setOpen(false)} />
       <MobileBar onMenu={() => setOpen(true)} />
       <main className="lg:ml-60 min-h-screen relative z-[1]">

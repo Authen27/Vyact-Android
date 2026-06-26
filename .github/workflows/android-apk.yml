@@ -29,7 +29,7 @@ jobs:
       # import @capacitor/{core,app,browser}, so tsc needs them to type-check.
       - name: Install Capacitor + plugins
         run: |
-          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest
+          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest @capacitor/local-notifications@latest
           npm install -D @capacitor/cli@latest
 
       - name: Build web bundle (Vite -> dist/)
@@ -104,6 +104,7 @@ jobs:
           disable-animations: true
           script: |
             adb install -r app-debug.apk
+            adb shell pm grant com.vyact.consumer android.permission.POST_NOTIFICATIONS || true
             adb logcat -c
             adb shell monkey -p com.vyact.consumer -c android.intent.category.LAUNCHER 1
             sleep 30
@@ -145,7 +146,7 @@ jobs:
 
       - name: Install Capacitor + plugins
         run: |
-          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest
+          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest @capacitor/local-notifications@latest
           npm install -D @capacitor/cli@latest
 
       - name: Build web bundle (LOCAL-ONLY — boots to dashboard)
@@ -192,11 +193,16 @@ jobs:
           disable-animations: true
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell pm grant com.vyact.consumer android.permission.POST_NOTIFICATIONS || true
             adb shell monkey -p com.vyact.consumer -c android.intent.category.LAUNCHER 1
             sleep 2
             adb exec-out screencap -p > ui-launch.png
             sleep 33
             adb exec-out screencap -p > ui-dashboard.png
+            adb shell cmd statusbar expand-notifications || true
+            sleep 2
+            adb exec-out screencap -p > ui-notifications.png
+            adb shell cmd statusbar collapse || true
             adb shell input tap 70 130
             sleep 3
             adb exec-out screencap -p > ui-drawer.png
@@ -209,6 +215,7 @@ jobs:
           path: |
             ui-launch.png
             ui-dashboard.png
+            ui-notifications.png
             ui-drawer.png
           if-no-files-found: warn
           retention-days: 14
