@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="10dp"
+    android:padding="16dp"
+    android:background="@drawable/widget_card_bg"
+    android:text="Household"
+    android:textColor="#2A2522"
+    android:textSize="16sp"
+    android:clickable="true"
+    android:focusable="true" />
