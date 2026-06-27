@@ -36,10 +36,15 @@ export default function FloatingTools() {
 
   return (
     <>
-      {/* Stacked FABs in the bottom-right. Sit above the primary AddFab
-          (v7.4.4) so the Add-Transaction button stays the most prominent
-          action; offset above MobileBar (~56px) on small screens. */}
-      <div className="fixed right-4 bottom-[160px] lg:bottom-[160px] z-40 flex flex-col gap-2.5">
+      {/* Stacked FABs in the bottom-right. Sit a fixed gap ABOVE the primary
+          AddFab so the Add-Transaction button stays the most prominent action.
+          Must share AddFab's safe-area-inset baseline (AddFab bottom = inset+80,
+          height 56) so the two never collide on devices with a nav-bar inset:
+          inset + 80 + 56 + 16(gap) = inset + 152. */}
+      <div
+        className="fixed right-4 z-40 flex flex-col gap-2.5"
+        style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 152px)' }}
+      >
         <Fab
           label="Ask Vyact"
           tone="denim"
