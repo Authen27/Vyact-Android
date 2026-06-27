@@ -33,13 +33,20 @@ function numericId(s: string): number {
   return (Math.abs(h) % 2147483647) || 1;
 }
 
-// A tap that cold-starts the app fires before React mounts; buffer the route so
-// the NativeNavBridge can pick it up on first render.
+// A tap that cold-starts the app fires before React mounts; buffer the route /
+// action so the NativeNavBridge can pick it up on first render.
 let pendingNavRoute: string | null = null;
 export function consumePendingNav(): string | null {
   const r = pendingNavRoute;
   pendingNavRoute = null;
   return r;
+}
+
+let pendingAction: string | null = null;
+export function consumePendingAction(): string | null {
+  const a = pendingAction;
+  pendingAction = null;
+  return a;
 }
 
 let wired = false;
@@ -51,19 +58,39 @@ export function initNativeShell(): void {
   // Lets CSS scope native-only rules (e.g. safe-area insets) via html.is-native.
   document.documentElement.classList.add('is-native');
 
-  // Finish an OAuth sign-in that returns via the deep link. The in-app browser
-  // lands on vyact://auth-callback?code=…; we exchange that code for a session
-  // inside the app's OWN WebView (where the PKCE verifier was stored), so the
-  // user is retained in the native app instead of being dropped on the web build.
+  // Handle every vyact:// deep link: OAuth return, widget "+" add-transaction,
+  // and widget tap-to-open-view.
   void App.addListener('appUrlOpen', async ({ url }) => {
-    if (!url || !url.startsWith(OAUTH_CALLBACK_URL)) return;
-    try {
-      const code = new URL(url).searchParams.get('code');
-      if (code && supabase) await supabase.auth.exchangeCodeForSession(code);
-    } catch (e) {
-      console.warn('OAuth callback exchange failed:', e);
-    } finally {
-      void Browser.close().catch(() => {});
+    if (!url) return;
+
+    // OAuth sign-in return: exchange the code for a session inside the app's OWN
+    // WebView (where the PKCE verifier was stored), so the user is retained in
+    // the native app instead of being dropped on the web build.
+    if (url.startsWith(OAUTH_CALLBACK_URL)) {
+      try {
+        const code = new URL(url).searchParams.get('code');
+        if (code && supabase) await supabase.auth.exchangeCodeForSession(code);
+      } catch (e) {
+        console.warn('OAuth callback exchange failed:', e);
+      } finally {
+        void Browser.close().catch(() => {});
+      }
+      return;
+    }
+
+    // Widget "+" button → open the Add-Transaction modal.
+    if (url.startsWith('vyact://action/add-transaction')) {
+      pendingAction = 'add-transaction';
+      window.dispatchEvent(new CustomEvent('vyact:action', { detail: 'add-transaction' }));
+      return;
+    }
+
+    // Widget body tap → open a view, e.g. vyact://open/budgets (default dashboard).
+    if (url.startsWith('vyact://open')) {
+      const path = url.slice('vyact://open'.length);
+      const route = path.startsWith('/') ? path : '/dashboard';
+      pendingNavRoute = route;
+      window.dispatchEvent(new CustomEvent('vyact:navigate', { detail: route }));
     }
   });
 
