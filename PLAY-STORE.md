@@ -46,7 +46,7 @@ artifact, copy its contents into a new secret **`KEYSTORE_BASE64`**.
 - **App name:** `Vyact — Family Finance OS`
 - **Default language:** English (US)
 - **App or game:** App · **Free**
-- **Package name (set on first upload, permanent):** `com.vyact.consumer`
+- **Package name (set on first upload, permanent):** `com.vyact.app`
 
 ---
 

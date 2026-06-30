@@ -107,13 +107,13 @@ jobs:
           disable-animations: true
           script: |
             adb install -r app-debug.apk
-            adb shell pm grant com.vyact.consumer android.permission.POST_NOTIFICATIONS || true
+            adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
             adb logcat -c
-            adb shell monkey -p com.vyact.consumer -c android.intent.category.LAUNCHER 1
+            adb shell monkey -p com.vyact.app -c android.intent.category.LAUNCHER 1
             sleep 30
             adb exec-out screencap -p > smoke-screenshot.png
             adb logcat -d > logcat.txt
-            adb shell pidof com.vyact.consumer || { echo "FAIL: app process not running (crashed on launch)"; tail -n 150 logcat.txt; exit 1; }
+            adb shell pidof com.vyact.app || { echo "FAIL: app process not running (crashed on launch)"; tail -n 150 logcat.txt; exit 1; }
             if grep -Eq "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" logcat.txt; then echo "FAIL: fatal native crash"; tail -n 150 logcat.txt; exit 1; fi
             if grep -Eq "Unable to open asset URL: https://localhost/assets/" logcat.txt; then echo "FAIL: app bundle asset failed to load (white-screen)"; tail -n 80 logcat.txt; exit 1; fi
             if grep -Eq "js\.error|Uncaught Error" logcat.txt; then echo "FAIL: uncaught JS error during boot (app likely blank)"; grep -E "Uncaught|js\.error|Capacitor/Console" logcat.txt | tail -n 30; exit 1; fi
@@ -199,13 +199,13 @@ jobs:
           disable-animations: true
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
-            adb shell pm grant com.vyact.consumer android.permission.POST_NOTIFICATIONS || true
-            adb shell monkey -p com.vyact.consumer -c android.intent.category.LAUNCHER 1
+            adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
+            adb shell monkey -p com.vyact.app -c android.intent.category.LAUNCHER 1
             sleep 2
             adb exec-out screencap -p > ui-launch.png
             sleep 33
             adb exec-out screencap -p > ui-dashboard.png
-            adb shell run-as com.vyact.consumer cat /data/data/com.vyact.consumer/shared_prefs/CapacitorStorage.xml > widget-prefs.xml 2>/dev/null || true
+            adb shell run-as com.vyact.app cat /data/data/com.vyact.app/shared_prefs/CapacitorStorage.xml > widget-prefs.xml 2>/dev/null || true
             adb shell cmd statusbar expand-notifications || true
             sleep 2
             adb exec-out screencap -p > ui-notifications.png

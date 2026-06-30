@@ -9,4 +9,4 @@
     android:widgetCategory="home_screen"
     android:initialLayout="@layout/widget_budget"
     android:previewLayout="@layout/widget_budget"
-    android:configure="com.vyact.consumer.BudgetWidgetConfigActivity" />
+    android:configure="com.vyact.app.BudgetWidgetConfigActivity" />

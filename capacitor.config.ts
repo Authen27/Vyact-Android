@@ -3,7 +3,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   // Reverse-DNS app id. This becomes the Android package name and is PERMANENT
   // once published to Play. Change to your real domain before a store release.
-  appId: 'com.vyact.consumer',
+  appId: 'com.vyact.app',
   appName: 'Vyact',
 
   // Vite outputs the production web bundle here. If your build emits to a

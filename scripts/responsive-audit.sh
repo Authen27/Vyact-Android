@@ -5,7 +5,7 @@
 # px / 2. Run from the emulator-runner script (one line: `bash scripts/responsive-audit.sh`).
 set +e
 
-PKG=com.vyact.consumer
+PKG=com.vyact.app
 
 # Close any open drawer/overlay from prior steps.
 adb shell input keyevent 4

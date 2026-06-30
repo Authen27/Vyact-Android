@@ -1,4 +1,4 @@
-package com.vyact.consumer;
+package com.vyact.app;
 
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;

@@ -5,7 +5,7 @@
 
 import { cpSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 
-const PKG_DIR = 'android/app/src/main/java/com/vyact/consumer';
+const PKG_DIR = 'android/app/src/main/java/com/vyact/app';
 const MANIFEST = 'android/app/src/main/AndroidManifest.xml';
 
 // 1) Remove the generated Kotlin MainActivity so our Java one takes over.

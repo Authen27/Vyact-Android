@@ -2,7 +2,7 @@
 # Captures clean, high-res phone screenshots for the Play listing from the
 # local-only build on a booted emulator. Runs from the emulator-runner script.
 set +e
-PKG=com.vyact.consumer
+PKG=com.vyact.app
 
 adb shell wm size 1080x2280
 adb shell wm density 440          # ~393px CSS — a typical large phone
