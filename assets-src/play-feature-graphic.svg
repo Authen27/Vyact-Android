@@ -23,8 +23,8 @@
   </svg>
 
   <!-- wordmark + tagline -->
-  <text x="470" y="210" font-family="Georgia, 'Times New Roman', serif" font-size="104" fill="#2A2522">Vyact</text>
-  <text x="474" y="252" font-family="monospace" font-size="22" letter-spacing="6" fill="#E26D5C">FAMILY FINANCE OS</text>
-  <text x="472" y="320" font-family="Georgia, serif" font-style="italic" font-size="30" fill="#5F5E5A">Household finance, planned together.</text>
-  <text x="472" y="362" font-family="Georgia, serif" font-style="italic" font-size="30" fill="#5F5E5A">Spend, budgets, debt &amp; net worth — for the family.</text>
+  <text x="470" y="206" font-family="Georgia, 'Times New Roman', serif" font-size="100" fill="#2A2522">Vyact</text>
+  <text x="474" y="248" font-family="monospace" font-size="21" letter-spacing="6" fill="#E26D5C">FAMILY FINANCE OS</text>
+  <text x="472" y="322" font-family="Georgia, serif" font-style="italic" font-size="30" fill="#5F5E5A">Household finance,</text>
+  <text x="472" y="364" font-family="Georgia, serif" font-style="italic" font-size="30" fill="#5F5E5A">planned together.</text>
 </svg>
