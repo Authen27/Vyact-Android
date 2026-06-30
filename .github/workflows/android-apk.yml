@@ -213,6 +213,7 @@ jobs:
             adb shell input tap 70 130
             sleep 3
             adb exec-out screencap -p > ui-drawer.png
+            bash scripts/responsive-audit.sh || true
 
       - name: Upload UI screenshots
         if: always()
@@ -225,5 +226,6 @@ jobs:
             ui-notifications.png
             ui-drawer.png
             widget-prefs.xml
+            audit-*.png
           if-no-files-found: warn
           retention-days: 14
