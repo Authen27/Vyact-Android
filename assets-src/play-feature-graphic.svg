@@ -1,0 +1,30 @@
+<svg width="1024" height="500" viewBox="0 0 1024 500" xmlns="http://www.w3.org/2000/svg">
+  <!-- Google Play feature graphic (1024x500). Brand: Paper Warm. -->
+  <rect width="1024" height="500" fill="#F5EFE6"/>
+  <!-- subtle grid texture -->
+  <g stroke="#E7DFD1" stroke-width="1">
+    <line x1="0" y1="125" x2="1024" y2="125"/><line x1="0" y1="250" x2="1024" y2="250"/><line x1="0" y1="375" x2="1024" y2="375"/>
+    <line x1="256" y1="0" x2="256" y2="500"/><line x1="512" y1="0" x2="512" y2="500"/><line x1="768" y1="0" x2="768" y2="500"/>
+  </g>
+  <!-- coral accent stripe -->
+  <rect x="0" y="0" width="14" height="500" fill="#E26D5C"/>
+
+  <!-- pip mascot in a tinted disc -->
+  <circle cx="250" cy="250" r="170" fill="#FBF7EE" stroke="#EBD9D2" stroke-width="2"/>
+  <svg x="118" y="118" width="264" height="264" viewBox="-3 -4 42 43">
+    <defs><radialGradient id="pipFG" cx="50%" cy="38%" r="62%"><stop offset="0%" stop-color="#F4B6A8"/><stop offset="100%" stop-color="#E26D5C"/></radialGradient></defs>
+    <path d="M18 3 C 27 3, 33 9, 33 18 C 33 27, 27 33, 18 33 C 9 33, 3 27, 3 18 C 3 9, 9 3, 18 3 Z" fill="url(#pipFG)" stroke="#2A2522" stroke-width="1.2"/>
+    <path d="M18 3 Q 16 -1, 14 1 Q 17 3, 18 3 Z" fill="#85A88A" stroke="#2A2522" stroke-width="0.8"/>
+    <ellipse cx="13" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+    <ellipse cx="23" cy="16" rx="1.4" ry="1.8" fill="#2A2522"/>
+    <circle cx="9.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+    <circle cx="26.5" cy="20" r="1.6" fill="#F4B6A8" opacity="0.8"/>
+    <path d="M14 22 Q 18 25, 22 22" stroke="#2A2522" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+  </svg>
+
+  <!-- wordmark + tagline -->
+  <text x="470" y="210" font-family="Georgia, 'Times New Roman', serif" font-size="104" fill="#2A2522">Vyact</text>
+  <text x="474" y="252" font-family="monospace" font-size="22" letter-spacing="6" fill="#E26D5C">FAMILY FINANCE OS</text>
+  <text x="472" y="320" font-family="Georgia, serif" font-style="italic" font-size="30" fill="#5F5E5A">Household finance, planned together.</text>
+  <text x="472" y="362" font-family="Georgia, serif" font-style="italic" font-size="30" fill="#5F5E5A">Spend, budgets, debt &amp; net worth — for the family.</text>
+</svg>

@@ -1,0 +1,84 @@
+name: Play store assets
+
+# Produces the marketing images for the Play listing:
+#  • play-assets/icon-512.png        (512x512 store icon)
+#  • play-assets/feature-graphic.png (1024x500 feature graphic)
+#  • store-shot-*.png                (high-res phone screenshots of the real app)
+on:
+  workflow_dispatch: {}
+
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rasterize marketing graphics
+        run: |
+          npm i -D sharp@latest
+          node scripts/gen-play-assets.mjs
+
+      - run: npm ci
+      - name: Install Capacitor + plugins
+        run: |
+          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest @capacitor/local-notifications@latest
+          npm install -D @capacitor/cli@latest
+
+      - name: Build web bundle (local-only -> boots to dashboard, no login)
+        run: npx vite build --mode test
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+
+      - name: Add Capacitor Android platform (if missing)
+        run: if [ ! -d android ]; then npx cap add android; fi
+      - run: npx cap sync android
+      - run: |
+          node scripts/inject-android-native.mjs
+          node scripts/patch-android-manifest.mjs
+      - name: Generate launcher icon + splash
+        run: |
+          npm i -D @capacitor/assets@latest sharp@latest
+          node scripts/gen-assets.mjs
+          npx capacitor-assets generate --android --assetPath assets
+      - name: Build debug APK (for screenshots)
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Boot emulator + capture store screenshots
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            bash scripts/capture-store-screenshots.sh
+
+      - name: Upload Play assets
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyact-play-assets
+          path: |
+            play-assets/*.png
+            store-shot-*.png
+          if-no-files-found: warn
+          retention-days: 14

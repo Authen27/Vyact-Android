@@ -1,0 +1,96 @@
+name: Android Release AAB
+
+# Builds the Play-uploadable Android App Bundle (.aab).
+#  • If the signing secrets are set (KEYSTORE_BASE64, KEYSTORE_PASSWORD,
+#    KEY_ALIAS, KEY_PASSWORD) -> a SIGNED release AAB ready for Play.
+#  • If not -> an UNSIGNED release AAB (proves the bundle builds; not uploadable).
+on:
+  workflow_dispatch:
+    inputs:
+      versionCode:
+        description: 'versionCode (integer; must increase on every Play upload). Blank = CI run number.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Install Capacitor + plugins
+        run: |
+          npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest @capacitor/local-notifications@latest
+          npm install -D @capacitor/cli@latest
+
+      - name: Build web bundle (production)
+        run: npm run build
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+
+      - name: Add Capacitor Android platform (if missing)
+        run: if [ ! -d android ]; then npx cap add android; fi
+      - run: npx cap sync android
+
+      - name: Inject native code + register deep link
+        run: |
+          node scripts/inject-android-native.mjs
+          node scripts/patch-android-manifest.mjs
+
+      - name: Generate launcher icon + splash
+        run: |
+          npm i -D @capacitor/assets@latest sharp@latest
+          node scripts/gen-assets.mjs
+          npx capacitor-assets generate --android --assetPath assets
+
+      - name: Set app version
+        run: node scripts/set-android-version.mjs "${{ github.event.inputs.versionCode || github.run_number }}"
+
+      - name: Decode upload keystore (if configured)
+        id: ks
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload.keystore"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No KEYSTORE_BASE64 secret — building an UNSIGNED AAB (not uploadable to Play)."
+          fi
+
+      - name: Build SIGNED release AAB
+        if: steps.ks.outputs.signed == 'true'
+        working-directory: android
+        run: |
+          ./gradlew bundleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/upload.keystore" \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
+
+      - name: Build UNSIGNED release AAB
+        if: steps.ks.outputs.signed == 'false'
+        working-directory: android
+        run: ./gradlew bundleRelease --no-daemon
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyact-release-aab
+          path: android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 14
