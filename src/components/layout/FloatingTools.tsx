@@ -10,7 +10,9 @@
 
 import React, { Suspense, useState, useEffect, type ReactNode } from 'react';
 import { Sparkles, X } from 'lucide-react';
+import { App } from '@capacitor/app';
 import { useScrollDirection } from '../../hooks';
+import { isNative } from '../../lib/native';
 
 const Chat = React.lazy(() => import('../../pages/Chat'));
 
@@ -27,12 +29,22 @@ export default function FloatingTools() {
   const dir = useScrollDirection();
   const hidden = dir === 'down' && !tool;
 
-  // Esc closes the drawer for keyboard users.
+  // Close the drawer via Esc (web keyboard) and the Android hardware Back button
+  // (native). The Back listener is only registered while the drawer is open, so
+  // it doesn't interfere with normal back navigation otherwise.
   useEffect(() => {
     if (!tool) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTool(null); };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+
+    const backHandle = isNative()
+      ? App.addListener('backButton', () => setTool(null))
+      : null;
+
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      void backHandle?.then(h => h.remove());
+    };
   }, [tool]);
 
   function open(t: Tool) {
@@ -115,11 +127,16 @@ function Drawer({ title, onClose, children }: DrawerProps) {
       style={{ background: 'hsl(var(--shadow) / 0.45)', backdropFilter: 'blur(2px)' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-bg2 border-l border-line2 h-full w-full sm:w-[min(28rem,100vw)] flex flex-col shadow-3 animate-slideInRight">
+      <div
+        className="bg-bg2 border-l border-line2 h-full w-full sm:w-[min(28rem,100vw)] flex flex-col shadow-3 animate-slideInRight"
+        // Inset so the close button clears the Android status bar (was untappable
+        // under it on a full-width mobile drawer) and content clears the nav bar.
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+      >
         <div className="flex items-center justify-between px-4 py-3 border-b border-line">
           <h3 className="display-italic text-[1.2rem] leading-none text-ink">{title}</h3>
-          <button onClick={onClose} className="text-ink-dim hover:text-ink transition-colors p-1" aria-label="Close">
-            <X size={18} />
+          <button onClick={onClose} className="text-ink-dim hover:text-ink transition-colors p-2 -mr-1" aria-label="Close">
+            <X size={20} />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
