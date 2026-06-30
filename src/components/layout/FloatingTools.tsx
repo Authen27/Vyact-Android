@@ -10,6 +10,7 @@
 
 import React, { Suspense, useState, useEffect, type ReactNode } from 'react';
 import { Sparkles, X } from 'lucide-react';
+import { useScrollDirection } from '../../hooks';
 
 const Chat = React.lazy(() => import('../../pages/Chat'));
 
@@ -20,6 +21,11 @@ const KEY = 'floating_last';
 
 export default function FloatingTools() {
   const [tool, setTool] = useState<Tool>(null);
+
+  // Mirror AddFab: fade out on scroll-down so the FAB stops covering the
+  // right-aligned transaction amounts / chart edges; reappear on scroll-up.
+  const dir = useScrollDirection();
+  const hidden = dir === 'down' && !tool;
 
   // Esc closes the drawer for keyboard users.
   useEffect(() => {
@@ -42,7 +48,7 @@ export default function FloatingTools() {
           height 56) so the two never collide on devices with a nav-bar inset:
           inset + 80 + 56 + 16(gap) = inset + 152. */}
       <div
-        className="fixed right-4 z-40 flex flex-col gap-2.5"
+        className={`fixed right-4 z-40 flex flex-col gap-2.5 transition-all duration-300 ${hidden ? 'opacity-0 translate-y-3 pointer-events-none' : 'opacity-100 translate-y-0'}`}
         style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 152px)' }}
       >
         <Fab

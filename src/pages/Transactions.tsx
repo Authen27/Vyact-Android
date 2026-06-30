@@ -292,7 +292,9 @@ export default function Transactions() {
 
   return (
     <div>
-      <div className="flex justify-between items-start mb-5 gap-4">
+      {/* Stack on small screens so the title never collides with the Add button
+          (at ~320px the row layout truncated "Transactions" under the button). */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start sm:gap-4 mb-5">
         <div className="min-w-0">
           <h1 className="display-italic text-4xl text-ink mb-1.5">{t('transactions')}</h1>
           <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">

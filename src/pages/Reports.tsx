@@ -212,12 +212,14 @@ export default function Reports() {
             Financial performance over time
           </p>
         </div>
-        <div className="flex bg-bg3 border border-line rounded-md p-0.5 gap-px">
+        {/* Full-width, equal-share tabs on mobile so all 5 fit (at ~320px the
+            fixed-width strip clipped "YEAR"); natural width from sm up. */}
+        <div className="flex w-full sm:w-auto bg-bg3 border border-line rounded-md p-0.5 gap-px">
           {(['day','week','month','quarter','year'] as Period[]).map(p => (
             <button
               key={p}
               onClick={() => setPeriod(p)}
-              className={`font-mono text-[0.62rem] tracking-[0.1em] uppercase font-medium px-3.5 py-1.5 rounded transition-all ${
+              className={`flex-1 sm:flex-none min-w-0 font-mono text-[0.62rem] tracking-normal sm:tracking-[0.1em] uppercase font-medium px-2 sm:px-3.5 py-1.5 rounded transition-all ${
                 period === p ? 'bg-coral text-white shadow-1' : 'text-ink-mid hover:text-ink hover:bg-bg4'
               }`}
             >

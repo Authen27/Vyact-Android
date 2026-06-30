@@ -32,6 +32,16 @@ for entry in $SIZES; do
   adb exec-out screencap -p > "audit-reports-${css}.png"
 done
 
+# FAB scroll-hide check (Transactions @ 412px): after scrolling down, the
+# Ask Vyact + Add FABs should fade so they no longer cover the amount column.
+adb shell wm size 824x1648
+sleep 2
+adb shell am start -W -a android.intent.action.VIEW -d "vyact://open/transactions" "$PKG"
+sleep 4
+adb shell input swipe 412 1300 412 400 250
+sleep 2
+adb exec-out screencap -p > audit-txn-fab-scrolled.png
+
 adb shell wm size reset
 adb shell wm density reset
 echo "responsive audit done"
