@@ -41,6 +41,22 @@ export interface OnboardingContext {
   taxReservePct?: number | null;
 }
 
+/** v9.7 — the raw inputs from onboarding steps 3–4, kept as a REFERENCE overlay
+ *  (not ledger rows — injecting fake transactions would corrupt the money model).
+ *  The dashboard renders this as a clearly-estimated "starting picture" from minute
+ *  one, and it WIPES as real activity supersedes it (see clearBaseline / graduation).
+ *  It rides `households.onboarding` jsonb, so it follows the household across devices. */
+export interface OnboardingBaseline {
+  cash: number;
+  debt: number;
+  monthlyIncome: number;
+  fixedCosts: { key: string; label: string }[];
+  currency: string;
+  segment: Segment;
+  primaryConcern: string;       // 'spending' | 'debt' | 'runway'
+  capturedAt: string;           // ISO
+}
+
 export interface HouseholdOnboarding {
   state: OnboardingFlowState;
   segment: Segment | null;
@@ -49,6 +65,8 @@ export interface HouseholdOnboarding {
   startedAt: string | null;                 // ISO
   completedAt: string | null;               // ISO
   confirmationWindowEndsAt: string | null;  // completedAt + 21 days
+  /** Estimated starting picture from steps 3–4; null once it has been wiped. */
+  baseline?: OnboardingBaseline | null;
 }
 
 // ── Cloud write-through ───────────────────────────────────────────────────────
@@ -83,6 +101,7 @@ function emptyRecord(): HouseholdOnboarding {
   return {
     state: 'not_started', segment: null, context: null, currentStep: 0,
     startedAt: null, completedAt: null, confirmationWindowEndsAt: null,
+    baseline: null,
   };
 }
 
@@ -151,6 +170,23 @@ export function markCompleted(
     state: 'completed', segment, context, currentStep: 5,
     completedAt, confirmationWindowEndsAt: ends,
   });
+}
+
+// ── Starting-baseline reference (v9.7) ──────────────────────────────────────────
+
+/** The estimated starting picture captured at onboarding, or null once wiped. */
+export function getBaseline(householdId: string): OnboardingBaseline | null {
+  return getOnboarding(householdId).baseline ?? null;
+}
+
+/** Persist the steps-3–4 inputs as the dashboard's starting reference. */
+export function setBaseline(householdId: string, baseline: OnboardingBaseline | null): void {
+  setOnboarding(householdId, { baseline });
+}
+
+/** Wipe the reference — called when real activity supersedes it, or on dismiss. */
+export function clearBaseline(householdId: string): void {
+  setOnboarding(householdId, { baseline: null });
 }
 
 /** Existing pre-feature households are migrated to `skipped` (spec §3.4).

@@ -38,10 +38,13 @@ export interface SegmentTemplate {
   revealLine: string;
 }
 
+// v9.6.1 — the "Save for a goal" concern was removed: Goals were discarded as a
+// module (v8.8.0), so the option pointed at a non-existent surface. The remaining
+// concerns all map to live modules (spending → Budgets/Transactions, debt → Debts,
+// runway → Net Worth / SMB burn).
 const PRIMARY_CONCERNS: ChipOption[] = [
   { key: 'spending', label: 'Track spending' },
   { key: 'debt', label: 'Pay off debt' },
-  { key: 'savings', label: 'Save for a goal' },
   { key: 'runway', label: 'Extend runway' },
 ];
 
@@ -72,7 +75,7 @@ export const SEGMENTS: Record<Segment, SegmentTemplate> = {
       { key: 'subscriptions', label: 'Subscriptions' },
       { key: 'transport', label: 'Transport' },
     ],
-    visibleModules: ['Dashboard', 'Transactions', 'Budgets', 'Goals', 'Reports'],
+    visibleModules: ['Dashboard', 'Transactions', 'Budgets', 'Reports'],
     pulseBias: 'savings + control',
     revealLine: "Here's your month at a glance",
   },
@@ -114,7 +117,7 @@ export const SEGMENTS: Record<Segment, SegmentTemplate> = {
       { key: 'subscriptions', label: 'Subscriptions' },
     ],
     visibleModules: [
-      'Dashboard', 'Transactions', 'Budgets', 'Goals', 'Reports',
+      'Dashboard', 'Transactions', 'Budgets', 'Reports',
       'Members', 'Debts', 'Net Worth', 'Splits',
     ],
     pulseBias: 'balanced',

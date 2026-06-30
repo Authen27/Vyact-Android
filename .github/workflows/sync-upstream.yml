@@ -1,0 +1,74 @@
+name: Sync upstream React
+
+# Checks the upstream consumer app (Authen27/Vyact, react/) version and, when it
+# is ahead of what this Android fork was last synced to, merges the changes in
+# (preserving the Android overlay) and opens a PR for review.
+#
+# Run manually (Actions -> Run workflow) or weekly via cron.
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the seed (root) commit as the first-ever merge base
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Clone upstream
+        run: git clone --depth 1 https://github.com/Authen27/Vyact.git _upstream
+
+      - name: Drift check (active upstream version vs last sync)
+        id: drift
+        run: |
+          UP=$(node -p "require('./_upstream/react/package.json').version")
+          if [ -f .upstream-sync.json ]; then CUR=$(node -p "require('./.upstream-sync.json').reactVersion"); else CUR=$(node -p "require('./package.json').version"); fi
+          echo "upstream=$UP" >> "$GITHUB_OUTPUT"
+          echo "current=$CUR" >> "$GITHUB_OUTPUT"
+          if [ "$UP" = "$CUR" ]; then echo "drift=false" >> "$GITHUB_OUTPUT"; else echo "drift=true" >> "$GITHUB_OUTPUT"; fi
+          echo "::notice::Android fork synced to React $CUR; upstream is $UP"
+
+      - name: Already in sync
+        if: steps.drift.outputs.drift == 'false'
+        run: echo "Up to date with upstream React ${{ steps.drift.outputs.current }} — nothing to do."
+
+      - name: Merge upstream into the fork
+        if: steps.drift.outputs.drift == 'true'
+        id: merge
+        run: |
+          SEED=$(git rev-list --max-parents=0 HEAD | tail -1)
+          set +e
+          node scripts/sync-from-upstream.mjs _upstream/react "$SEED"
+          echo "conflicts=$?" >> "$GITHUB_OUTPUT"
+          rm -rf _upstream
+          exit 0
+
+      - name: Open / update sync PR
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BR="sync/upstream-${{ steps.drift.outputs.upstream }}"
+          git config user.name "vyact-sync-bot"
+          git config user.email "vyact-sync-bot@users.noreply.github.com"
+          git checkout -b "$BR"
+          git add -A
+          git commit -m "Sync upstream React ${{ steps.drift.outputs.upstream }} into Android fork"
+          git push -f origin "$BR"
+          BODY="Automated upstream sync: React ${{ steps.drift.outputs.current }} -> ${{ steps.drift.outputs.upstream }}. Additive Android files are preserved; the shared overlay files were 3-way merged."
+          if [ "${{ steps.merge.outputs.conflicts }}" != "0" ]; then
+            BODY="$BODY  ⚠️ MERGE CONFLICTS present — resolve the <<<<<<< markers before merging."
+          fi
+          gh pr create --base main --head "$BR" --title "Sync upstream React ${{ steps.drift.outputs.upstream }}" --body "$BODY" || gh pr edit "$BR" --body "$BODY"
+          echo "::notice::Opened sync PR for React ${{ steps.drift.outputs.upstream }} (conflicts exit=${{ steps.merge.outputs.conflicts }})"

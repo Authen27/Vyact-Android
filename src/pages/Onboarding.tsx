@@ -22,9 +22,10 @@ import {
   SEGMENTS, SEGMENT_ORDER, PRIMARY_CONCERNS,
 } from '../lib/onboardingTemplates';
 import {
-  markStarted, markSkipped, markCompleted,
-  type Segment, type OnboardingContext,
+  markStarted, markSkipped, markCompleted, setBaseline,
+  type Segment, type OnboardingContext, type OnboardingBaseline,
 } from '../lib/onboardingState';
+import type { TemplateKey } from '../lib/templates';
 import { track } from '../lib/analytics';
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -34,6 +35,16 @@ const SEGMENT_TO_PROFILE: Record<Segment, 'personal' | 'family' | 'business'> = 
   individual: 'personal',
   household: 'family',
   smb: 'business',
+};
+
+// v9.7 — segment now drives the module template (Sidebar reads pagesForTemplate),
+// so the dashboard a customer lands on actually matches their type:
+// individual → Single (no Members/Splits), household → Family (all), smb →
+// Self-Employed (no Splits/Members; Net Worth + Debts focus).
+const SEGMENT_TO_TEMPLATE: Record<Segment, TemplateKey> = {
+  individual: 'single',
+  household: 'family',
+  smb: 'self_employed',
 };
 
 export default function Onboarding() {
@@ -106,16 +117,33 @@ export default function Onboarding() {
       ...ctx,
     };
 
-    // Userback #7830377 — onboarding no longer seeds zero-limit budgets (they
-    // rendered as confusing ₹0/₹0 cards). It also no longer seeds a debt goal
-    // (goals are removed as a module). Onboarding now captures segment + context
-    // + snapshot only; real budgets are set later via the Budgets "Suggest" flow.
-    const baselineCount = 0;
+    // v9.7 — onboarding does NOT seed ledger rows (fake transactions would corrupt
+    // the money model). The steps-3–4 inputs are kept as an estimated REFERENCE
+    // baseline on `households.onboarding`; the dashboard renders it from minute one
+    // (StartingBaselineBand) and it WIPES as real activity supersedes it.
+    const baseline: OnboardingBaseline = {
+      cash: cashAmt,
+      debt: Number(snapshot.debt) || 0,
+      monthlyIncome: incomeAmt,
+      fixedCosts: fixedCosts
+        .map(k => SEGMENTS[segment].fixedCostChips.find(c => c.key === k))
+        .filter((c): c is { key: string; label: string } => !!c),
+      currency,
+      segment,
+      primaryConcern: context.primaryConcern,
+      capturedAt: new Date().toISOString(),
+    };
+    setBaseline(householdId, baseline);
+    const baselineCount = (baseline.cash || baseline.debt || baseline.monthlyIncome ? 1 : 0)
+      + baseline.fixedCosts.length;
 
     markCompleted(householdId, segment, context);
     await updateProfile({
       household: SEGMENT_TO_PROFILE[segment],
-      primaryConcern: (['spending', 'debt', 'savings'].includes(context.primaryConcern)
+      template: SEGMENT_TO_TEMPLATE[segment],   // v9.7 — segment now drives module visibility
+      // 'savings' (the removed "Save for a goal" concern) is no longer selectable;
+      // 'runway' falls through to 'spending'. Goals are not a module.
+      primaryConcern: (['spending', 'debt'].includes(context.primaryConcern)
         ? context.primaryConcern : 'spending') as 'spending' | 'debt' | 'savings',
       baseCurrency: currency,
       onboardedAt: new Date().toISOString(),

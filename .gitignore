@@ -6,10 +6,6 @@
 /blob-report/
 /test-results/
 .cache/
-# Capacitor-generated native projects (regenerated each CI build). Anchored to
-# the repo root so committed sources under native/android/ are NOT ignored.
-/android/
-/ios/
-
-# Generated launcher/splash PNGs (sources live in assets-src/*.svg)
+android/
+ios/
 /assets/

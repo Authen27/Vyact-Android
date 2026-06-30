@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v9.6.0`** (consumer)
+> **Current production version: `v9.7.1`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -24,6 +24,48 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v9.7.1 — Hide the FABs during onboarding *(2026-06-23)*
+
+The Ask Vyact and "+ Add Transaction" floating buttons (`FloatingTools` / `AddFab`,
+mounted in `Layout`) showed over the full-screen onboarding overlay — `/onboarding`
+is a route inside `Layout`. Both now return null on `/onboarding` (and `/auth/`):
+`AddFab` already gated `/auth/`; `FloatingTools` gained a `useLocation` gate. No
+household context exists during onboarding, so neither FAB applies.
+
+## v9.7.0 — Onboarding redesign: the questionnaire now drives the dashboard *(2026-06-23)*
+
+Closes the "inert ending" — a first-time user used to type cash / debt / income / fixed
+costs, see a "picture," then land on an **empty** dashboard (the inputs were discarded,
+`baselineCount = 0`; `segment.visibleModules` and `primaryConcern` were read nowhere).
+
+Now the steps-3–4 inputs are kept as an **estimated *reference* baseline** on
+`households.onboarding` (jsonb, already cross-device synced) and rendered on the dashboard
+from minute one — a **reference overlay, not ledger rows** (injecting fake transactions
+would break the money model; the band is clearly `EstimatedTag`'d).
+
+- **`StartingBaselineBand`** (new, top of Dashboard): Net position (cash−debt) · Monthly
+  income · Est. debt · Fixed-costs-to-budget. The lead **CTA adapts to the stated concern**
+  (debt → Debts, runway → Transactions, else → Budgets).
+- **It wipes** once real activity supersedes it — auto-graduates at 5 logged transactions,
+  or on dismiss (`clearBaseline`, cross-device). Reference-only; never becomes ledger data.
+- **Segment → module template** (`updateProfile({ template })`): individual → Single,
+  household → Family, smb → Self-Employed — so the Sidebar's `pagesForTemplate` finally
+  matches the customer type (business loses Splits/Members, etc.). Previously every segment
+  got the same "family = all modules" dashboard.
+
+No money-model change (band is overlay-only; INV suite untouched). No DB migration (additive
+jsonb field). Builds on v9.6.1's removal of the discarded "Save for a goal" concern.
+
+## v9.6.1 — Onboarding: drop the discarded "Save for a goal" path *(2026-06-23)*
+
+Goals were removed as a module (v8.8.0), so the onboarding **"Save for a goal"**
+primary-concern chip pointed at a surface that no longer exists. Removed it (concerns
+are now Track spending / Pay off debt / Extend runway) and stripped the dead `'Goals'`
+entry from both segments' `visibleModules`. Retired the `'savings'` primaryConcern
+mapping (no concern produces it now; `'runway'` still falls through to `'spending'`).
+No functional dashboard change — these onboarding signals were already inert; this
+removes the goal association only.
 
 ## v9.6.0 — Motion design: framer-motion foundation + Tier 1 + Dashboard *(2026-06-23)*
 

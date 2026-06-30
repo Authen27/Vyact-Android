@@ -16,6 +16,7 @@ import { fmtShort, monthName, nowMonthKey, convert } from '../lib/format';
 import { budgetLines } from '../lib/calculations';
 import Money from '../components/ui/Money';
 import AnimatedMoney from '../components/ui/AnimatedMoney';
+import StartingBaselineBand from '../components/dashboard/StartingBaselineBand';
 import { motion } from 'framer-motion';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import { getCat } from '../constants';
@@ -85,6 +86,9 @@ export default function Dashboard() {
           Family Finance Overview · {monthName(mk)}
         </p>
       </div>
+
+      {/* v9.7 — estimated starting picture from onboarding; clears as real data lands. */}
+      <StartingBaselineBand />
 
       {/* A7 — the two honest numbers. Cash Flow is a FLOW (money in vs out this
           month); Net Worth is a STOCK (assets − liabilities right now). Distinct

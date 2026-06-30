@@ -47,7 +47,7 @@ export default function AddFab() {
 
   // Hide on auth routes — no household, no modal target. (After the hooks so they
   // run unconditionally — rules-of-hooks; the effect is a no-op while closed.)
-  if (location.pathname.startsWith('/auth/')) return null;
+  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding')) return null;
 
   function startLongPress() {
     longPressFired.current = false;

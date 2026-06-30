@@ -11,9 +11,6 @@
 import React, { Suspense, useState, useEffect, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Sparkles, X } from 'lucide-react';
-import { App } from '@capacitor/app';
-import { useScrollDirection } from '../../hooks';
-import { isNative } from '../../lib/native';
 
 const Chat = React.lazy(() => import('../../pages/Chat'));
 
@@ -26,27 +23,12 @@ export default function FloatingTools() {
   const [tool, setTool] = useState<Tool>(null);
   const location = useLocation();
 
-  // Mirror AddFab: fade out on scroll-down so the FAB stops covering the
-  // right-aligned transaction amounts / chart edges; reappear on scroll-up.
-  const dir = useScrollDirection();
-  const hidden = dir === 'down' && !tool;
-
-  // Close the drawer via Esc (web keyboard) and the Android hardware Back button
-  // (native). The Back listener is only registered while the drawer is open, so
-  // it doesn't interfere with normal back navigation otherwise.
+  // Esc closes the drawer for keyboard users.
   useEffect(() => {
     if (!tool) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTool(null); };
     window.addEventListener('keydown', onKey);
-
-    const backHandle = isNative()
-      ? App.addListener('backButton', () => setTool(null))
-      : null;
-
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      void backHandle?.then(h => h.remove());
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, [tool]);
 
   function open(t: Tool) {
@@ -61,15 +43,10 @@ export default function FloatingTools() {
 
   return (
     <>
-      {/* Stacked FABs in the bottom-right. Sit a fixed gap ABOVE the primary
-          AddFab so the Add-Transaction button stays the most prominent action.
-          Must share AddFab's safe-area-inset baseline (AddFab bottom = inset+80,
-          height 56) so the two never collide on devices with a nav-bar inset:
-          inset + 80 + 56 + 16(gap) = inset + 152. */}
-      <div
-        className={`fixed right-4 z-40 flex flex-col gap-2.5 transition-all duration-300 ${hidden ? 'opacity-0 translate-y-3 pointer-events-none' : 'opacity-100 translate-y-0'}`}
-        style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 152px)' }}
-      >
+      {/* Stacked FABs in the bottom-right. Sit above the primary AddFab
+          (v7.4.4) so the Add-Transaction button stays the most prominent
+          action; offset above MobileBar (~56px) on small screens. */}
+      <div className="fixed right-4 bottom-[160px] lg:bottom-[160px] z-40 flex flex-col gap-2.5">
         <Fab
           label="Ask Vyact"
           tone="denim"
@@ -134,16 +111,11 @@ function Drawer({ title, onClose, children }: DrawerProps) {
       style={{ background: 'hsl(var(--shadow) / 0.45)', backdropFilter: 'blur(2px)' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div
-        className="bg-bg2 border-l border-line2 h-full w-full sm:w-[min(28rem,100vw)] flex flex-col shadow-3 animate-slideInRight"
-        // Inset so the close button clears the Android status bar (was untappable
-        // under it on a full-width mobile drawer) and content clears the nav bar.
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
-      >
+      <div className="bg-bg2 border-l border-line2 h-full w-full sm:w-[min(28rem,100vw)] flex flex-col shadow-3 animate-slideInRight">
         <div className="flex items-center justify-between px-4 py-3 border-b border-line">
           <h3 className="display-italic text-[1.2rem] leading-none text-ink">{title}</h3>
-          <button onClick={onClose} className="text-ink-dim hover:text-ink transition-colors p-2 -mr-1" aria-label="Close">
-            <X size={20} />
+          <button onClick={onClose} className="text-ink-dim hover:text-ink transition-colors p-1" aria-label="Close">
+            <X size={18} />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
