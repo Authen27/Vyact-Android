@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v9.7.1`** (consumer)
+> **Current production version: `v9.8.2`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -24,6 +24,84 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v9.8.2 — Danger Zone mobile fix, real "last updated" dates, working support contact *(2026-07-01)*
+
+Three follow-up fixes on top of v9.8.1:
+
+- **Mobile overflow fix** — the "Delete immediately instead" link next to "Schedule deletion
+  (30-day undo)" in Settings → Danger Zone forced its row wider than the card on narrow viewports,
+  pushing it outside the container. The button row now wraps (`flex-wrap`) instead of forcing a
+  single line.
+- **"Draft scaffold" labels removed** — Settings → Legal & Policies previously showed a static
+  "Draft scaffold" tag under all three legal doc links, left over from before they were rewritten
+  in v9.7.x/v9.8.0. Each card now shows a real "Last updated {date}" sourced from
+  `Privacy.tsx`'s exported `POLICY_VERSION`, so the three surfaces (the doc pages themselves, this
+  card, and any future version bump) can't drift out of sync.
+- **Contact support was a dead end — now it isn't.** All three legal docs referenced "Help →
+  Contact", but Help had no such section; there was no way to actually reach support from a legal
+  page. Added a real "Contact support" panel to `Help.tsx` (anchor `#contact`) with a subject/
+  message form that opens a pre-filled `mailto:` to a temporary support inbox
+  (`uday.kr27@gmail.com` — flagged as temporary, to be replaced by proper ticketing as volume
+  grows), and updated the Privacy/Terms/Cookies Contact sections to link directly to a working
+  `mailto:` (so it works even for signed-out visitors reading the docs from an external link) in
+  addition to the in-app form for signed-in users.
+
+## v9.8.1 — Real Privacy Policy/Terms/Cookies + data erasure, deactivation, and account deletion *(2026-07-01)*
+
+The Privacy Policy, Terms of Service, and Cookie Policy were "draft scaffold" placeholders with no
+enforced acceptance. This release replaces all three with detailed, consistent legal content
+(IP-rights and consumer-PII terms) and makes acceptance a real, recorded event at sign-up, plus
+ships the data-control rights the new policies promise:
+
+- **Privacy Policy** (`Privacy.tsx`) — collection/use/sharing/legal-basis sections, explicit
+  Section 7 defining exactly what "erase", "deactivate", and "delete" do, and Section 8 covering
+  reactivation.
+- **Terms of Service** (`Terms.tsx`) — added a full Intellectual Property section (Vyact's IP,
+  license grant, restrictions, ownership of *your* content with a narrow processing license,
+  feedback license), acceptable use, no-advice, billing, termination, and liability sections.
+- **Cookie Policy** (`Cookies.tsx`) — a real storage-category table (necessary / preferences /
+  functional / analytics) with retention and opt-out guidance.
+- **Sign-up consent** — a required "I agree to the Terms / Privacy / Cookie Policy" checkbox now
+  gates both the email form and Google OAuth sign-up. Acceptance is recorded as
+  `profiles.tos_accepted_at` / `privacy_accepted_at` (+ version) at the moment the account is
+  created — not just a UI checkbox with no backend record (`lib/auth.ts` `acceptPolicies`,
+  wired through `SignUp.tsx` and, for the OAuth-redirect / email-verification-pending paths, a
+  `pending_policy_accept` flag consumed by `AuthGate` on session hydration).
+- **Erase all household data** (Settings → Danger Zone) — `erase_household_data(h_id)` RPC
+  (owner/admin-gated, `security definer`) permanently deletes every transaction, budget, debt,
+  asset, account, goal, recurring schedule, and saved view for a household, and clears its
+  onboarding baseline — while the household shell and memberships (and your login) survive.
+  Requires typing `ERASE` to confirm; irreversible.
+- **Deactivate account (temporary)** — `deactivate_my_account()` RPC sets `profiles.deactivated_at`
+  and signs the user out immediately. No data is touched. The account self-reactivates the next
+  time the user successfully signs in — `AuthGate` calls `reactivateIfNeeded()` on every session
+  hydration, which clears the hold and surfaces a "Welcome back" toast automatically.
+- **Delete account (permanent)** — `request_account_deletion()` RPC schedules deletion 30 days out
+  (`deletion_scheduled_for`) and immediately places the same hold as deactivation, so signing back
+  in during the window cancels the deletion via the identical reactivation path. The actual hard
+  delete (all owned households' data + the `auth.users` row) is performed by a new service-role
+  edge function, **`supabase/functions/delete-account`**, since dropping an `auth.users` row is not
+  possible from an RLS-scoped client connection. An "delete immediately" escape hatch
+  (`executeAccountDeletion(true)`) skips the grace window for users who explicitly ask to.
+- **DB migration**: `supabase/migrations/20260701120000_v98_privacy_deletion_controls.sql` — adds
+  `profiles.tos_accepted_at/tos_version/privacy_accepted_at/privacy_version/deactivated_at/
+  deletion_requested_at/deletion_scheduled_for`, plus the four RPCs above. **Applied to the live
+  Supabase project** (`vyact`, `dmxqkvploojokffuhxnz`) — confirmed via `get_advisors` with no new
+  lint findings.
+- **`delete-account` edge function deployed** to the live Supabase project (JWT-verified,
+  service-role) — `executeAccountDeletion()` has a working backend, not just client code.
+- **Legal docs made truly public** — `/privacy`, `/terms`, `/cookies` added to `AuthGate`'s
+  `PUBLIC_ROUTES` (sign-up/login is not a gate to read them) and, in `App.tsx`, now render
+  **before** the authenticated `AppShell` loading gate. Previously a signed-out visitor or crawler
+  hitting these URLs in cloud mode would see an indefinite "Loading…" spinner (`loading` only
+  resolves once `init()` runs, which never happens without a session) — they're now rendered
+  standalone, immediately, without the app chrome.
+- **Email-code re-authentication before every Danger Zone action** — erase / deactivate / request-
+  deletion / delete-immediately now all require entering a one-time 6-digit code sent to the
+  account's own email (`lib/auth.ts` `sendAccountActionCode` / `verifyAccountActionCode`, built on
+  Supabase's native email-OTP `signInWithOtp` + `verifyOtp`) before the action executes — a merely
+  signed-in/idle browser session is no longer sufficient to trigger an irreversible action.
 
 ## v9.7.1 — Hide the FABs during onboarding *(2026-06-23)*
 

@@ -1,7 +1,7 @@
 {
   "name": "vyact-react",
   "private": true,
-  "version": "9.7.1",
+  "version": "9.8.2",
   "type": "module",
   "description": "Vyact — Family Finance OS · React + TypeScript + Recharts",
   "scripts": {

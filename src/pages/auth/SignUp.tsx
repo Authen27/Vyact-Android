@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { UserPlus, Mail } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { Input, Field } from '../../components/ui/Input';
-import { signUp, signIn } from '../../lib/auth';
+import { signUp, signIn, acceptPolicies } from '../../lib/auth';
 import GoogleButton from '../../components/auth/GoogleButton';
 import { AuthShell } from './SignIn';
 import { useStore } from '../../store';
@@ -19,6 +19,7 @@ export default function SignUp() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [agreed, setAgreed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [verificationPending, setVerificationPending] = useState(false);
@@ -29,13 +30,18 @@ export default function SignUp() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
+    if (!agreed) { setError('Please accept the Terms of Service and Privacy Policy to continue'); return; }
     setError(''); setSubmitting(true);
     const next = params.get('next');
+    // Consumed by AuthGate on next session hydration — covers the email-verification-pending
+    // path where signIn() below can throw before we get a chance to record acceptance here.
+    sessionStorage.setItem('pending_policy_accept', '1');
     try {
       const result = await signUp({ email, password, displayName: name });
 
       // Path A — auto-confirm enabled (preferred): session is returned, log straight in.
-      if (result.session) {
+      if (result.session && result.user) {
+        await acceptPolicies(result.user.id).catch(() => {});
         toast(`Welcome, ${name}!`, 'success');
         navigate(getPostAuthPath(next));
         return;
@@ -46,6 +52,7 @@ export default function SignUp() {
       // doesn't have to wait for a verification email that may never arrive.
       try {
         await signIn(email, password);
+        if (result.user) await acceptPolicies(result.user.id).catch(() => {});
         toast(`Welcome, ${name}! Your email is pending verification — check Settings to resend.`, 'success');
         navigate(getPostAuthPath(next));
         return;
@@ -87,8 +94,17 @@ export default function SignUp() {
   return (
     <AuthShell title="Create your account">
 
+      <label className="flex items-start gap-2 text-[0.82rem] text-ink-mid select-none cursor-pointer mb-4">
+        <input type="checkbox" className="mt-0.5" checked={agreed} onChange={e => setAgreed(e.target.checked)} />
+        <span>
+          I agree to the <Link to="/terms" target="_blank" className="text-coral hover:underline">Terms of Service</Link>,{' '}
+          <Link to="/privacy" target="_blank" className="text-coral hover:underline">Privacy Policy</Link>, and{' '}
+          <Link to="/cookies" target="_blank" className="text-coral hover:underline">Cookie Policy</Link>.
+        </span>
+      </label>
+
       {/* Primary CTA — Google SSO */}
-      <GoogleButton />
+      <GoogleButton requireAgreement agreed={agreed} />
 
       <div className="my-4 flex items-center gap-3">
         <div className="flex-1 h-px bg-line" />
@@ -108,7 +124,7 @@ export default function SignUp() {
           <Input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••" minLength={8} />
         </Field>
         {error && <div className="text-terra text-[0.84rem] mb-3">{error}</div>}
-        <Button full type="submit" disabled={submitting}>
+        <Button full type="submit" disabled={submitting || !agreed}>
           {submitting ? 'Creating account…' : <><UserPlus size={14} /> Sign up</>}
         </Button>
       </form>

@@ -202,3 +202,94 @@ export async function unenrollMfaFactor(factorId: string) {
   if (error) throw error;
   return data;
 }
+
+// ── Consent + data-erasure + account lifecycle (v9.8.0) ────────────
+// Backs Settings → Danger Zone and the sign-up consent checkbox. See
+// supabase/migrations/20260701120000_v98_privacy_deletion_controls.sql
+// and supabase/functions/delete-account for the server-side half.
+export const POLICY_ACCEPTANCE_VERSION = '2026-07-01';
+
+/** Record ToS + Privacy acceptance against the caller's profile at sign-up. */
+export async function acceptPolicies(userId: string) {
+  const now = new Date().toISOString();
+  const { error } = await sb().from('profiles').update({
+    tos_accepted_at: now, tos_version: POLICY_ACCEPTANCE_VERSION,
+    privacy_accepted_at: now, privacy_version: POLICY_ACCEPTANCE_VERSION,
+  }).eq('id', userId);
+  if (error) throw error;
+}
+
+/** Permanently erase every financial row for a household; keeps the household + membership shell. */
+export async function eraseHouseholdData(householdId: string) {
+  const { error } = await sb().rpc('erase_household_data', { h_id: householdId });
+  if (error) throw error;
+}
+
+/** Temporary account hold. Signs the caller out immediately after. */
+export async function deactivateAccount() {
+  const { error } = await sb().rpc('deactivate_my_account');
+  if (error) throw error;
+}
+
+/** Clears any deactivation / pending-deletion hold. Called automatically on sign-in. */
+export async function reactivateAccount() {
+  const { error } = await sb().rpc('reactivate_my_account');
+  if (error) throw error;
+}
+
+/** Schedules permanent deletion with a 30-day undo window; puts the account on hold immediately. */
+export async function requestAccountDeletion(): Promise<string> {
+  const { data, error } = await sb().rpc('request_account_deletion');
+  if (error) throw error;
+  return data as string;
+}
+
+/**
+ * Checks whether the signed-in user has a deactivation or pending-deletion
+ * hold and clears it (reactivation happens simply by successfully signing
+ * back in). Returns true if a hold was found and cleared, so the caller can
+ * surface a "welcome back" toast.
+ */
+export async function reactivateIfNeeded(): Promise<boolean> {
+  const { data: { user } } = await sb().auth.getUser();
+  if (!user) return false;
+  const { data: profile } = await sb().from('profiles')
+    .select('deactivated_at, deletion_requested_at').eq('id', user.id).maybeSingle();
+  if (!profile?.deactivated_at && !profile?.deletion_requested_at) return false;
+  await reactivateAccount();
+  return true;
+}
+
+/**
+ * Executes the permanent delete via the service-role edge function. Only
+ * succeeds once `requestAccountDeletion()` has run; pass `immediate: true`
+ * to skip the 30-day undo window (explicit "delete right now" confirmation).
+ */
+export async function executeAccountDeletion(immediate = false) {
+  const { data, error } = await sb().functions.invoke('delete-account', { body: { immediate } });
+  if (error) throw error;
+  return data as { deleted: boolean };
+}
+
+// ── Email-code re-authentication for irreversible account actions ──
+// Data erasure, deactivation, and deletion are gated on proving the caller
+// currently controls the account's inbox — a stolen/idle browser session
+// alone is not enough. Uses Supabase's built-in email-OTP (a 6-digit code,
+// not a magic link) rather than a bespoke table: signInWithOtp sends the
+// code, verifyOtp both checks it AND re-establishes a fresh session, so a
+// successful verify is proof-of-control at the moment of the dangerous action.
+export async function sendAccountActionCode(): Promise<string> {
+  const { data: { user } } = await sb().auth.getUser();
+  if (!user?.email) throw new Error('No email on this account');
+  const { error } = await sb().auth.signInWithOtp({
+    email: user.email,
+    options: { shouldCreateUser: false },
+  });
+  if (error) throw error;
+  return user.email;
+}
+
+export async function verifyAccountActionCode(email: string, code: string): Promise<void> {
+  const { error } = await sb().auth.verifyOtp({ email, token: code, type: 'email' });
+  if (error) throw new Error('Incorrect or expired code');
+}

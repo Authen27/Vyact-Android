@@ -1,5 +1,11 @@
 import { useState } from 'react';
+import { Mail } from 'lucide-react';
 import { useTranslation } from '../hooks';
+
+// Temporary support inbox — Section 14 of the Privacy Policy / 13 of the Terms
+// / 7 of the Cookie Policy all point here. Will move to a ticketing system as
+// the support volume grows past what a single inbox can triage.
+const SUPPORT_EMAIL = 'uday.kr27@gmail.com';
 
 interface Media { src: string; alt: string; }
 interface Section { q: string; a: string | JSX.Element; media?: Media; }
@@ -96,6 +102,15 @@ export default function Help() {
   const { t } = useTranslation();
   const [open, setOpen]   = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  const [ticketSubject, setTicketSubject] = useState('');
+  const [ticketMessage, setTicketMessage] = useState('');
+
+  function sendTicket(e: React.FormEvent) {
+    e.preventDefault();
+    const subject = encodeURIComponent(ticketSubject || 'Vyact support request');
+    const body = encodeURIComponent(ticketMessage);
+    window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+  }
 
   const filtered = query.trim()
     ? SECTIONS.filter(s => s.q.toLowerCase().includes(query.toLowerCase()) || (typeof s.a === 'string' && s.a.toLowerCase().includes(query.toLowerCase())))
@@ -110,6 +125,36 @@ export default function Help() {
             {SECTIONS.length} topics · with screenshots &amp; guides
           </p>
         </div>
+      </div>
+
+      {/* Contact / raise a support ticket */}
+      <div id="contact" className="bg-bg3 border border-line rounded-lg p-5 mb-5 scroll-mt-20">
+        <div className="flex items-center gap-2 mb-2">
+          <Mail size={16} className="text-coral" />
+          <h2 className="text-lg font-semibold text-ink">Contact support</h2>
+        </div>
+        <p className="text-[0.84rem] text-ink-mid mb-3">
+          Raise a support ticket, ask a question about your data, or flag a privacy/legal concern.
+          This currently routes to a monitored inbox (<strong className="text-ink">{SUPPORT_EMAIL}</strong>,
+          temporary — we'll add in-app ticketing and more channels as we grow).
+        </p>
+        <form onSubmit={sendTicket} className="space-y-3">
+          <input
+            className="input w-full"
+            value={ticketSubject}
+            onChange={e => setTicketSubject(e.target.value)}
+            placeholder="Subject (e.g. Account deletion question)"
+          />
+          <textarea
+            className="input w-full min-h-24"
+            value={ticketMessage}
+            onChange={e => setTicketMessage(e.target.value)}
+            placeholder="Describe what you need help with…"
+          />
+          <button type="submit" className="btn-primary">
+            <Mail size={14} /> Send via email
+          </button>
+        </form>
       </div>
 
       {/* Search */}

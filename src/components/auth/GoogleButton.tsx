@@ -7,14 +7,21 @@ import { signInOAuth } from '../../lib/auth';
 // VerifiedAuth completes the session and routes to /dashboard. The Supabase
 // Google provider + client ID/secret + redirect allowlist are configured in the
 // Supabase dashboard (the secret lives only there, never in this repo).
-export default function GoogleButton() {
+export default function GoogleButton({ requireAgreement = false, agreed = true }: { requireAgreement?: boolean; agreed?: boolean } = {}) {
   const [busy, setBusy] = useState(false);
   const [oauthError, setOauthError] = useState('');
 
   async function go() {
+    if (requireAgreement && !agreed) {
+      setOauthError('Please accept the Terms of Service and Privacy Policy to continue');
+      return;
+    }
     setBusy(true);
     setOauthError('');
     try {
+      // Consumed by AuthGate on session hydration to record ToS/Privacy acceptance —
+      // OAuth redirects away from this page, so we can't write it here directly.
+      if (requireAgreement) sessionStorage.setItem('pending_policy_accept', '1');
       await signInOAuth('google');   // redirects away on success
       // If we reach here the redirect didn't fire — treat as an error.
       setBusy(false);

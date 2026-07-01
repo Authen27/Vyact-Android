@@ -1,0 +1,4 @@
+{
+  "versionName": "0.2",
+  "_note": "The Android app has its OWN version line, independent of the React app (react/package.json). Bump versionName here for each Play release (0.2 -> 0.3 ...). The tracked upstream React version is recorded separately in .upstream-sync.json. versionCode is set automatically by CI (run number) and must only ever increase."
+}

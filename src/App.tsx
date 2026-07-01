@@ -176,6 +176,25 @@ function AppShell() {
     );
   }
 
+  // Legal docs (rendered without Layout, and BEFORE the `loading` gate below) —
+  // an anonymous visitor or crawler hitting these must see content immediately,
+  // not an indefinite "Loading…" spinner (cloud-mode `loading` only resolves
+  // once init() runs, which never happens for a signed-out session).
+  const isLegalRoute = ['/privacy', '/terms', '/cookies'].some(p => location.pathname.startsWith(p));
+  if (isLegalRoute) {
+    return (
+      <div className="max-w-3xl mx-auto px-4 py-8">
+        <Suspense fallback={<LoadingFallback />}>
+          <Routes>
+            <Route path="/privacy" element={<Privacy />} />
+            <Route path="/terms"   element={<Terms />} />
+            <Route path="/cookies" element={<Cookies />} />
+          </Routes>
+        </Suspense>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">

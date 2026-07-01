@@ -1,14 +1,19 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { Download, FileText, Clipboard, ShieldAlert, Cloud } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Download, FileText, Clipboard, ShieldAlert, Cloud, Trash2, PauseCircle, XOctagon } from 'lucide-react';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, today } from '../lib/format';
 import { CURRENCIES, DEFAULT_RATES, LOCALES, PROFILE_TYPES } from '../constants';
 import { sb } from '../lib/supabase';
-import { enrollMfaTotp, verifyMfaEnrolment, listMfaFactors, unenrollMfaFactor, updatePassword } from '../lib/auth';
+import {
+  enrollMfaTotp, verifyMfaEnrolment, listMfaFactors, unenrollMfaFactor, updatePassword,
+  eraseHouseholdData, deactivateAccount, requestAccountDeletion, executeAccountDeletion, signOut,
+  sendAccountActionCode, verifyAccountActionCode,
+} from '../lib/auth';
 import WhatsAppLink from '../components/settings/WhatsAppLink';
+import { POLICY_VERSION } from './Privacy';
 import type { Profile, Theme } from '../types';
 import type { Factor } from '@supabase/supabase-js';
 
@@ -24,13 +29,23 @@ const DATE_FORMATS: { key: Profile['dateFormat']; label: string; example: string
   { key: 'iso', label: 'ISO',      example: '2026-05-09' },
 ];
 
+// POLICY_VERSION is an ISO date string ('2026-07-01') — render it human-readable
+// instead of the internal versioning format.
+function formatPolicyDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
 export default function Settings() {
   const { t } = useTranslation();
+  const navigate    = useNavigate();
   const profile     = useStore(s => s.profile);
   const rates       = useStore(s => s.rates);
   const theme       = useStore(s => s.theme);
   const cloudEnabled = useStore(s => s.cloudEnabled);
   const session      = useStore(s => s.session);
+  const currentHouseholdId = useStore(s => s.currentHouseholdId);
   const transactions = useStore(s => s.transactions);
   const budgets     = useStore(s => s.budgets);
   const goals       = useStore(s => s.goals);
@@ -42,6 +57,100 @@ export default function Settings() {
   const resetRates  = useStore(s => s.resetRates);
   const setTheme    = useStore(s => s.setTheme);
   const toast       = useStore(s => s.toast);
+
+  // Danger Zone (v9.8.0) — erase / deactivate / delete
+  const [erasing, setErasing] = useState(false);
+  const [deactivating, setDeactivating] = useState(false);
+  const [deletePending, setDeletePending] = useState<string | null>(null); // ISO date once requested
+  const [deleting, setDeleting] = useState(false);
+
+  // Sends a 6-digit code to the account's own email and blocks until the
+  // user enters it correctly. Every irreversible Danger Zone action must
+  // pass this before it runs — a warm/idle browser session alone is not
+  // sufficient proof the request is really coming from the account holder.
+  async function confirmWithEmailCode(actionLabel: string): Promise<boolean> {
+    let email: string;
+    try {
+      email = await sendAccountActionCode();
+    } catch (e) {
+      toast(`Could not send verification code: ${(e as Error).message}`, 'error');
+      return false;
+    }
+    toast(`Verification code sent to ${email}`, 'info');
+    const code = window.prompt(`Enter the 6-digit code sent to ${email} to confirm: ${actionLabel}`);
+    if (!code) return false;
+    try {
+      await verifyAccountActionCode(email, code.trim());
+      return true;
+    } catch (e) {
+      toast((e as Error).message, 'error');
+      return false;
+    }
+  }
+
+  async function onEraseHouseholdData() {
+    if (!cloudEnabled || !session) { toast('Erase requires cloud mode', 'error'); return; }
+    if (!window.confirm(
+      'This permanently deletes every transaction, budget, debt, asset, account, goal, and recurring schedule in this household. Your login and household stay intact. This cannot be undone.\n\nContinue?'
+    )) return;
+    setErasing(true);
+    try {
+      if (!(await confirmWithEmailCode('erase all household data'))) return;
+      await eraseHouseholdData(currentHouseholdId);
+      toast('Household data erased', 'success');
+      window.location.reload();
+    } catch (e) {
+      toast(`Erase failed: ${(e as Error).message}`, 'error');
+    } finally { setErasing(false); }
+  }
+
+  async function onDeactivate() {
+    if (!cloudEnabled || !session) { toast('Deactivation requires cloud mode', 'error'); return; }
+    if (!window.confirm('Deactivate your account? You will be signed out immediately. Your data is kept exactly as-is and restored the moment you sign back in.')) return;
+    setDeactivating(true);
+    try {
+      if (!(await confirmWithEmailCode('deactivate your account'))) return;
+      await deactivateAccount();
+      await signOut();
+      toast('Account deactivated — sign in anytime to reactivate', 'info');
+      navigate('/auth/sign-in');
+    } catch (e) {
+      toast(`Could not deactivate: ${(e as Error).message}`, 'error');
+    } finally { setDeactivating(false); }
+  }
+
+  async function onRequestDeletion() {
+    if (!cloudEnabled || !session) { toast('Account deletion requires cloud mode', 'error'); return; }
+    if (!window.confirm(
+      'This schedules PERMANENT deletion of your account and every household you own, in 30 days. You will be signed out now; signing back in within 30 days cancels the deletion. After 30 days this cannot be undone.\n\nContinue?'
+    )) return;
+    setDeleting(true);
+    try {
+      if (!(await confirmWithEmailCode('schedule permanent account deletion'))) return;
+      const scheduledFor = await requestAccountDeletion();
+      setDeletePending(scheduledFor);
+      await signOut();
+      toast(`Deletion scheduled for ${new Date(scheduledFor).toLocaleDateString()} — sign back in any time before then to cancel`, 'info');
+      navigate('/auth/sign-in');
+    } catch (e) {
+      toast(`Could not schedule deletion: ${(e as Error).message}`, 'error');
+    } finally { setDeleting(false); }
+  }
+
+  async function onDeleteImmediately() {
+    if (!cloudEnabled || !session) return;
+    if (!window.confirm('This immediately and irreversibly deletes your account and all data you own, skipping the 30-day undo window.\n\nContinue?')) return;
+    setDeleting(true);
+    try {
+      if (!(await confirmWithEmailCode('delete your account immediately, skipping the undo window'))) return;
+      await requestAccountDeletion();
+      await executeAccountDeletion(true);
+      toast('Account permanently deleted', 'info');
+      navigate('/auth/sign-in');
+    } catch (e) {
+      toast(`Could not delete account: ${(e as Error).message}`, 'error');
+    } finally { setDeleting(false); }
+  }
 
   const [name, setName]       = useState(profile.name);
   const [email, setEmail]     = useState(profile.email);
@@ -548,19 +657,89 @@ export default function Settings() {
           </div>
         </Panel>
 
+        {/* ── Danger Zone ──────────────────────────────────── */}
+        <Panel title="Danger Zone">
+          <div className="p-5 space-y-4">
+            {!cloudEnabled || !session ? (
+              <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
+                Data erasure and account controls require cloud mode. Sign in with a cloud account to manage them here.
+              </div>
+            ) : (
+              <>
+                <p className="text-[0.76rem] text-ink-dim -mt-1">
+                  Every action below requires a verification code sent to your account email before it takes effect.
+                </p>
+
+                {deletePending && (
+                  <div className="flex items-start gap-2.5 rounded-md border border-terra/40 bg-terra/10 px-4 py-3 text-[0.82rem] leading-relaxed text-ink">
+                    <XOctagon size={16} className="text-terra flex-shrink-0 mt-0.5" />
+                    <span>Account deletion is scheduled for {new Date(deletePending).toLocaleDateString()}. Sign back in before then to cancel.</span>
+                  </div>
+                )}
+
+                <div className="border border-line rounded-md p-4">
+                  <div className="flex items-start gap-3">
+                    <Trash2 size={18} className="text-honey flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-ink">Erase all household data</div>
+                      <div className="text-[0.82rem] text-ink-mid mt-0.5">Permanently deletes every transaction, budget, debt, asset, account, goal, and recurring schedule for this household. Your login and household stay intact — data is wiped, not archived. Export a backup first if you want a copy.</div>
+                    </div>
+                    <button className="btn-secondary text-xs whitespace-nowrap" onClick={onEraseHouseholdData} disabled={erasing}>
+                      {erasing ? 'Erasing…' : 'Erase data'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="border border-line rounded-md p-4">
+                  <div className="flex items-start gap-3">
+                    <PauseCircle size={18} className="text-ink-dim flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-ink">Deactivate account (temporary)</div>
+                      <div className="text-[0.82rem] text-ink-mid mt-0.5">Signs you out and places a hold on your account. Nothing is deleted — all data is kept exactly as-is and restored automatically the moment you sign back in.</div>
+                    </div>
+                    <button className="btn-secondary text-xs whitespace-nowrap" onClick={onDeactivate} disabled={deactivating}>
+                      {deactivating ? 'Deactivating…' : 'Deactivate'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="border border-terra/40 rounded-md p-4 bg-terra/5">
+                  <div className="flex items-start gap-3">
+                    <XOctagon size={18} className="text-terra flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-ink">Delete account (permanent)</div>
+                      <div className="text-[0.82rem] text-ink-mid mt-0.5">
+                        Schedules permanent deletion of your account and every household you own, with a <strong>30-day undo window</strong> — sign back in any time before then to cancel automatically. After 30 days, your profile, owned households, and login are erased for good and cannot be recovered.
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 mt-3">
+                        <button className="btn-secondary text-xs whitespace-nowrap" onClick={onRequestDeletion} disabled={deleting}>
+                          {deleting ? 'Working…' : 'Schedule deletion (30-day undo)'}
+                        </button>
+                        <button className="text-xs text-terra hover:underline whitespace-nowrap" onClick={onDeleteImmediately} disabled={deleting}>
+                          Delete immediately instead
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </Panel>
+
         <Panel title="Legal & Policies">
           <div className="p-5 grid sm:grid-cols-3 gap-3">
             <Link to="/privacy" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
               <div className="text-sm font-semibold text-ink mb-1">Privacy Policy</div>
-              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Draft scaffold</div>
+              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
             </Link>
             <Link to="/terms" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
               <div className="text-sm font-semibold text-ink mb-1">Terms of Service</div>
-              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Draft scaffold</div>
+              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
             </Link>
             <Link to="/cookies" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
               <div className="text-sm font-semibold text-ink mb-1">Cookie Policy</div>
-              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Draft scaffold</div>
+              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
             </Link>
           </div>
         </Panel>

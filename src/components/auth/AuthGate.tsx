@@ -9,8 +9,14 @@ import { type ReactNode, useEffect } from 'react';
 import { useLocation, Navigate } from 'react-router-dom';
 import { useStore } from '../../store';
 import { isCloudEnabled, supabase } from '../../lib/supabase';
+import { reactivateIfNeeded, acceptPolicies } from '../../lib/auth';
 
-const PUBLIC_ROUTES = ['/auth/sign-in', '/auth/sign-up', '/auth/reset', '/auth/reset-password', '/auth/verified'];
+const PUBLIC_ROUTES = [
+  '/auth/sign-in', '/auth/sign-up', '/auth/reset', '/auth/reset-password', '/auth/verified',
+  // Legal docs must be reviewable without an account — sign-up/login is not a
+  // prerequisite to read them, and they need to be crawlable for trust/compliance.
+  '/privacy', '/terms', '/cookies',
+];
 // Routes that must remain reachable even when a session exists. The password
 // recovery link logs the user in (PASSWORD_RECOVERY event) before they've set
 // a new password — bouncing them to /dashboard would abandon the flow.
@@ -21,6 +27,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const sessionLoaded = useStore(s => s.sessionLoaded);
   const setSession = useStore(s => s.setSession);
   const init = useStore(s => s.init);
+  const toast = useStore(s => s.toast);
   const location = useLocation();
 
   useEffect(() => {
@@ -39,6 +46,22 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     });
     return () => sub.subscription.unsubscribe();
   }, [init, setSession]);
+
+  // On every successful sign-in, clear any deactivation / pending-deletion
+  // hold (Settings → Danger Zone) and record first-time ToS/Privacy consent
+  // for flows that couldn't write it directly (OAuth redirect, email
+  // verification pending) — see lib/auth.ts reactivateIfNeeded/acceptPolicies.
+  useEffect(() => {
+    if (!isCloudEnabled() || !session?.user) return;
+    (async () => {
+      if (sessionStorage.getItem('pending_policy_accept')) {
+        await acceptPolicies(session.user.id).catch(() => {});
+        sessionStorage.removeItem('pending_policy_accept');
+      }
+      const reactivated = await reactivateIfNeeded().catch(() => false);
+      if (reactivated) toast('Welcome back — your account has been reactivated.', 'success');
+    })();
+  }, [session?.user?.id]);
 
   // Cloud disabled → bypass auth entirely
   if (!isCloudEnabled()) return <>{children}</>;
