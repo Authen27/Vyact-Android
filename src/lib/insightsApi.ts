@@ -15,6 +15,8 @@ export interface InsightArticle {
   readMinutes: number;
   coverEmoji: string;
   publishedAt: string;
+  videoUrl: string | null;
+  infographicUrl: string | null;
 }
 
 interface ContentRow {
@@ -29,6 +31,8 @@ interface ContentRow {
   read_minutes: number;
   cover_emoji: string | null;
   published_at: string | null;
+  video_url: string | null;
+  infographic_url: string | null;
 }
 
 function rowToArticle(r: ContentRow): InsightArticle {
@@ -43,6 +47,8 @@ function rowToArticle(r: ContentRow): InsightArticle {
     readMinutes: r.read_minutes,
     coverEmoji: r.cover_emoji ?? '📰',
     publishedAt: r.published_at ?? '',
+    videoUrl: r.video_url,
+    infographicUrl: r.infographic_url,
   };
 }
 
@@ -52,7 +58,7 @@ export async function listPublishedContent(): Promise<InsightArticle[]> {
   // here and surface only editorial 'article' + curated 'external' items.
   const { data, error } = await sb()
     .from('content_items')
-    .select('id,slug,title,summary,body,topic,status,author_name,read_minutes,cover_emoji,published_at')
+    .select('id,slug,title,summary,body,topic,status,author_name,read_minutes,cover_emoji,published_at,video_url,infographic_url')
     .eq('status', 'published')
     .in('format', ['article', 'external'])
     .order('published_at', { ascending: false });

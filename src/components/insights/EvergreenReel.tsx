@@ -1,31 +1,27 @@
-// Vyact — Learn "shorts" reel (Insights Hub v9.5.5).
-// The evergreen library as a finite, vertically-scrollable reel: one lesson per
-// full-screen panel (visual + title + teaser), with Save + Share on every short
-// and a tap to read the full lesson. Mirrors the For You reel's mechanics.
+// Vyact — the Learn tab's universal card viewer (v9.9.2).
+// Every card opens here — a finite, vertically-swipeable, full-screen reel.
+// Each slide is a flip card (FlippableCardDetail): front = infographic (fully
+// visible, not cropped) or the code-visual fallback; back = video or text,
+// chosen via two minimal controls. Share/Save live on the grid tile, not here.
 import { useEffect, useRef, useState } from 'react';
-import { X, Share2, Heart, BookOpen, ChevronUp } from 'lucide-react';
+import { X, ChevronUp } from 'lucide-react';
 import CardVisual from './CardVisual';
-import EvergreenReader from './EvergreenReader';
+import FlippableCardDetail from './FlippableCardDetail';
 import { readingChip, type EvergreenCard } from '../../lib/evergreen';
-import { shareEvergreen } from '../../lib/share';
 
 interface Props {
   cards: EvergreenCard[];
   startIndex?: number;
   onClose: () => void;
-  favorites: Set<string>;
-  onToggleFav: (id: string) => void;
 }
 
-function teaser(body: string): string {
-  const first = body.split(/\n\n+/)[0] || body;
-  return first.length > 240 ? first.slice(0, 237).trimEnd() + '…' : first;
+function paragraphs(body: string): string[] {
+  return body.split(/\n\n+/);
 }
 
-export default function EvergreenReel({ cards, startIndex = 0, onClose, favorites, onToggleFav }: Props) {
+export default function EvergreenReel({ cards, startIndex = 0, onClose }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(startIndex);
-  const [reading, setReading] = useState<EvergreenCard | null>(null);
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -40,7 +36,6 @@ export default function EvergreenReel({ cards, startIndex = 0, onClose, favorite
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (reading) return; // reader owns Esc while open
       if (e.key === 'Escape') { onClose(); return; }
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -50,47 +45,46 @@ export default function EvergreenReel({ cards, startIndex = 0, onClose, favorite
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [active, onClose, reading]);
+  }, [active, onClose]);
 
   function onScroll() {
     const el = scroller.current;
     if (el) setActive(Math.round(el.scrollTop / el.clientHeight));
   }
 
-  const total = cards.length + 1;
-
   return (
-    <div className="fixed inset-0 z-[190] bg-bg" role="dialog" aria-label="Learn shorts" aria-modal="true">
-      <button onClick={onClose} aria-label="Close shorts"
+    <div className="fixed inset-0 z-[190] bg-bg" role="dialog" aria-label="Learn" aria-modal="true">
+      <button onClick={onClose} aria-label="Close"
         className="absolute top-4 right-4 z-20 w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 text-ink flex items-center justify-center backdrop-blur-sm">
         <X size={20} />
       </button>
-      <div className="absolute top-5 left-4 z-20 flex flex-col gap-1.5">
-        {Array.from({ length: total }).map((_, i) => (
-          <span key={i} className={`w-1 rounded-full transition-all ${i === active ? 'h-5 bg-coral' : 'h-2 bg-ink/20'}`} />
-        ))}
+      {/* Position counter — a compact pill, not one dot per card: with 116
+          lessons a dot column overflows the viewport and collides with the
+          flip-back control at the top-left of each card (v9.9.3). */}
+      <div className="absolute top-5 inset-x-0 z-20 flex justify-center pointer-events-none">
+        <span className="num font-mono text-[0.62rem] tracking-widest px-2.5 py-1 rounded-full bg-ink/10 text-ink backdrop-blur-sm">
+          {Math.min(active + 1, cards.length)} / {cards.length}
+        </span>
       </div>
 
       <div ref={scroller} onScroll={onScroll}
         className="h-full overflow-y-auto snap-y snap-mandatory scroll-smooth" style={{ scrollbarWidth: 'none' }}>
         {cards.map((c, i) => (
-          <section key={c.id} className="h-full w-full snap-start flex flex-col items-center justify-center px-7 text-center bg-gradient-to-b from-coral/10 via-bg to-bg">
-            <CardVisual card={c} className="h-40 w-full max-w-sm mb-5" />
-            <span className="font-mono text-[0.58rem] tracking-wider uppercase text-ink-dim">{c.category} · {readingChip(c.reading_seconds)}</span>
-            <h2 className="display-italic text-[2rem] leading-tight text-ink max-w-md mt-1">{c.title}</h2>
-            <p className="text-[0.95rem] text-ink-mid mt-3 max-w-sm leading-relaxed">{teaser(c.body_md)}</p>
-
-            <div className="flex items-center gap-2.5 mt-6">
-              <button onClick={() => setReading(c)} className="btn-primary inline-flex items-center gap-1.5"><BookOpen size={15} /> Read</button>
-              <button onClick={() => shareEvergreen(c.id, c.title)} aria-label="Share" className="w-11 h-11 rounded-full border border-line bg-bg2 text-ink-mid hover:text-coral hover:border-coral/40 flex items-center justify-center"><Share2 size={17} /></button>
-              <button onClick={() => onToggleFav(c.id)} aria-label={favorites.has(c.id) ? 'Unsave' : 'Save'}
-                className={`w-11 h-11 rounded-full border flex items-center justify-center transition-colors ${favorites.has(c.id) ? 'text-coral bg-coral-tint border-coral/40' : 'border-line bg-bg2 text-ink-mid hover:text-coral hover:border-coral/40'}`}>
-                <Heart size={17} className={favorites.has(c.id) ? 'fill-current' : ''} />
-              </button>
-            </div>
+          <section key={c.id} className="h-full w-full snap-start relative overflow-hidden">
+            <FlippableCardDetail
+              infographicUrl={c.infographic_url}
+              fallbackVisual={<CardVisual card={c} className="h-40 w-full max-w-sm mb-2" />}
+              title={c.title}
+              meta={`${c.category} · ${readingChip(c.reading_seconds)}`}
+              teaser={paragraphs(c.body_md)[0]}
+              videoUrl={c.video_url}
+              articleBody={paragraphs(c.body_md).map((p, pi) => (
+                <p key={pi} className="text-[0.92rem] text-ink leading-relaxed mb-3">{p}</p>
+              ))}
+            />
 
             {i === 0 && cards.length > 1 && (
-              <div className="absolute bottom-7 flex flex-col items-center text-ink-dim animate-bounce">
+              <div className={`absolute inset-x-0 flex flex-col items-center animate-bounce pointer-events-none ${c.infographic_url ? 'top-5 text-white/80' : 'bottom-7 text-ink-dim'}`}>
                 <ChevronUp size={18} className="rotate-180" />
                 <span className="font-mono text-[0.56rem] tracking-widest uppercase">Swipe up</span>
               </div>
@@ -105,10 +99,6 @@ export default function EvergreenReel({ cards, startIndex = 0, onClose, favorite
           <button onClick={onClose} className="btn-secondary">Done</button>
         </section>
       </div>
-
-      {reading && (
-        <EvergreenReader card={reading} isFav={favorites.has(reading.id)} onToggleFav={() => onToggleFav(reading.id)} onClose={() => setReading(null)} />
-      )}
     </div>
   );
 }

@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v9.8.2`** (consumer)
+> **Current production version: `v9.9.3`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -24,6 +24,104 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v9.9.3 — Browser-verified fixes: blank-app on widget failure, reel counter, button contrast *(2026-07-04)*
+
+Full in-browser verification of the v9.9.2 flip-card flow (mobile viewport, real click-through
+of every interaction) surfaced three real defects, fixed here:
+
+- **CRITICAL: the app rendered a permanently blank screen if the Userback feedback widget
+  failed to load.** `main.tsx` gated `createRoot().render()` behind a top-level
+  `await Userback(...)` — any widget failure (adblocker, corporate proxy, unauthorized domain,
+  vendor outage) rejected the module and React never mounted. The widget is now fire-and-forget
+  with a swallow-on-error: the app always renders; feedback is best-effort.
+- **Reel progress indicator overflowed the screen.** The per-card dot column drew 117 dots
+  (one per lesson + end slide) — taller than any phone viewport, colliding with the flip-back
+  control. Replaced with a compact centered `n / 116` counter pill in both reels.
+- **"Text" button was nearly invisible on light backdrops.** Its white-ghost styling assumed a
+  dark photo behind it, but `object-contain` letterboxing puts theme-cream behind the controls.
+  Now a solid `btn-secondary` surface, readable over any infographic or letterbox.
+
+Verified in-browser this release: full-screen reel (375×812), un-cropped `object-contain`
+infographic, title scrim fade-in on tap + 4s auto-hide, flip settling at 180° in ~400ms with
+zero overshoot (sampled frame-by-frame), video autoplay on flip and full unmount on flip-back
+(no ghost audio), text face, no-media fallback face, swipe-to-next, and both FABs absent
+under `/insights`.
+
+## v9.9.2 — Flip-card detail view: fixes cropping, redundant blocks, and distracting FABs *(2026-07-04)*
+
+User-tested v9.9.1 against real screenshots and flagged concrete defects, all fixed here:
+
+- **Infographic was cropped, unreadable.** The image used `object-cover` (crop-to-fill) on a
+  portrait image taller than the viewport. Switched to `object-contain` — the full image is
+  always visible now, letterboxed rather than cut off.
+- **Redundant blocks removed**: the inline click-to-play video placeholder in the text reader
+  (dead once you'd already reached text), the icon/stat/diagram graphic repeated at the top of
+  the text reader (redundant with the infographic already shown), and the separate Share/Save/
+  close controls duplicated in a second full modal — all gone.
+- **New interaction model — a flip card, not a stacked action bar.** New
+  `FlippableCardDetail.tsx` (shared by `EvergreenReel`/`ArticleReel`): front face is the
+  infographic (or the code-visual fallback) with a title + dark scrim that auto-hides after 4s
+  and reappears on tap; two minimal controls — **Play** and **Text** — flip the card (a real
+  3D `rotateY` transition, reusing the shared `spring` from `lib/motion.ts`) to a back face
+  showing the autoplaying video or the article body; a rotate/back control flips back to the
+  front. Share/Save intentionally stay on the grid tile only, not duplicated in the detail view.
+- **Retired**: `EvergreenReader.tsx`, `FullScreenVideoOverlay.tsx`, `YouTubeShort.tsx` — all
+  superseded by the flip card's back faces.
+- **Floating Ask Vyact / Add-Transaction buttons now hidden under `/insights`** — extended the
+  existing `FloatingTools.tsx`/`AddFab.tsx` route-hide gate (already hiding during onboarding)
+  so they don't compete with the focused, full-screen card-reading experience.
+
+## v9.9.1 — Portrait infographics as the universal card viewer *(2026-07-04)*
+
+Every Insight card/article now opens through one unified, swipeable full-screen viewer instead
+of a lightweight text modal, following up directly on v9.9.0's video shorts:
+
+- **`EvergreenReel.tsx`** (Learn tab) and the new **`ArticleReel.tsx`** (What's New tab) are now
+  the *only* way any card/article opens — grid taps, the feed's deep-link, all of it. A card
+  with an admin-uploaded infographic shows it full-bleed portrait with a bottom action bar
+  ("Watch video" if a short is linked, "Read article", Share, Save); a card **without** one
+  falls back to the original code-visual + teaser + Read layout — no dead ends.
+- **New `FullScreenVideoOverlay.tsx`** — "Watch video" opens the short full-screen (fills the
+  viewport, autoplays, portrait on mobile) with an "Open in YouTube" link, layered over the
+  infographic rather than replacing it.
+- **Removed the small video play-badge** from `CardVisual.tsx` and the analogous icon from the
+  What's New grid tile — no longer meaningful now that every card routes through the same
+  viewer regardless of what media it has.
+- **`lib/insightVideos.ts`** generalised from `fetchEvergreenVideoLinks` (video-only) to
+  `fetchEvergreenMedia` (video + infographic in one read); `EvergreenCard`/`InsightArticle`
+  both gained `infographic_url`/`infographicUrl`.
+- **DB migration**: `supabase/migrations/20260704120000_v991_insight_infographics.sql` — adds
+  `content_items.infographic_url`/`infographic_updated_at`, plus the app's **first Supabase
+  Storage bucket** (`insight-infographics`, public read, `is_admin('content')`-gated write) so
+  admin can upload real image files (see admin v1.3.1). Applied to the live Supabase project.
+
+## v9.9.0 — YouTube short videos on Insight cards/articles *(2026-07-02)*
+
+Every piece of Insights content — the 116 evergreen cards, editorial articles, and curated
+external items, all rows in `content_items` — can now carry an optional YouTube short. No video
+files are stored in Vyact: only a URL + a last-updated timestamp, admin-authored in the Content
+CMS (see admin v1.3.0). YouTube is the CDN.
+
+- **Rendering:** `CardVisual.tsx` shows a small play-badge overlay on cards that have a video
+  (code-rendered icon/stat/diagram visual is untouched — video is additive, not a replacement).
+  `EvergreenReader.tsx` and `WhatsNew.tsx`'s article reader both gained a new
+  **`YouTubeShort.tsx`** component: click-to-play (no autoplay iframe sitting in the DOM by
+  default) plus an explicit **"Open in YouTube"** link so users can like/comment/subscribe on
+  the actual video.
+- **New `lib/youtube.ts`** — normalises any URL shape (`watch?v=`, `/shorts/`, `youtu.be/`,
+  already-embed) to a video id, and builds both a privacy-enhanced `youtube-nocookie.com` embed
+  URL and the canonical watch URL for redirection.
+- **Evergreen cards are bundled JSON, not DB rows the client reads directly** — but the DB seed
+  for all 116 cards already exists in `content_items` (same `slug` as the JSON's `id`). New
+  **`lib/insightVideos.ts`** does one small `content_items` read (`slug, video_url` where
+  `format='card'`) and merges it onto the bundled cards at runtime in `EvergreenLearn.tsx` — no
+  changes to the JSON asset itself, no new table.
+- **`InsightArticle`/`insightsApi.ts`** gained `videoUrl`, selected directly off `content_items`
+  for the What's New tab (articles/external items aren't bundled, so no merge step needed there).
+- **DB migration**: `supabase/migrations/20260702120000_v99_insight_video_shorts.sql` — additive
+  `content_items.video_url` / `video_updated_at` columns. Applied to the live Supabase project;
+  existing row-level RLS policies already cover the new columns (no policy changes needed).
 
 ## v9.8.2 — Danger Zone mobile fix, real "last updated" dates, working support contact *(2026-07-01)*
 

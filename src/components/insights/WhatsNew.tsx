@@ -4,10 +4,11 @@
 // UI (RBI/SEBI/etc. with a "why it matters" line) is the deferred follow-up; this
 // renders whatever the content module already publishes, reverse-chronological.
 import { useEffect, useMemo, useState } from 'react';
-import { Search, Heart, BookOpen, Clock, X } from 'lucide-react';
+import { Search, Heart, Clock } from 'lucide-react';
 import { useStore } from '../../store';
 import { Panel } from '../ui/Card';
 import EmptyState from '../ui/EmptyState';
+import ArticleReel from './ArticleReel';
 import { isCloudEnabled } from '../../lib/supabase';
 import {
   listPublishedContent, listFavoriteIds, addFavorite, removeFavorite,
@@ -30,7 +31,9 @@ export default function WhatsNew() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [reading, setReading] = useState<InsightArticle | null>(null);
+  // Every article opens through the universal reel viewer (v9.9.1), swipeable
+  // across the currently filtered list, same pattern as EvergreenLearn.
+  const [reel, setReel] = useState<{ index: number } | null>(null);
 
   useEffect(() => {
     if (!isCloudEnabled() || !session) { setLoading(false); return; }
@@ -94,24 +97,23 @@ export default function WhatsNew() {
       )}
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {filtered.map(a => {
+        {filtered.map((a, i) => {
           const isFav = favorites.has(a.id);
           return (
             <article key={a.id} className="bg-bg border border-line rounded-xl p-5 transition-shadow hover:shadow-md flex flex-col">
-              <div className="flex items-start justify-between mb-2">
-                <span className="text-2xl" aria-hidden>{a.coverEmoji}</span>
+              <button onClick={() => setReel({ index: i })} className="text-left flex-1 flex flex-col" aria-label={`Open: ${a.title}`}>
+                <div className="flex items-start justify-between mb-2">
+                  <span className="text-2xl" aria-hidden>{a.coverEmoji}</span>
+                </div>
+                <span className={`inline-block self-start font-mono text-[0.55rem] tracking-wider uppercase px-2 py-0.5 rounded-full mb-2 ${TOPIC_COLOR[a.topic]}`}>{a.topic}</span>
+                <h3 className="font-semibold text-ink text-[0.94rem] leading-snug mb-1.5">{a.title}</h3>
+                <p className="text-[0.82rem] text-ink-mid leading-relaxed flex-1 mb-3">{a.summary}</p>
+              </button>
+              <div className="flex items-center justify-between text-[0.72rem] text-ink-dim font-mono">
+                <span><Clock size={10} className="inline mr-1" />{a.readMinutes} min</span>
                 <button onClick={() => toggleFav(a)} aria-label={isFav ? 'Unfavorite' : 'Favorite'}
                   className={`p-1.5 rounded-md transition-colors ${isFav ? 'text-coral bg-coral-tint' : 'text-ink-dim hover:text-coral hover:bg-coral-tint'}`}>
                   <Heart size={14} className={isFav ? 'fill-current' : ''} />
-                </button>
-              </div>
-              <span className={`inline-block self-start font-mono text-[0.55rem] tracking-wider uppercase px-2 py-0.5 rounded-full mb-2 ${TOPIC_COLOR[a.topic]}`}>{a.topic}</span>
-              <h3 className="font-semibold text-ink text-[0.94rem] leading-snug mb-1.5">{a.title}</h3>
-              <p className="text-[0.82rem] text-ink-mid leading-relaxed flex-1 mb-3">{a.summary}</p>
-              <div className="flex items-center justify-between text-[0.72rem] text-ink-dim font-mono">
-                <span><Clock size={10} className="inline mr-1" />{a.readMinutes} min</span>
-                <button onClick={() => setReading(a)} className="text-coral hover:underline tracking-wider uppercase text-[0.62rem]">
-                  <BookOpen size={10} className="inline mr-1" /> Read →
                 </button>
               </div>
             </article>
@@ -119,45 +121,9 @@ export default function WhatsNew() {
         })}
       </div>
 
-      {reading && <Reader article={reading} isFav={favorites.has(reading.id)} onToggleFav={() => toggleFav(reading)} onClose={() => setReading(null)} />}
-    </div>
-  );
-}
-
-function Reader({ article, isFav, onToggleFav, onClose }: {
-  article: InsightArticle; isFav: boolean; onToggleFav: () => void; onClose: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center p-5"
-      style={{ background: 'hsl(var(--shadow) / 0.55)', backdropFilter: 'blur(4px)' }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-bg2 border border-line2 rounded-lg w-full max-w-2xl max-h-[92vh] overflow-y-auto shadow-3">
-        <div className="flex items-start justify-between gap-3 px-6 py-5 border-b border-line">
-          <div className="flex items-start gap-3 min-w-0">
-            <span className="text-3xl flex-shrink-0">{article.coverEmoji}</span>
-            <div className="min-w-0">
-              <h2 className="display-italic text-2xl text-ink leading-tight mb-1">{article.title}</h2>
-              <div className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">{article.topic} · {article.readMinutes} min · {article.authorName}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <button onClick={onToggleFav} aria-label={isFav ? 'Unfavorite' : 'Favorite'}
-              className={`p-2 rounded-md transition-colors ${isFav ? 'text-coral bg-coral-tint' : 'text-ink-dim hover:text-coral hover:bg-coral-tint'}`}>
-              <Heart size={16} className={isFav ? 'fill-current' : ''} />
-            </button>
-            <button onClick={onClose} className="text-ink-dim hover:text-ink p-1" aria-label="Close"><X size={18} /></button>
-          </div>
-        </div>
-        <div className="px-6 py-5">
-          {article.summary && <p className="text-[0.95rem] text-ink-mid italic mb-4 leading-relaxed border-l-2 border-coral pl-3">{article.summary}</p>}
-          <div className="text-[0.92rem] text-ink leading-relaxed whitespace-pre-line">{article.body}</div>
-        </div>
-      </div>
+      {reel && filtered.length > 0 && (
+        <ArticleReel articles={filtered} startIndex={reel.index} onClose={() => setReel(null)} />
+      )}
     </div>
   );
 }

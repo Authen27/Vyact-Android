@@ -38,8 +38,10 @@ export default function FloatingTools() {
 
   // Hide on the onboarding flow + auth routes — these are full-screen overlays
   // with no household context, so Ask Vyact / the Add-Transaction FAB don't apply.
+  // Also hidden on /insights (v9.9.2) — the full-screen card reel is a focused
+  // content-reading surface where floating chrome is pure distraction.
   // (After the hooks so they always run — rules-of-hooks.)
-  if (location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/auth/')) return null;
+  if (location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/auth/') || location.pathname.startsWith('/insights')) return null;
 
   return (
     <>

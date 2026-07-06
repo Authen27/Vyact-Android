@@ -45,9 +45,11 @@ export default function AddFab() {
     };
   }, [dialOpen]);
 
-  // Hide on auth routes — no household, no modal target. (After the hooks so they
-  // run unconditionally — rules-of-hooks; the effect is a no-op while closed.)
-  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding')) return null;
+  // Hide on auth routes — no household, no modal target. Also hidden on /insights
+  // (v9.9.2) — a focused content-reading surface, floating chrome is distracting.
+  // (After the hooks so they run unconditionally — rules-of-hooks; the effect is
+  // a no-op while closed.)
+  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/insights')) return null;
 
   function startLongPress() {
     longPressFired.current = false;
