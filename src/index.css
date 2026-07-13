@@ -3,156 +3,215 @@
 @tailwind utilities;
 
 /* ════════════════════════════════════════════════════════════════
-   Theme tokens — HSL triplets so Tailwind colors interpolate cleanly.
-   Default = Paper Warm (from FinFlow Designs wireframes).
+   AURORA design system (v10.0.0 — claude.ai/design handoff
+   `design_handoff_vyact_aurora`). Neumorphic Fluid: soft dual-light
+   surfaces for everyday chrome, glass for key moments, a cool
+   nocturne base with pip-coral as the primary accent.
+
+   DARK ("Nocturne") is the primary theme and the :root default.
+   [data-theme="warm"] keeps its historical attribute name (stored
+   user prefs!) but now maps to the Aurora LIGHT theme ("Mist").
+
+   Two token layers, both remapped so every existing call site
+   re-skins without edits:
+     • HSL triplets (--bg … --plum) consumed by Tailwind utilities.
+     • --ff-* component tokens consumed by the class layer below.
+   New Aurora-only primitives (neumorph/glass/rail/ambient) live in
+   un-prefixed vars (--neu, --glass, --rail, …) for the nav shell.
    ════════════════════════════════════════════════════════════════ */
 
-:root, [data-theme="warm"] {
-  --bg:        37 35% 94%;     /* #F5EFE6 cream */
-  --bg2:       38 50% 96%;     /* #FBF7EE bone */
-  --bg3:       39 30% 88%;     /* #EDE5D6 paper-3 */
-  --bg4:       40 24% 85%;     /* #E5DCC9 paper-4 */
-  --ink:        15 12% 15%;    /* #2A2522 */
-  --ink-mid:    20  8% 39%;    /* #6B635C */
-  --ink-dim:    20  6% 55%;
-  --coral:       9 71% 62%;    /* #E26D5C */
-  --coral-tint:  9 71% 90%;
-  --terra:       6 58% 49%;    /* #C44536 */
-  --honey:      24 71% 70%;    /* #E8A87C */
-  --butter:     45 84% 72%;    /* #F4D27A */
-  --sage:      127 18% 59%;    /* #85A88A */
-  --olive:      83 20% 41%;    /* #6B7C53 */
-  --denim:     217 38% 47%;    /* #4A6FA5 */
-  --plum:      336 23% 35%;    /* #6E4555 */
-  --line:       15 12% 15% / .10;
-  --line2:      15 12% 15% / .20;
-  --shadow:     15 12% 15%;
-  --primary-text: 0 0% 100%;
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  /* Tailwind HSL slots — Nocturne */
+  --bg:         195 29%  8%;   /* canvas   #0F181B */
+  --bg2:        199 29% 13%;   /* elevated #17242A */
+  --bg3:        198 29% 15%;   /* hover    #1C2C33 */
+  --bg4:        196 35%  6%;   /* sunken   #0A1215 */
+  --ink:        160 22% 92%;   /* #E6EFEC */
+  --ink-mid:    168 13% 69%;   /* #A6BAB6 */
+  --ink-dim:    168  8% 47%;   /* #6E827E */
+  --coral:        8 76% 69%;   /* accent coral (pip, dark) #EC8474 */
+  --coral-tint:   8 76% 69% / .15;
+  --terra:      359 84% 75%;   /* crit #F58A8C */
+  --honey:       40 82% 71%;   /* warn #F2C978 */
+  --butter:      39 75% 64%;   /* gold #E8B85C */
+  --sage:       161 64% 58%;   /* good #4FD9AE */
+  --olive:      161 56% 50%;   /* jade #38C89B */
+  --denim:      189 76% 65%;   /* info #63D6EA */
+  --plum:       260 100% 83%;  /* fore #C4A6FF */
+  --line:       160 22% 92% / .08;
+  --line2:      160 22% 92% / .16;
+  --shadow:       0  0%  0%;
+  --primary-text: 12 40% 13%;  /* ink on accent #2A1712 */
 
-  /* ════════════════════════════════════════════════════════════
-     FinFlow Design System v2 tokens (from claude.ai/design handoff).
-     Exact hex values — the contract. Component classes + brand marks
-     consume these directly; the HSL vars above remain for Tailwind
-     utilities (visually equivalent palette).
-     ════════════════════════════════════════════════════════════ */
-  /* Surfaces */
-  --ff-canvas: #F5EFE6;  --ff-canvas-2: #EDE5D6;
-  --ff-surface: #FBF7EE; --ff-surface-2: #F5EFE6; --ff-surface-3: #EDE5D6;
-  --ff-shell: #1F1B17;   --ff-shell-2: #2A2520;   --ff-overlay: rgba(42,37,34,.55);
-  /* Ink */
-  --ff-ink: #2A2522; --ff-ink-2: #5C544D; --ff-ink-3: #8A8077; --ff-ink-4: #B0A89E;
-  --ff-ink-on-shell: #E8DECF; --ff-ink-on-shell-2: rgba(232,222,207,.55);
-  /* Lines */
-  --ff-line: #E6DDCF; --ff-line-2: #D5C9B4; --ff-line-strong: #C9BBA2;
-  --ff-line-on-shell: rgba(232,222,207,.12);
-  /* Brand */
-  --ff-coral: #E26D5C; --ff-coral-soft: #F4B6A8; --ff-coral-tint: #FBE4DD;
-  --ff-coral-deep: #C44536; --ff-coral-deep-tint: #F2C7BF;
-  /* Semantic */
-  --ff-sage: #85A88A; --ff-sage-tint: #DDE8DE; --ff-olive: #6B7C53; --ff-olive-tint: #D8DECA;
-  --ff-honey: #E8A87C; --ff-honey-tint: #F8E2CF; --ff-butter: #F4D27A;
-  --ff-denim: #4A6FA5; --ff-denim-tint: #D5DEEA; --ff-plum: #6E4555; --ff-plum-tint: #E4D4D8;
-  /* Type */
-  --ff-serif: 'Newsreader','Cormorant Garamond',Georgia,serif;
-  --ff-sans:  'Inter Tight','Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  /* Aurora primitives */
+  --canvas:   #0F181B;
+  --elevated: #17242A;
+  --sunken:   #0A1215;
+  --hoverbg:  #1C2C33;
+  --accent:      #EC8474;
+  --accent-ink:  #2A1712;
+  --good: #4FD9AE; --warn: #F2C978; --info: #63D6EA; --fore: #C4A6FF; --crit: #F58A8C;
+  --rail: linear-gradient(120deg, #38C89B 0%, #6D7CF0 52%, #B08CF5 100%);
+
+  --neu-dark: #060D0F;
+  --neu-lite: #1A2A30;
+  --neu:       6px 6px 16px var(--neu-dark), -5px -5px 14px var(--neu-lite);
+  --neu-sm:    3px 3px 8px var(--neu-dark), -3px -3px 7px var(--neu-lite);
+  --neu-lg:    12px 12px 30px var(--neu-dark), -9px -9px 24px var(--neu-lite);
+  --neu-inset: inset 4px 4px 10px var(--neu-dark), inset -4px -4px 10px var(--neu-lite);
+  --neu-hover: 9px 9px 22px var(--neu-dark), -7px -7px 18px var(--neu-lite);
+
+  --glass:        rgba(26, 42, 48, 0.55);
+  --glass-strong: rgba(28, 45, 52, 0.74);
+  --glass-line:   rgba(220, 240, 255, 0.14);
+  --glass-hi:     rgba(220, 240, 255, 0.06);
+  --blur: blur(18px) saturate(150%);
+  --cast-2: 0 6px 20px rgba(0,0,0,0.44);
+  --cast-3: 0 20px 48px rgba(0,0,0,0.58), 0 4px 12px rgba(0,0,0,0.4);
+
+  --ambient: radial-gradient(120% 80% at 85% -10%, rgba(176,140,245,0.16), transparent 55%),
+             radial-gradient(95% 62% at 4% 2%, rgba(56,200,155,0.13), transparent 54%),
+             radial-gradient(60% 40% at 50% 120%, rgba(109,124,240,0.10), transparent 60%);
+
+  /* ── --ff-* component tokens (legacy names → Aurora values) ── */
+  --ff-canvas: #0F181B;  --ff-canvas-2: #0A1215;
+  --ff-surface: #17242A; --ff-surface-2: #1C2C33; --ff-surface-3: #223540;
+  --ff-shell: #0A1215;   --ff-shell-2: #17242A;   --ff-overlay: rgba(4,10,12,.6);
+  --ff-ink: #E6EFEC; --ff-ink-2: #A6BAB6; --ff-ink-3: #6E827E; --ff-ink-4: #47585A;
+  --ff-ink-on-shell: #E6EFEC; --ff-ink-on-shell-2: rgba(230,239,236,.55);
+  --ff-line: rgba(230,239,236,.08); --ff-line-2: rgba(230,239,236,.14); --ff-line-strong: rgba(230,239,236,.22);
+  --ff-line-on-shell: rgba(230,239,236,.12);
+  --ff-coral: #EC8474; --ff-coral-soft: #F2A193; --ff-coral-tint: rgba(236,132,116,.16);
+  --ff-coral-deep: #F58A8C; --ff-coral-deep-tint: rgba(245,138,140,.16);
+  --ff-sage: #4FD9AE; --ff-sage-tint: rgba(79,217,174,.16); --ff-olive: #38C89B; --ff-olive-tint: rgba(56,200,155,.14);
+  --ff-honey: #F2C978; --ff-honey-tint: rgba(242,201,120,.16); --ff-butter: #E8B85C;
+  --ff-denim: #63D6EA; --ff-denim-tint: rgba(99,214,234,.15); --ff-plum: #C4A6FF; --ff-plum-tint: rgba(196,166,255,.17);
+}
+
+[data-theme="warm"] {
+  color-scheme: light;
+  /* Tailwind HSL slots — Mist */
+  --bg:         170 14% 92%;   /* canvas   #E7EDEC */
+  --bg2:          0  0% 100%;  /* elevated #FFFFFF */
+  --bg3:        168 19% 95%;   /* hover    #EFF4F3 */
+  --bg4:        167 14% 87%;   /* sunken   #DAE3E1 */
+  --ink:        169 20% 11%;   /* #16211F */
+  --ink-mid:    169 10% 32%;   /* #4A5A57 */
+  --ink-dim:    169  6% 51%;   /* #7A8A87 */
+  --coral:        9 71% 62%;   /* accent coral (pip, light) #E26D5C */
+  --coral-tint:   9 71% 62% / .13;
+  --terra:        0 58% 58%;   /* crit #D25656 */
+  --honey:       38 54% 47%;   /* warn #B98A38 */
+  --butter:      39 75% 55%;
+  --sage:       160 55% 40%;   /* good #2E9E78 */
+  --olive:      160 55% 34%;
+  --denim:      190 58% 42%;   /* info #2C93A8 */
+  --plum:       261 48% 55%;   /* fore #7C55C4 */
+  --line:       169 20% 11% / .08;
+  --line2:      169 20% 11% / .13;
+  --shadow:     200 25% 22%;
+  --primary-text: 12 40% 13%;
+
+  --canvas:   #E7EDEC;
+  --elevated: #FFFFFF;
+  --sunken:   #DAE3E1;
+  --hoverbg:  #EFF4F3;
+  --accent:      #E26D5C;
+  --accent-ink:  #2A1712;
+  --good: #2E9E78; --warn: #B98A38; --info: #2C93A8; --fore: #7C55C4; --crit: #D25656;
+
+  --neu-dark: #C6D2CF;
+  --neu-lite: #FFFFFF;
+
+  --glass:        rgba(255, 255, 255, 0.64);
+  --glass-strong: rgba(255, 255, 255, 0.84);
+  --glass-line:   rgba(255, 255, 255, 0.9);
+  --glass-hi:     rgba(255, 255, 255, 0.55);
+  --cast-2: 0 6px 20px rgba(40, 60, 70, 0.14);
+  --cast-3: 0 20px 48px rgba(40, 60, 70, 0.18), 0 4px 12px rgba(40, 60, 70, 0.1);
+
+  --ambient: radial-gradient(120% 80% at 85% -10%, rgba(124,85,196,0.10), transparent 55%),
+             radial-gradient(95% 62% at 4% 2%, rgba(46,158,120,0.09), transparent 54%),
+             radial-gradient(60% 40% at 50% 120%, rgba(85,102,230,0.07), transparent 60%);
+
+  --ff-canvas: #E7EDEC;  --ff-canvas-2: #DAE3E1;
+  --ff-surface: #FFFFFF; --ff-surface-2: #EFF4F3; --ff-surface-3: #E1E9E7;
+  --ff-shell: #16211F;   --ff-shell-2: #223530;   --ff-overlay: rgba(22,33,31,.45);
+  --ff-ink: #16211F; --ff-ink-2: #4A5A57; --ff-ink-3: #7A8A87; --ff-ink-4: #A8B6B3;
+  --ff-ink-on-shell: #E7EDEC; --ff-ink-on-shell-2: rgba(231,237,236,.55);
+  --ff-line: rgba(20,33,31,.08); --ff-line-2: rgba(20,33,31,.13); --ff-line-strong: rgba(20,33,31,.20);
+  --ff-line-on-shell: rgba(231,237,236,.12);
+  --ff-coral: #E26D5C; --ff-coral-soft: #EC8474; --ff-coral-tint: rgba(226,109,92,.13);
+  --ff-coral-deep: #D25656; --ff-coral-deep-tint: rgba(210,86,86,.12);
+  --ff-sage: #2E9E78; --ff-sage-tint: rgba(46,158,120,.13); --ff-olive: #227A5D; --ff-olive-tint: rgba(34,122,93,.12);
+  --ff-honey: #B98A38; --ff-honey-tint: rgba(185,138,56,.15); --ff-butter: #D9A544;
+  --ff-denim: #2C93A8; --ff-denim-tint: rgba(44,147,168,.12); --ff-plum: #7C55C4; --ff-plum-tint: rgba(124,85,196,.12);
+}
+
+:root {
+  /* Theme-independent tokens */
+  --ff-serif: 'Outfit','Inter Tight',-apple-system,system-ui,sans-serif; /* display slot — Aurora headings (name kept for call sites) */
+  --ff-sans:  'Inter',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
   --ff-mono:  'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-  /* Radii */
-  --ff-r-1: 4px; --ff-r-2: 6px; --ff-r-3: 8px; --ff-r-4: 14px; --ff-r-5: 20px; --ff-r-pill: 9999px;
-  /* Shadows — paper-soft */
-  --ff-shadow-1: 0 1px 0 rgba(42,37,34,.04);
-  --ff-shadow-2: 0 1px 2px rgba(42,37,34,.06), 0 2px 8px rgba(42,37,34,.06);
-  --ff-shadow-3: 0 8px 20px rgba(42,37,34,.12), 0 2px 6px rgba(42,37,34,.06);
-  --ff-shadow-4: 0 24px 60px rgba(42,37,34,.20), 0 6px 16px rgba(42,37,34,.08);
-  /* Motion */
-  --ff-ease-out: cubic-bezier(.2,.7,.2,1); --ff-ease-in-out: cubic-bezier(.6,.1,.3,.9);
-  --ff-spring: cubic-bezier(.5,1.4,.5,1);
-  --ff-dur-1: 80ms; --ff-dur-2: 180ms; --ff-dur-3: 320ms; --ff-dur-4: 520ms;
-}
-
-/* Dark theme remaps FF surface/ink tokens onto the shell palette so
-   component classes stay correct in dark mode. */
-[data-theme="dark"] {
-  --ff-canvas: #1A1612; --ff-canvas-2: #221C17;
-  --ff-surface: #221C17; --ff-surface-2: #2A2520; --ff-surface-3: #322A22;
-  --ff-ink: #F3ECE0; --ff-ink-2: rgba(243,236,224,.72); --ff-ink-3: rgba(243,236,224,.5); --ff-ink-4: rgba(243,236,224,.34);
-  --ff-line: rgba(243,236,224,.1); --ff-line-2: rgba(243,236,224,.18); --ff-line-strong: rgba(243,236,224,.28);
-  --ff-coral: #EE8A78; --ff-coral-tint: rgba(238,138,120,.16); --ff-coral-deep: #E26D5C;
-}
-
-[data-theme="dark"] {
-  --bg:         24 17%  9%;   /* #1A1612 */
-  --bg2:        20 17% 11%;   /* #221C17 */
-  --bg3:        18 15% 14%;
-  --bg4:        18 14% 18%;
-  --ink:        37 35% 94%;
-  --ink-mid:    37 35% 94% / .65;
-  --ink-dim:    37 35% 94% / .38;
-  --coral:       8 84% 70%;
-  --coral-tint:  8 84% 70% / .14;
-  --terra:       9 71% 62%;
-  --honey:      24 71% 70%;
-  --butter:     45 84% 72%;
-  --sage:      127 23% 68%;
-  --olive:      83 31% 67%;
-  --denim:     217 47% 60%;
-  --plum:      336 30% 55%;
-  --line:       38 50% 96% / .08;
-  --line2:      38 50% 96% / .18;
-  --shadow:      0  0%  0%;
-  --primary-text: 24 17%  9%;
+  --ff-r-1: 6px; --ff-r-2: 8px; --ff-r-3: 12px; --ff-r-4: 18px; --ff-r-5: 26px; --ff-r-pill: 9999px;
+  --ff-shadow-1: var(--neu-sm);
+  --ff-shadow-2: var(--neu);
+  --ff-shadow-3: var(--neu-lg);
+  --ff-shadow-4: var(--cast-3);
+  --ff-ease-out: cubic-bezier(.4,0,.2,1); --ff-ease-in-out: cubic-bezier(.6,.1,.3,.9);
+  --ff-spring: cubic-bezier(.34,1.56,.64,1);
+  --ff-dur-1: 80ms; --ff-dur-2: 180ms; --ff-dur-3: 300ms; --ff-dur-4: 620ms;
 }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
 body {
   margin: 0;
-  background: hsl(var(--bg));
+  background: var(--canvas);
   color: hsl(var(--ink));
-  font-family: 'Inter Tight', system-ui, sans-serif;
+  font-family: 'Inter', system-ui, sans-serif;
   font-size: 14px;
-  letter-spacing: -0.005em;
-  line-height: 1.55;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   transition: background-color .3s, color .3s;
   overflow-x: hidden;
 }
 
-/* Blueprint grid backdrop */
+/* Aurora ambient glow — replaces the old blueprint grid backdrop */
 body::before {
   content: '';
   position: fixed; inset: 0;
-  background-image:
-    linear-gradient(hsl(var(--ink) / .025) 1px, transparent 1px),
-    linear-gradient(90deg, hsl(var(--ink) / .025) 1px, transparent 1px),
-    linear-gradient(hsl(var(--ink) / .012) 1px, transparent 1px),
-    linear-gradient(90deg, hsl(var(--ink) / .012) 1px, transparent 1px);
-  background-size: 80px 80px, 80px 80px, 16px 16px, 16px 16px;
+  background: var(--ambient);
   pointer-events: none;
   z-index: 0;
 }
 
 /* Scrollbar */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: hsl(var(--line2)); border-radius: 3px; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--line2)); border-radius: 6px;
+  border: 2px solid transparent; background-clip: padding-box;
+}
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--ink-dim)); }
 
 /* Recharts — match theme */
-.recharts-tooltip-wrapper {
-  outline: none !important;
-}
+.recharts-tooltip-wrapper { outline: none !important; }
 .recharts-default-tooltip {
-  background: hsl(var(--bg2)) !important;
-  border: 1px solid hsl(var(--line2)) !important;
-  border-radius: 8px !important;
-  box-shadow: 0 8px 20px hsl(var(--shadow) / .15) !important;
-  font-family: 'Inter Tight', system-ui, sans-serif !important;
+  background: var(--glass-strong) !important;
+  backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-line) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--cast-2) !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
   padding: 8px 12px !important;
 }
 .recharts-tooltip-label {
   font-family: 'JetBrains Mono', ui-monospace, monospace !important;
   font-size: 0.62rem !important;
-  letter-spacing: 0.1em !important;
+  letter-spacing: 0.12em !important;
   text-transform: uppercase !important;
   color: hsl(var(--ink-dim)) !important;
   margin-bottom: 4px !important;
@@ -169,9 +228,7 @@ body::before {
   font-size: 10px !important;
 }
 .recharts-cartesian-grid-horizontal line,
-.recharts-cartesian-grid-vertical line {
-  stroke: hsl(var(--line)) !important;
-}
+.recharts-cartesian-grid-vertical line { stroke: hsl(var(--line)) !important; }
 .recharts-legend-item-text {
   font-family: 'JetBrains Mono', ui-monospace, monospace !important;
   font-size: 0.6rem !important;
@@ -182,87 +239,55 @@ body::before {
 
 /* Component layer */
 @layer components {
-  /* Design-system component classes — aligned to FinFlow Design System v2
-     (lib.jsx FF.* specs). Use --ff-* tokens directly for exact fidelity. */
-  /* Display headings — Newsreader serif at light regular weight, NOT italic.
-     v7.4.0: italic display titles were replaced with a light upright treatment
-     after consistent feedback that the kerning of italic Newsreader at small
-     sizes was hurting scannability. Class name kept for callsite stability. */
+  /* Display headings — Aurora: Outfit 600, tight tracking, upright.
+     Class name kept for call-site stability (was Newsreader serif). */
   .display-italic {
     font-family: var(--ff-serif);
     font-style: normal;
-    font-weight: 300;
-    letter-spacing: -0.015em;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1.2;
   }
-  /* Canonical money / numeric-figure treatment — the single source of truth
-     for every currency amount in the app (KPI tiles, list rows, section
-     totals, hero numbers). Deliberately NON-italic UI sans with tabular,
-     lining figures so:
-       • digits occupy equal width → columns align and a value never
-         reflows its neighbours as it changes (low cognitive load);
-       • the same amount reads identically on Dashboard, Budgets, Splits,
-         Transactions, Net Worth — one design language, not three fonts;
-       • it stays compact at any size from a 0.8rem row to a 3rem hero,
-         which protects mobile real-estate.
-     Size, weight and colour are applied per call-site via Tailwind
-     utilities; this class owns only the family / style / figure shaping.
-     The adaptive <Money> component applies this automatically; use the
-     `num` class directly when rendering a raw fmt() string. */
+  /* Canonical money / numeric treatment — JetBrains Mono, tabular. */
   .num {
-    /* v7.4.1 — switched to JetBrains Mono so every row-level money
-       value (Transactions, Splits, Recurring, Budgets, Assets,
-       Liabilities) reads with the same dense tabular treatment used
-       by the Reports → Period Summary table. Display heroes can opt
-       back into Inter Tight via `.num-display` below. */
     font-family: var(--ff-mono);
     font-style: normal;
     font-variant-numeric: tabular-nums lining-nums;
-    font-feature-settings: 'tnum' 1, 'lnum' 1;
+    font-feature-settings: 'tnum' 1, 'lnum' 1, 'zero' 1;
     letter-spacing: 0;
   }
-  /* Optional: preserve Inter Tight for hero / oversized amounts where
-     the mono rhythm starts to feel ledger-y. Add `.num-display` to a
-     Money component or a raw .num span. */
-  .num-display {
-    font-family: var(--ff-sans);
-    letter-spacing: -0.01em;
-  }
+  .num-display { font-family: var(--ff-mono); letter-spacing: -0.01em; }
   .mono-label {
     font-family: var(--ff-mono);
     font-size: 10px;
     font-weight: 500;
-    letter-spacing: 0.14em;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--ff-ink-3);
   }
-  /* FF.Card */
+  /* Card / Panel — neumorphic raised surface */
   .panel {
     background: var(--ff-surface);
     border: 1px solid var(--ff-line);
-    border-radius: var(--ff-r-3);
-    box-shadow: var(--ff-shadow-1);
+    border-radius: var(--ff-r-4);
+    box-shadow: var(--neu);
   }
 
-  /* ── Buttons — FF.Button spec: radius 9, JetBrains Mono uppercase ──
-     v7.4.0: button label typography was unified across the app. All five
-     kinds (primary / ink / ghost / secondary/subtle / danger) share the
-     same height (38px), padding, mono font, uppercase casing and tracking
-     so a row of mixed-variant buttons reads as a single typographic unit. */
+  /* ── Buttons — Aurora: display font 600, neumorphic states ── */
   .btn-primary, .btn-secondary, .btn-ghost, .btn-danger, .btn-ink, .btn-subtle {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
     white-space: nowrap;
-    font-family: var(--ff-mono);
-    font-weight: 500;
-    font-size: 11.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-family: var(--ff-serif);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.01em;
     line-height: 1;
-    height: 38px;
-    padding: 0 16px;
-    border-radius: 9px;
+    height: 40px;
+    padding: 0 18px;
+    border-radius: var(--ff-r-3);
     border: 1px solid transparent;
     cursor: pointer;
     transition: background var(--ff-dur-2) var(--ff-ease-out),
@@ -273,32 +298,30 @@ body::before {
   }
   .btn-primary:disabled, .btn-secondary:disabled, .btn-ghost:disabled,
   .btn-danger:disabled, .btn-ink:disabled, .btn-subtle:disabled {
-    opacity: 0.5; cursor: not-allowed;
+    opacity: 0.42; cursor: not-allowed; box-shadow: none;
   }
-  /* primary — coral lead */
-  .btn-primary { background: var(--ff-coral); color: #fff; border-color: var(--ff-coral); }
-  .btn-primary:hover:not(:disabled) { background: var(--ff-coral-soft); border-color: var(--ff-coral-soft); transform: translateY(-1px); box-shadow: var(--ff-shadow-2); }
-  .btn-primary:active:not(:disabled) { transform: translateY(0); }
-  /* ink — dark solid */
-  .btn-ink { background: var(--ff-ink); color: var(--ff-canvas); border-color: var(--ff-ink); }
-  .btn-ink:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--ff-shadow-2); }
-  /* ghost — outline */
+  /* primary — accent (pip coral) */
+  .btn-primary { background: var(--accent); color: var(--accent-ink); box-shadow: var(--neu-sm); }
+  .btn-primary:hover:not(:disabled) { box-shadow: var(--neu-hover); transform: translateY(-1px); filter: brightness(1.05); }
+  .btn-primary:active:not(:disabled) { transform: translateY(1px); box-shadow: var(--neu-inset); filter: none; }
+  /* ink — solid neutral */
+  .btn-ink { background: var(--ff-ink); color: var(--ff-canvas); box-shadow: var(--neu-sm); }
+  .btn-ink:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--neu-hover); }
+  /* ghost — quiet, raises on hover */
   .btn-ghost { background: transparent; color: var(--ff-ink); border-color: var(--ff-line-2); }
-  .btn-ghost:hover:not(:disabled) { background: var(--ff-surface-3); border-color: var(--ff-line-strong); }
-  /* secondary alias → subtle (surface fill) */
-  .btn-secondary, .btn-subtle { background: var(--ff-surface); color: var(--ff-ink); border-color: var(--ff-line); }
-  .btn-secondary:hover:not(:disabled), .btn-subtle:hover:not(:disabled) { background: var(--ff-surface-3); border-color: var(--ff-line-2); }
-  /* danger / destruct — terracotta */
-  .btn-danger { background: transparent; color: var(--ff-coral-deep); border-color: var(--ff-line-2); }
-  .btn-danger:hover:not(:disabled) { background: var(--ff-coral-deep-tint); border-color: var(--ff-coral-deep); }
+  .btn-ghost:hover:not(:disabled) { background: var(--ff-surface); box-shadow: var(--neu-sm); border-color: transparent; }
+  /* secondary / subtle — neumorphic raised */
+  .btn-secondary, .btn-subtle { background: var(--ff-surface); color: var(--ff-ink); box-shadow: var(--neu-sm); border-color: var(--ff-line); }
+  .btn-secondary:hover:not(:disabled), .btn-subtle:hover:not(:disabled) { box-shadow: var(--neu-hover); transform: translateY(-1px); }
+  .btn-secondary:active:not(:disabled), .btn-subtle:active:not(:disabled) { box-shadow: var(--neu-inset); transform: translateY(1px); }
+  /* danger — critical intent */
+  .btn-danger { background: transparent; color: var(--crit); border-color: var(--ff-line-2); }
+  .btn-danger:hover:not(:disabled) { background: var(--ff-coral-deep-tint); border-color: var(--crit); }
   /* size modifiers */
-  .btn-sm { height: 30px; padding: 0 12px; font-size: 10.5px; gap: 6px; letter-spacing: 0.09em; }
-  .btn-lg { height: 46px; padding: 0 20px; font-size: 13px; gap: 10px; letter-spacing: 0.07em; }
+  .btn-sm { height: 32px; padding: 0 13px; font-size: 12px; gap: 6px; }
+  .btn-lg { height: 46px; padding: 0 22px; font-size: 14px; gap: 10px; }
 
-  /* Icon-only buttons — never crunched. Square, generous padding,
-     same hover/border treatment as ghost. Use for header / toolbar
-     actions where the label would be redundant (Theme toggle, Notifs,
-     close, sort, filter). */
+  /* Icon-only buttons — neumorphic circle-ish */
   .btn-icon {
     display: inline-flex;
     align-items: center;
@@ -306,28 +329,23 @@ body::before {
     width: 38px;
     height: 38px;
     padding: 0;
-    border-radius: 9px;
-    border: 1px solid var(--ff-line-2);
-    background: transparent;
-    color: var(--ff-ink);
+    border-radius: var(--ff-r-3);
+    border: 1px solid var(--ff-line);
+    background: var(--ff-surface);
+    box-shadow: var(--neu-sm);
+    color: var(--ff-ink-2);
     cursor: pointer;
-    transition: background var(--ff-dur-2) var(--ff-ease-out),
-                border-color var(--ff-dur-2) var(--ff-ease-out),
-                color var(--ff-dur-2) var(--ff-ease-out);
+    transition: box-shadow var(--ff-dur-2) var(--ff-ease-out),
+                color var(--ff-dur-2) var(--ff-ease-out),
+                transform var(--ff-dur-1) var(--ff-ease-out);
   }
-  .btn-icon:hover:not(:disabled) {
-    background: var(--ff-surface-3);
-    border-color: var(--ff-line-strong);
-  }
-  .btn-icon.btn-sm { width: 32px; height: 32px; border-radius: 7px; }
-  .btn-icon.btn-lg { width: 46px; height: 46px; border-radius: 11px; }
-  .btn-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-icon:hover:not(:disabled) { box-shadow: var(--neu-hover); color: var(--ff-ink); transform: translateY(-1px); }
+  .btn-icon:active:not(:disabled) { box-shadow: var(--neu-inset); transform: translateY(0); }
+  .btn-icon.btn-sm { width: 32px; height: 32px; border-radius: var(--ff-r-2); }
+  .btn-icon.btn-lg { width: 46px; height: 46px; border-radius: var(--ff-r-4); }
+  .btn-icon:disabled { opacity: 0.42; cursor: not-allowed; box-shadow: none; }
 
-  /* Row-level inline action — the canonical icon button for list rows
-     (Recurring / Transactions / Budgets / Goals / Debts). 32×32, soft
-     hover, no border by default so a tight row of 2-3 actions reads
-     as a discreet cluster rather than a toolbar. Add `.danger` for
-     destructive intent (terracotta on hover). */
+  /* Row-level inline action */
   .row-action {
     display: inline-flex;
     align-items: center;
@@ -335,60 +353,51 @@ body::before {
     width: 32px;
     height: 32px;
     padding: 0;
-    border-radius: 7px;
+    border-radius: var(--ff-r-2);
     border: 1px solid transparent;
     background: transparent;
     color: var(--ff-ink-2);
     cursor: pointer;
     transition: background 150ms var(--ff-ease-out),
                 color 150ms var(--ff-ease-out),
-                border-color 150ms var(--ff-ease-out);
+                box-shadow 150ms var(--ff-ease-out);
   }
-  .row-action:hover:not(:disabled) {
-    background: var(--ff-surface-3);
-    color: var(--ff-ink);
-    border-color: var(--ff-line);
-  }
-  .row-action.danger:hover:not(:disabled) {
-    color: var(--ff-coral-deep);
-    border-color: var(--ff-coral-deep);
-    background: var(--ff-coral-deep-tint);
-  }
+  .row-action:hover:not(:disabled) { background: var(--ff-surface-2); color: var(--ff-ink); box-shadow: var(--neu-sm); }
+  .row-action.danger:hover:not(:disabled) { color: var(--crit); background: var(--ff-coral-deep-tint); box-shadow: none; }
   .row-action:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* ── Inputs — FF.Input spec: h40, r8, surface, line-2 ────────── */
+  /* ── Inputs — Aurora: borderless neu-inset trough ── */
   .input {
     width: 100%;
     height: 40px;
-    background: var(--ff-surface);
-    border: 1px solid var(--ff-line-2);
+    background: var(--ff-canvas-2);
+    border: 1px solid transparent;
     color: var(--ff-ink);
     border-radius: var(--ff-r-3);
     padding: 0 12px;
     font-family: var(--ff-sans);
     font-size: 14px;
     outline: none;
-    transition: border-color var(--ff-dur-2) var(--ff-ease-out), box-shadow var(--ff-dur-2) var(--ff-ease-out);
+    box-shadow: var(--neu-inset);
+    transition: box-shadow var(--ff-dur-2) var(--ff-ease-out);
   }
-  /* multi-line / select keep auto height */
+  @media (max-width: 640px) {
+    .input { font-size: 16px; } /* avoid iOS zoom */
+  }
   textarea.input, select.input { height: auto; min-height: 40px; padding-top: 9px; padding-bottom: 9px; }
-  /* every native <select class="input"> picks up the same chevron + rounded
-     treatment as <Select> via .ff-select — keeps Settings, Recurring filter,
-     onboarding etc. visually identical to in-modal selects (Inter Tight font
-     inherited from .input). */
   select.input {
     appearance: none;
     -webkit-appearance: none;
     -moz-appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%235C544D' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23A6BAB6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
     background-repeat: no-repeat;
     background-position: right 12px center;
     background-size: 14px 14px;
     padding-right: 36px !important;
     cursor: pointer;
   }
-  [data-theme="dark"] select.input {
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23B0A89E' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+  [data-theme="warm"] select.input {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%234A5A57' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
   }
   select.input::-ms-expand { display: none; }
   select.input option {
@@ -399,12 +408,8 @@ body::before {
     font-family: var(--ff-sans);
   }
   .input::placeholder { color: var(--ff-ink-4); }
-  .input:focus { border-color: var(--ff-coral); box-shadow: 0 0 0 2px var(--ff-coral-tint); }
+  .input:focus { box-shadow: var(--neu-inset), 0 0 0 2px var(--accent); }
 
-  /* Userback #7830379 — checkboxes/radios had no themed styling, so the native
-     control rendered with the OS default accent and read as "dark / already
-     selected" in light mode. Pin the brand accent so unchecked is a clear empty
-     box and checked is coral, consistent across light + dark. */
   input[type="checkbox"], input[type="radio"] {
     accent-color: var(--ff-coral);
     width: 1rem;
@@ -412,25 +417,20 @@ body::before {
     cursor: pointer;
   }
 
-  /* ── Select — single canonical treatment app-wide ───────────────
-     Replaces the native browser arrow with an inline SVG chevron so
-     the dropdown reads identically across Chrome / Safari / Firefox
-     and across every page (filters in Transactions, Recurring,
-     Settings, every modal). The chevron sits 12px from the right
-     edge; padding-right is reserved at 36px to match. */
+  /* ── Select — canonical chevron treatment app-wide ── */
   .ff-select {
     appearance: none;
     -webkit-appearance: none;
     -moz-appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%235C544D' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23A6BAB6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
     background-repeat: no-repeat;
     background-position: right 12px center;
     background-size: 14px 14px;
     padding-right: 36px !important;
     border-radius: var(--ff-r-3);
   }
-  [data-theme="dark"] .ff-select {
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23B0A89E' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
+  [data-theme="warm"] .ff-select {
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%234A5A57' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='5 8 10 13 15 8'/></svg>");
   }
   .ff-select::-ms-expand { display: none; }
   .ff-select option {
@@ -439,4 +439,38 @@ body::before {
     border-radius: var(--ff-r-2);
     padding: 8px 12px;
   }
+
+  /* ── Aurora shell primitives (TopBar/SubNav/palette/tab bar) ── */
+  .glass-panel {
+    background: var(--glass-strong);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    border: 1px solid var(--glass-line);
+    box-shadow: var(--cast-3), inset 0 1px 0 var(--glass-hi);
+  }
+  .neu-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    border-radius: 999px;
+    background: var(--canvas);
+    box-shadow: var(--neu-sm);
+    color: var(--ff-ink-3);
+    cursor: pointer;
+    transition: box-shadow .18s var(--ff-ease-out), color .18s;
+    font-family: var(--ff-serif);
+    font-weight: 500;
+  }
+  .neu-pill:hover { box-shadow: var(--neu-hover); color: var(--ff-ink); }
+  .neu-pill[aria-current="true"], .neu-pill.active {
+    box-shadow: var(--neu-inset);
+    color: var(--accent);
+    font-weight: 600;
+  }
+}
+
+/* Reduced motion — show end states */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }

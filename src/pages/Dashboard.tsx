@@ -13,10 +13,11 @@ import {
   selectMonthlyDebtPayment,
 } from '../lib/selectors';
 import { fmtShort, monthName, nowMonthKey, convert } from '../lib/format';
-import { budgetLines } from '../lib/calculations';
+import { budgetLines, monthlyData } from '../lib/calculations';
 import Money from '../components/ui/Money';
 import AnimatedMoney from '../components/ui/AnimatedMoney';
 import StartingBaselineBand from '../components/dashboard/StartingBaselineBand';
+import { Pip } from '../components/layout/Brand';
 import { motion } from 'framer-motion';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import { getCat } from '../constants';
@@ -58,6 +59,7 @@ export default function Dashboard() {
   const spend = useStore(selectSpendByCategory(mk));
   const donutData = Object.entries(spend).map(([catId, amount]) => ({ catId, amount }));
   const recent = useStore(selectRecentTxns);
+  const transactions = useStore(s => s.transactions);
 
   const ta = useStore(selectTotalAssets);
   const tl = useStore(selectTotalLiabilities);
@@ -66,6 +68,19 @@ export default function Dashboard() {
   // v9.1 §4 — flatten container budgets + allocations into per-category lines.
   const budgetView = useMemo(() => budgetLines(budgets, budgetAllocations), [budgets, budgetAllocations]);
 
+  // A6 — inline 6-month net trend for the Cash Flow hero. Presentation only:
+  // each point reuses the SAME `monthlyData` aggregate the dashboard already
+  // trusts, so no new money math is introduced.
+  const netSeries = useMemo(() => {
+    const [y, m] = mk.split('-').map(Number);
+    return Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(y, m - 1 - (5 - i), 1);
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const md = monthlyData(transactions, k, baseCur, rates);
+      return { mk: k, net: md.income - md.expense };
+    });
+  }, [transactions, mk, baseCur, rates]);
+
   return (
     <div>
       {/* Page header — greeting (v7.4.0). The user's name (or a friendly
@@ -73,18 +88,22 @@ export default function Dashboard() {
           a kitchen-table feel rather than a clinical "Dashboard" label.
           v7.4.5 — Add-Transaction button removed; the global AddFab is the
           canonical entry, so the header stays clean. */}
-      <div className="mb-5">
-        <h1 className="display-italic text-4xl text-ink mb-1.5">
-          {(() => {
-            const h = new Date().getHours();
-            const greet = h < 5 ? 'Still up' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Good night';
-            const who = (profile.name || '').trim().split(/\s+/)[0];
-            return who ? `${greet}, ${who}` : greet;
-          })()}
-        </h1>
-        <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-          Family Finance Overview · {monthName(mk)}
-        </p>
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="display-italic text-4xl text-ink mb-1.5">
+            {(() => {
+              const h = new Date().getHours();
+              const greet = h < 5 ? 'Still up' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Good night';
+              const who = (profile.name || '').trim().split(/\s+/)[0];
+              return who ? `${greet}, ${who}` : greet;
+            })()}
+          </h1>
+          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
+            Family Finance Overview · {monthName(mk)}
+          </p>
+        </div>
+        {/* A6 — a glanceable Pulse ring beside the greeting; the full gauge lives below. */}
+        <MiniPulse score={pulse.total} />
       </div>
 
       {/* v9.7 — estimated starting picture from onboarding; clears as real data lands. */}
@@ -93,9 +112,14 @@ export default function Dashboard() {
       {/* A7 — the two honest numbers. Cash Flow is a FLOW (money in vs out this
           month); Net Worth is a STOCK (assets − liabilities right now). Distinct
           treatment so they never blur. */}
-      <div className="grid sm:grid-cols-2 gap-3.5 mb-3.5">
-        <Link to={`/transactions?month=${mk}`} aria-label="View cash flow" className="block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2">
-          <div className="h-full bg-bg2 border border-line rounded-lg p-5">
+      {/* A6 — Aurora neu hero cards. On mobile they become a full-bleed,
+          scroll-snap carousel; on ≥sm they are a 2-up grid. */}
+      <div
+        className="flex sm:grid sm:grid-cols-2 gap-3.5 mb-3.5 overflow-x-auto sm:overflow-visible snap-x snap-mandatory -mx-4 px-4 sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden"
+        style={{ scrollbarWidth: 'none' }}
+      >
+        <Link to={`/transactions?month=${mk}`} aria-label="View cash flow" className="snap-center shrink-0 w-[86%] sm:w-auto block rounded-r4 focus:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2">
+          <div className="h-full rounded-r4 p-5" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
             <div className="flex items-center gap-2 font-mono text-[0.6rem] tracking-[0.16em] uppercase text-ink-dim mb-2">
               <ArrowDownRight size={13} className="text-sage" /><ArrowUpRight size={13} className="text-terra" /> Cash Flow · {monthName(mk)}
             </div>
@@ -105,10 +129,11 @@ export default function Dashboard() {
               <span className="text-ink-mid">In <span className="num text-sage">{fmtShort(month.income, baseCur)}</span></span>
               <span className="text-ink-mid">Out <span className="num text-terra">{fmtShort(month.expense, baseCur)}</span></span>
             </div>
+            <TrendSparkline series={netSeries} />
           </div>
         </Link>
-        <Link to="/networth" aria-label="View net worth" className="block rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2">
-          <div className="h-full bg-ink/[0.03] border border-line rounded-lg p-5">
+        <Link to="/networth" aria-label="View net worth" className="snap-center shrink-0 w-[86%] sm:w-auto block rounded-r4 focus:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2">
+          <div className="h-full rounded-r4 p-5" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
             <div className="flex items-center gap-2 font-mono text-[0.6rem] tracking-[0.16em] uppercase text-ink-dim mb-2">
               <Scale size={13} className="text-denim" /> Net Worth · today
             </div>
@@ -117,6 +142,13 @@ export default function Dashboard() {
             <div className="flex gap-4 mt-2 text-[0.78rem]">
               <span className="text-ink-mid">Assets <span className="num text-sage">{fmtShort(ta, baseCur)}</span></span>
               <span className="text-ink-mid">Debts <span className="num text-terra">{fmtShort(tl, baseCur)}</span></span>
+            </div>
+            {/* Liquidity split mirrors the Cash-Flow sparkline's height so the pair aligns. */}
+            <div className="mt-3 h-7 flex items-end">
+              <div className="w-full h-1.5 rounded-full overflow-hidden flex" style={{ background: 'var(--sunken)' }} aria-hidden>
+                <div className="h-full" style={{ width: `${ta + tl > 0 ? (ta / (ta + tl)) * 100 : 50}%`, background: 'hsl(var(--sage))' }} />
+                <div className="h-full" style={{ width: `${ta + tl > 0 ? (tl / (ta + tl)) * 100 : 50}%`, background: 'hsl(var(--terra))' }} />
+              </div>
             </div>
           </div>
         </Link>
@@ -224,7 +256,7 @@ export default function Dashboard() {
           action={<Link to="/transactions" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">{t('view-all')}</Link>}
         >
           {recent.length === 0 ? (
-            <EmptyState icon="⟺" message="No transactions yet" />
+            <EmptyState icon={<Pip size={44} />} message="No transactions yet" />
           ) : (
             recent.map(t => <TxnRow key={t.id} txn={t} showActions onEdit={openEditTxn} />)
           )}
@@ -251,7 +283,7 @@ export default function Dashboard() {
           action={<Link to="/debts" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">View →</Link>}
         >
           {debts.length === 0 ? (
-            <EmptyState icon="✓" message="Debt-free!" />
+            <EmptyState icon={<Pip size={44} />} message="Debt-free — nothing owed" />
           ) : (
             <div className="px-4 py-3 space-y-2">
               <Row label={`Total · ${debts.length} accounts`} value={<Money amount={tl} currency={baseCur} maxChars={11} />} valueClass="text-terra" />
@@ -275,5 +307,48 @@ function Row({ label, value, valueClass = '' }: { label: string; value: ReactNod
       <span className="text-ink-mid flex-shrink-0">{label}</span>
       <span className={`num ${valueClass}`}>{value}</span>
     </div>
+  );
+}
+
+/** A6 — inline 6-month net-flow sparkline for the Cash Flow hero. Zero line is
+ *  dashed; the trailing point is dotted in the sign colour (good/crit). */
+function TrendSparkline({ series }: { series: { mk: string; net: number }[] }) {
+  const W = 132, H = 28, PAD = 3;
+  if (series.length < 2) return <div className="mt-3 h-7" />;
+  const vals = series.map(s => s.net);
+  const min = Math.min(...vals, 0);
+  const max = Math.max(...vals, 0);
+  const range = max - min || 1;
+  const x = (i: number) => PAD + i * ((W - 2 * PAD) / (series.length - 1));
+  const y = (v: number) => H - PAD - ((v - min) / range) * (H - 2 * PAD);
+  const d = series.map((s, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(s.net).toFixed(1)}`).join(' ');
+  const last = series[series.length - 1].net;
+  const stroke = last >= 0 ? 'hsl(var(--sage))' : 'hsl(var(--terra))';
+  const zeroY = y(0);
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="mt-3 text-ink-dim" role="img" aria-label="Six-month net cash-flow trend">
+      <line x1={PAD} x2={W - PAD} y1={zeroY} y2={zeroY} stroke="currentColor" strokeWidth="1" strokeDasharray="2 2" opacity="0.5" />
+      <path d={d} fill="none" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={x(series.length - 1)} cy={y(last)} r="2.3" fill={stroke} />
+    </svg>
+  );
+}
+
+/** A6 — a glanceable Pulse ring beside the greeting. Echoes the full gauge below
+ *  at-a-glance; band colour matches the Pulse's own thresholds. */
+function MiniPulse({ score }: { score: number | null }) {
+  if (score == null) return null;
+  const c = score >= 80 ? 'hsl(var(--sage))' : score >= 60 ? 'hsl(var(--honey))' : score >= 40 ? 'hsl(var(--coral))' : 'hsl(var(--terra))';
+  const r = 18, circ = 2 * Math.PI * r, off = circ * (1 - score / 100);
+  return (
+    <Link to="/reports" aria-label={`Family Pulse ${score} of 100 — open reports`}
+      className="shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-coral">
+      <svg width="48" height="48" viewBox="0 0 48 48">
+        <circle cx="24" cy="24" r={r} fill="none" stroke="var(--sunken)" strokeWidth="4" />
+        <circle cx="24" cy="24" r={r} fill="none" stroke={c} strokeWidth="4" strokeLinecap="round"
+          strokeDasharray={circ} strokeDashoffset={off} transform="rotate(-90 24 24)" />
+        <text x="24" y="28" textAnchor="middle" fontSize="13" fontWeight="700" fill="var(--ff-ink)" className="num">{score}</text>
+      </svg>
+    </Link>
   );
 }

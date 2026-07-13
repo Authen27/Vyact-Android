@@ -18,8 +18,8 @@ import type { Profile, Theme } from '../types';
 import type { Factor } from '@supabase/supabase-js';
 
 const THEMES: { key: Theme; label: string; desc: string }[] = [
-  { key: 'warm',   label: 'Paper Warm', desc: 'Cream & coral — default' },
-  { key: 'dark',   label: 'Dark',       desc: 'Warm palette on dark ink' },
+  { key: 'dark',   label: 'Nocturne',   desc: 'Aurora dark — default' },
+  { key: 'warm',   label: 'Mist',       desc: 'Aurora light' },
   { key: 'system', label: 'System',     desc: 'Follow OS preference' },
 ];
 

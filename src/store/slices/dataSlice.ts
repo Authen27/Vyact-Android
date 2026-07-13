@@ -222,7 +222,7 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
 
     // v7: run recurring + refresh notifications on every load
     await get().runRecurringEngine();
-    get().refreshNotifications();
+    void get().refreshNotifications();
 
     set({ loading: false });
   },
@@ -345,6 +345,7 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
       try { setLocalString('last_cloud_hid', id); } catch { /* noop */ }
     }
     await get().refresh();
+    void get().refreshNotifications();   // reload the new household's notifications (cross-device)
     get().toast('Switched profile', 'success');
   },
 

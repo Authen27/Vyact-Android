@@ -79,7 +79,7 @@ export const createRecurringSlice: StateCreator<Store, [], [], RecurringSlice> =
   runRecurringEngine: async () => {
     const { recurringSchedules, transactions, adapter, currentHouseholdId } = get();
     const due = dueSchedules(recurringSchedules);
-    if (!due.length) { get().refreshNotifications(); return; }
+    if (!due.length) { void get().refreshNotifications(); return; }
     const newTxns: Transaction[] = [];
     const updated = [...recurringSchedules];
     for (const s of due) {
@@ -109,6 +109,6 @@ export const createRecurringSlice: StateCreator<Store, [], [], RecurringSlice> =
       recurringSchedules: updated,
       transactions: [...transactions, ...newTxns],
     });
-    get().refreshNotifications();
+    void get().refreshNotifications();
   },
 });

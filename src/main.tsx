@@ -9,9 +9,20 @@ import { registerPwa } from './lib/pwa';
 import { initNativeShell } from './lib/native';
 import './index.css';
 
+<<<<<<< ANDROID
 // Wire native (Capacitor) integration before first paint: adds the html.is-native
 // class for safe-area CSS and registers the OAuth deep-link callback. No-op on web.
 initNativeShell();
+||||||| UPSTREAM-BASE
+const userback = await Userback('A-7Q0Mz7gfB3ECVu6ZsOIUew97E');
+void userback;
+=======
+// Feedback widget is best-effort and must NEVER block the app: a top-level
+// await here meant any Userback failure (adblocker, corporate proxy,
+// unauthorized domain, vendor outage) left users on a permanently blank
+// screen because createRoot().render() was never reached.
+void Userback('A-7Q0Mz7gfB3ECVu6ZsOIUew97E').catch(() => { /* widget unavailable — app works without it */ });
+>>>>>>> UPSTREAM
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

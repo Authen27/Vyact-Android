@@ -32,6 +32,10 @@ export interface EvergreenCard {
   tone: CardTone;
   india_relevant: boolean;
   published: boolean;
+  /** YouTube short URL, merged in at runtime from content_items.video_url (v9.9.0) — see lib/insightVideos.ts. Absent in the bundled JSON itself. */
+  video_url?: string | null;
+  /** Portrait infographic image URL, merged in at runtime from content_items.infographic_url (v9.9.1). Absent in the bundled JSON itself. */
+  infographic_url?: string | null;
 }
 
 const ALL: EvergreenCard[] = (library.cards as EvergreenCard[]).filter(c => c.published);

@@ -1,22 +1,21 @@
-import { useState, useCallback, type ReactNode } from 'react';
-import Sidebar from './Sidebar';
-import MobileBar from './MobileBar';
+// Aurora shell (v10) — top app bar + contextual subnav + ⌘K palette on
+// desktop/tablet; bottom tab bar below sm. Replaces the v6–v9 left sidebar.
+import { useEffect, useState, type ReactNode } from 'react';
+import TopBar from './TopBar';
+import SubNav from './SubNav';
+import CommandPalette from './CommandPalette';
+import MobileTabBar from './MobileTabBar';
 import FloatingTools from './FloatingTools';
 import AddFab from './AddFab';
 import SyncConflictBanner from './SyncConflictBanner';
-import { useShortcuts, useEdgeSwipe } from '../../hooks';
+import { useShortcuts } from '../../hooks';
 import { useStore } from '../../store';
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const [palette, setPalette] = useState(false);
 
-  // v7.4.5 — left-edge swipe opens the sidebar on touch devices.
-  const openSidebar = useCallback(() => setOpen(true), []);
-  useEdgeSwipe(openSidebar);
-
-  // v7.4.4 — promote add-entity shortcuts to app-wide so they work on every
-  // page, not just Transactions. `useShortcuts` already ignores keystrokes
-  // while typing in form fields.
+  // Add-entity shortcuts stay app-wide (v7.4.4). `useShortcuts` already
+  // ignores keystrokes while typing in form fields.
   const openAddTxn    = useStore(s => s.openAddTxn);
   const openAddBudget = useStore(s => s.openAddBudget);
   const openAddDebt   = useStore(s => s.openAddDebt);
@@ -28,19 +27,35 @@ export default function Layout({ children }: { children: ReactNode }) {
     a: openAddAsset,  A: openAddAsset,
   });
 
+  // ⌘K / Ctrl-K — command palette (handoff §6.4).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setPalette(p => !p);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
-    <div className="relative">
-      <Sidebar open={open} onClose={() => setOpen(false)} />
-      <MobileBar onMenu={() => setOpen(true)} />
-      <main className="lg:ml-60 min-h-screen relative z-[1]">
-        <div className="px-4 lg:px-7 py-5 lg:py-7 pb-28 lg:pb-14 max-w-[1400px]">
+    <div className="relative min-h-screen" style={{ background: 'var(--canvas)' }}>
+      <TopBar onOpenPalette={() => setPalette(true)} />
+      <SubNav />
+
+      <main className="relative z-[1]">
+        <div className="max-w-[1320px] mx-auto px-4 lg:px-7 py-5 lg:py-7 pb-28 sm:pb-16">
           {/* TD-03 phase B — surfaces optimistic-concurrency conflicts. */}
           <SyncConflictBanner />
           {children}
         </div>
       </main>
+
+      <MobileTabBar />
       <FloatingTools />
       <AddFab />
+      <CommandPalette open={palette} onClose={() => setPalette(false)} />
     </div>
   );
 }

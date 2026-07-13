@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v9.8.2`** (consumer)
+> **Current production version: `v10.1.1`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -24,6 +24,236 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v10.1.1 — Aurora Batch A shell chrome to board spec *(2026-07-13)*
+
+Follow-up patch that brings the app-shell **header and footer** to the Batch A board
+(`reference/boards/batch-a`, frames M1/M7/D1). v10.1.0 built inside the v10.0.0 shell but
+inherited its nav chrome; the board actually refines it. No logic/money/route changes.
+
+- **Mobile footer** is now the board's 5-slot tab bar: **Track · Plan · [ + ] · Analyze · ✦ Ask**
+  — the primary **+ Add sits dead-center** (opens the Add-Transaction sheet) and **✦ Ask** is the
+  far-right slot (opens the Ask drawer). "Home" moved to the header pip and "Profile" to the
+  header avatar, so they are no longer tabs.
+- **Desktop header** gains the **✦ Ask chip** and adopts the board order:
+  Jump-to ⌘K · ✦ Ask · bell · household · avatar.
+- The floating FABs are folded in: the **Ask** FAB is retired (now header chip + tab slot); the
+  **Add** FAB is **desktop-only** (mobile uses the center tab). Ask is now a store-owned drawer
+  (`askOpen`/`openAsk`/`closeAsk` in `modalSlice`) so both launchers open the same surface.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 160/161 (pre-existing clock snapshot), `vite build` 0,
+version-drift 0.
+
+## v10.1.0 — Aurora Batch A: notifications, household switch, amount-first entry, home polish *(2026-07-13)*
+
+First screen-level batch on top of the v10.0.0 Aurora shell. **All business logic, data
+models, routes, the money model, and the Family Pulse computation are unchanged** — this is
+presentation + interaction, plus one new synced entity (notifications). The Money-Model
+invariant + golden suites stay green (presentation-only; no figure moved).
+
+**Cross-device notifications (new synced entity):**
+- Notifications graduate from local-only to a **household-scoped Supabase entity**
+  (`notifications` table + RLS: read = member or `is_admin('roles')`, write = member;
+  `unique(household_id, dedupe_key)`; retention purge dismissed > 30 d / read > 90 d).
+  Migration `20260709120000_v101_notifications_sync.sql` (applied to prod).
+- `notifySlice` now generates locally, upserts to cloud (dedupe on `household_id,dedupe_key`),
+  fetches + purges on refresh, and falls back to per-household localStorage in local-only mode.
+  Read/dismiss/mark-all are optimistic then synced. Refresh is wired from data/recurring/
+  household-switch.
+
+**13-type notification model + full-screen sheet (A2/A3):**
+- `Notification` extended to the 13-type spec model (`priority` P1/P2, inline `actions`,
+  `deepLink`, `amountRef`, per-entity refs, `dedupeKey`). Six generators produce the types
+  whose source data already exists (recurring due/reminder/posted, budget threshold, income
+  landed, debt due, stale balance, invite, sync conflict, insight fresh); the detection-engine
+  types (trend, member activity, milestone) render but are producer-deferred.
+- New `NotificationSheet` — a full-width **pull-down** glass sheet (Today / Earlier groups,
+  P1 pinned first, inline per-type decision buttons that execute in place, mark-all-read,
+  "All caught up" + pip empty state). The bell (`NotificationCenter`) opens it and shows the
+  active-household unread count.
+
+**Household switch pull-down (A4):**
+- `HouseholdSheet` — a pull-down of household cards (active glows coral + accent ring),
+  "New household", and "Manage members & invites →". The TopBar household chip opens it;
+  switching reuses `switchHousehold`.
+
+**Amount-first Add-Transaction half-sheet (A5):**
+- `TransactionFormModal` presentation rebuilt on the forms-doctrine `HalfSheet`
+  (bottom sheet on mobile / centered glass dialog on desktop, single responsive panel):
+  amount-first with an in-sheet **numeric keypad**, **chips instead of dropdowns** for
+  type / category (recents-first) / date (Today·Yesterday·pick) / account / currency / member,
+  autosuggested description, an **"All details ▾"** disclosure, and **Save + "Save & add
+  another"**. **Reuses `upsertTransaction` and the transfer/investment swap matrix byte-for-byte**
+  — the money path is unchanged; only the presentation is new. `N` shortcut unchanged.
+
+**Home polish + system states (A6):**
+- Dashboard heroes restyled to neumorphism and made a **swipeable full-bleed carousel** on
+  mobile; Cash-Flow hero gains an inline **6-month net-flow sparkline**; a glanceable **Pulse
+  ring** sits beside the greeting; friendly empty states use the **pip** mascot.
+- Toasts gain an optional **action slot**; the Add-Transaction flow offers **Undo** on a
+  freshly-added plain expense/income (system-split rows — loan EMI / transfer / investment /
+  people-split — are intentionally excluded, since they create linked legs that must not be
+  one-tap-reversed).
+- Motion: sheet exits are opacity-only (avoids a transform-exit stall inside `AnimatePresence`);
+  the mobile grabber / desktop ✕ are real close controls.
+
+**Known tech debt (tracked, not shipped):** the Playwright e2e suite still targets the
+pre-Aurora DOM and was already substantially red on `main` after v10.0.0 (the FAB now collides
+with the legacy "+ Add Transaction" button; the e2e seed predates the v9.1 budget model). The
+redesigned form is proven in real Playwright for the core edit/delete flow, and the Page Object
++ component test hooks (`data-testid` on chips, correct keypad "Backspace" label, input
+`aria-label`s) are a down-payment. A full e2e migration to the Aurora DOM is deferred until the
+remaining redesign batches (B–E) ship. Non-Playwright gates are green: `tsc` 0, `eslint` 0,
+`vitest` 160/161 (the one failure is the pre-existing clock-dependent money snapshot, identical
+on a clean tree), `vite build` 0, money invariants unmoved.
+
+## v10.0.0 — "Aurora" full interface redesign (desktop + mobile) *(2026-07-09)*
+
+Complete visual + navigation redesign to the **Aurora** direction from the claude.ai/design
+handoff bundle (`Vyact-handoff/…/design_handoff_vyact_aurora`). **All business logic, data
+models, routes, and features are preserved** — only the presentation layer and the nav shell
+changed. Major version because the entire interface and navigation paradigm is new.
+
+**Design language — Neumorphic Fluid / Aurora:**
+- Cool nocturne base (deep teal-slate) with a jade/cyan/indigo/violet accent spectrum;
+  **pip coral stays the primary accent**. **Dark ("Nocturne") is now the default theme**;
+  the light theme ("Mist") keeps the stored `warm` attribute key so existing user prefs
+  survive. Soft dual-light **neumorphism** for cards/buttons/inputs/nav pills;
+  **glass** (blur + translucency) reserved for the command palette, account dropdown,
+  and popovers. Signature **aurora rail gradient** (jade→indigo→violet) runs as a 3px strip
+  atop the app bar and fills avatars.
+- **Type:** Outfit (display/headings — replaces Newsreader), Inter (UI/body — replaces
+  Inter Tight), JetBrains Mono for every figure (unchanged). `.display-italic`, `.num`,
+  `.mono-label`, `.panel`, `.btn-*`, `.input` class names kept — their definitions were
+  re-skinned, so every page inherited the redesign without call-site edits.
+- **Token architecture:** both legacy token layers (Tailwind HSL slots + `--ff-*`) were
+  remapped to Aurora values in `index.css`, plus new Aurora primitives (`--neu*`,
+  `--glass*`, `--rail`, `--ambient`, `--accent`). Category colors kept per handoff §4.7.
+  Ambient aurora glow replaces the old blueprint-grid backdrop.
+
+**Navigation — desktop (≥640px):** the left sidebar is gone. New top-anchored shell:
+- Sticky **glass app bar**: rail strip · pip + Vy·act wordmark · **Track / Plan / Analyze**
+  sliding-pill section tabs · "Jump to… ⌘K" search · notification bell · account menu.
+- **Contextual subnav** — neu pill row of the active section's routes, sticky under the bar.
+- **⌘K command palette** (glass modal): quick actions (Add transaction / New budget /
+  Ask Vyact) + every route grouped by section, fuzzy filter, full ↑/↓/↵/Esc keyboard support —
+  the guarantee that all functionality stays reachable.
+- **Account menu**: avatar pill on the rail gradient → glass dropdown with the household
+  switcher (ProfileSwitcher retained wholesale — switching, sync status, manage), the three
+  Account routes, a Light/Dark/Auto theme control, and sign out.
+- Section ↔ route map (no route lost): Track = Dashboard·Transactions·Splits·Recurring;
+  Plan = Budgets·Debts·Net Worth·Accounts; Analyze = Reports·Insights; Account menu =
+  Households·Settings·Help. Template/flag-based page visibility (the old Sidebar rules)
+  is enforced in the subnav, palette, and tab bar via a shared `navModel.ts`.
+
+**Navigation — mobile (<640px):** native-feeling shell — slim glass top bar (pip · search ·
+bell · account) + **bottom tab bar** (Home / Track / Plan / Analyze / Profile, active tab on
+an accent pill, ≥44px targets, safe-area padded); a section's secondary routes stay reachable
+through the same subnav pill scroller. `Sidebar.tsx` and `MobileBar.tsx` were deleted;
+new: `TopBar`, `SubNav`, `CommandPalette`, `AccountMenu`, `MobileTabBar`, `Brand`, `navModel`.
+
+Verified in-browser this release (local mode, both themes, desktop + mobile viewports):
+shell renders, ⌘K opens/filters/executes (quick action confirmed by the Add Budget modal
+opening), section pill slides and syncs with routes, subnav switches per section, account
+menu theme control flips Nocturne↔Mist live, bottom tabs navigate, FABs clear the tab bar.
+
+## v9.9.3 — Browser-verified fixes: blank-app on widget failure, reel counter, button contrast *(2026-07-04)*
+
+Full in-browser verification of the v9.9.2 flip-card flow (mobile viewport, real click-through
+of every interaction) surfaced three real defects, fixed here:
+
+- **CRITICAL: the app rendered a permanently blank screen if the Userback feedback widget
+  failed to load.** `main.tsx` gated `createRoot().render()` behind a top-level
+  `await Userback(...)` — any widget failure (adblocker, corporate proxy, unauthorized domain,
+  vendor outage) rejected the module and React never mounted. The widget is now fire-and-forget
+  with a swallow-on-error: the app always renders; feedback is best-effort.
+- **Reel progress indicator overflowed the screen.** The per-card dot column drew 117 dots
+  (one per lesson + end slide) — taller than any phone viewport, colliding with the flip-back
+  control. Replaced with a compact centered `n / 116` counter pill in both reels.
+- **"Text" button was nearly invisible on light backdrops.** Its white-ghost styling assumed a
+  dark photo behind it, but `object-contain` letterboxing puts theme-cream behind the controls.
+  Now a solid `btn-secondary` surface, readable over any infographic or letterbox.
+
+Verified in-browser this release: full-screen reel (375×812), un-cropped `object-contain`
+infographic, title scrim fade-in on tap + 4s auto-hide, flip settling at 180° in ~400ms with
+zero overshoot (sampled frame-by-frame), video autoplay on flip and full unmount on flip-back
+(no ghost audio), text face, no-media fallback face, swipe-to-next, and both FABs absent
+under `/insights`.
+
+## v9.9.2 — Flip-card detail view: fixes cropping, redundant blocks, and distracting FABs *(2026-07-04)*
+
+User-tested v9.9.1 against real screenshots and flagged concrete defects, all fixed here:
+
+- **Infographic was cropped, unreadable.** The image used `object-cover` (crop-to-fill) on a
+  portrait image taller than the viewport. Switched to `object-contain` — the full image is
+  always visible now, letterboxed rather than cut off.
+- **Redundant blocks removed**: the inline click-to-play video placeholder in the text reader
+  (dead once you'd already reached text), the icon/stat/diagram graphic repeated at the top of
+  the text reader (redundant with the infographic already shown), and the separate Share/Save/
+  close controls duplicated in a second full modal — all gone.
+- **New interaction model — a flip card, not a stacked action bar.** New
+  `FlippableCardDetail.tsx` (shared by `EvergreenReel`/`ArticleReel`): front face is the
+  infographic (or the code-visual fallback) with a title + dark scrim that auto-hides after 4s
+  and reappears on tap; two minimal controls — **Play** and **Text** — flip the card (a real
+  3D `rotateY` transition, reusing the shared `spring` from `lib/motion.ts`) to a back face
+  showing the autoplaying video or the article body; a rotate/back control flips back to the
+  front. Share/Save intentionally stay on the grid tile only, not duplicated in the detail view.
+- **Retired**: `EvergreenReader.tsx`, `FullScreenVideoOverlay.tsx`, `YouTubeShort.tsx` — all
+  superseded by the flip card's back faces.
+- **Floating Ask Vyact / Add-Transaction buttons now hidden under `/insights`** — extended the
+  existing `FloatingTools.tsx`/`AddFab.tsx` route-hide gate (already hiding during onboarding)
+  so they don't compete with the focused, full-screen card-reading experience.
+
+## v9.9.1 — Portrait infographics as the universal card viewer *(2026-07-04)*
+
+Every Insight card/article now opens through one unified, swipeable full-screen viewer instead
+of a lightweight text modal, following up directly on v9.9.0's video shorts:
+
+- **`EvergreenReel.tsx`** (Learn tab) and the new **`ArticleReel.tsx`** (What's New tab) are now
+  the *only* way any card/article opens — grid taps, the feed's deep-link, all of it. A card
+  with an admin-uploaded infographic shows it full-bleed portrait with a bottom action bar
+  ("Watch video" if a short is linked, "Read article", Share, Save); a card **without** one
+  falls back to the original code-visual + teaser + Read layout — no dead ends.
+- **New `FullScreenVideoOverlay.tsx`** — "Watch video" opens the short full-screen (fills the
+  viewport, autoplays, portrait on mobile) with an "Open in YouTube" link, layered over the
+  infographic rather than replacing it.
+- **Removed the small video play-badge** from `CardVisual.tsx` and the analogous icon from the
+  What's New grid tile — no longer meaningful now that every card routes through the same
+  viewer regardless of what media it has.
+- **`lib/insightVideos.ts`** generalised from `fetchEvergreenVideoLinks` (video-only) to
+  `fetchEvergreenMedia` (video + infographic in one read); `EvergreenCard`/`InsightArticle`
+  both gained `infographic_url`/`infographicUrl`.
+- **DB migration**: `supabase/migrations/20260704120000_v991_insight_infographics.sql` — adds
+  `content_items.infographic_url`/`infographic_updated_at`, plus the app's **first Supabase
+  Storage bucket** (`insight-infographics`, public read, `is_admin('content')`-gated write) so
+  admin can upload real image files (see admin v1.3.1). Applied to the live Supabase project.
+
+## v9.9.0 — YouTube short videos on Insight cards/articles *(2026-07-02)*
+
+Every piece of Insights content — the 116 evergreen cards, editorial articles, and curated
+external items, all rows in `content_items` — can now carry an optional YouTube short. No video
+files are stored in Vyact: only a URL + a last-updated timestamp, admin-authored in the Content
+CMS (see admin v1.3.0). YouTube is the CDN.
+
+- **Rendering:** `CardVisual.tsx` shows a small play-badge overlay on cards that have a video
+  (code-rendered icon/stat/diagram visual is untouched — video is additive, not a replacement).
+  `EvergreenReader.tsx` and `WhatsNew.tsx`'s article reader both gained a new
+  **`YouTubeShort.tsx`** component: click-to-play (no autoplay iframe sitting in the DOM by
+  default) plus an explicit **"Open in YouTube"** link so users can like/comment/subscribe on
+  the actual video.
+- **New `lib/youtube.ts`** — normalises any URL shape (`watch?v=`, `/shorts/`, `youtu.be/`,
+  already-embed) to a video id, and builds both a privacy-enhanced `youtube-nocookie.com` embed
+  URL and the canonical watch URL for redirection.
+- **Evergreen cards are bundled JSON, not DB rows the client reads directly** — but the DB seed
+  for all 116 cards already exists in `content_items` (same `slug` as the JSON's `id`). New
+  **`lib/insightVideos.ts`** does one small `content_items` read (`slug, video_url` where
+  `format='card'`) and merges it onto the bundled cards at runtime in `EvergreenLearn.tsx` — no
+  changes to the JSON asset itself, no new table.
+- **`InsightArticle`/`insightsApi.ts`** gained `videoUrl`, selected directly off `content_items`
+  for the What's New tab (articles/external items aren't bundled, so no merge step needed there).
+- **DB migration**: `supabase/migrations/20260702120000_v99_insight_video_shorts.sql` — additive
+  `content_items.video_url` / `video_updated_at` columns. Applied to the live Supabase project;
+  existing row-level RLS policies already cover the new columns (no policy changes needed).
 
 ## v9.8.2 — Danger Zone mobile fix, real "last updated" dates, working support contact *(2026-07-01)*
 
