@@ -16,7 +16,7 @@
 //   wipe a never-used account.
 
 import { useEffect, useState } from 'react';
-import Modal from '../ui/Modal';
+import HalfSheet from '../ui/HalfSheet';
 import Button from '../ui/Button';
 import { Input, Select, Field, FieldRow } from '../ui/Input';
 import { useStore } from '../../store';
@@ -125,8 +125,28 @@ export default function AccountFormModal(props: Props) {
     }
   }
 
+  const footer = (
+    <div className="flex items-center justify-between gap-2">
+      {initial ? (
+        <button
+          type="button"
+          onClick={del}
+          className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline"
+        >
+          Delete
+        </button>
+      ) : <span />}
+      <div className="flex gap-2">
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : initial ? 'Update' : 'Add'}
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
-    <Modal open={open} title={initial ? 'Edit Account' : 'Add Account'} onClose={onClose}>
+    <HalfSheet open={open} title={initial ? 'Edit Account' : 'Add Account'} onClose={onClose} footer={footer}>
       <FieldRow>
         <Field label="Kind">
           <Select
@@ -182,23 +202,6 @@ export default function AccountFormModal(props: Props) {
         </label>
       </div>
 
-      <div className="flex items-center justify-between gap-2">
-        {initial ? (
-          <button
-            type="button"
-            onClick={del}
-            className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline"
-          >
-            Delete
-          </button>
-        ) : <span />}
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : initial ? 'Update' : 'Add'}
-          </Button>
-        </div>
-      </div>
-    </Modal>
+    </HalfSheet>
   );
 }

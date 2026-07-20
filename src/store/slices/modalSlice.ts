@@ -54,6 +54,13 @@ export interface ModalSlice {
   openAddAccount: () => void;
   openEditAccount: (a: Account) => void;
   closeAccountModal: () => void;
+
+  // v10.1.1 — Ask Vyact drawer. Owned by the store so the shell chrome (desktop
+  // header ✦ Ask chip + mobile tab-bar Ask slot, per the Batch A board) can open
+  // the same right-side drawer FloatingTools hosts.
+  askOpen: boolean;
+  openAsk: () => void;
+  closeAsk: () => void;
 }
 
 export const createModalSlice: StateCreator<Store, [], [], ModalSlice> = (set) => ({
@@ -100,4 +107,9 @@ export const createModalSlice: StateCreator<Store, [], [], ModalSlice> = (set) =
   openAddAccount:    () => set({ editingAccount: null, accountModalOpen: true }),
   openEditAccount:   (a) => set({ editingAccount: a, accountModalOpen: true }),
   closeAccountModal: () => set({ accountModalOpen: false, editingAccount: null }),
+
+  // v10.1.1 — Ask Vyact drawer
+  askOpen: false,
+  openAsk:  () => set({ askOpen: true }),
+  closeAsk: () => set({ askOpen: false }),
 });

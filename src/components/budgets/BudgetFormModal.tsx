@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Sparkles } from 'lucide-react';
-import Modal from '../ui/Modal';
+import HalfSheet from '../ui/HalfSheet';
 import Button from '../ui/Button';
 import { Input, Select, Field, FieldRow } from '../ui/Input';
 import { useStore } from '../../store';
@@ -205,8 +205,20 @@ export default function BudgetFormModal(props: Props) {
     return [y - 1, y, y + 1, y + 2];
   }, []);
 
+  const footer = (
+    <div className="flex items-center justify-between gap-2">
+      {initial ? (
+        <button type="button" onClick={del} className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline">Delete</button>
+      ) : <span />}
+      <div className="flex gap-2">
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : initial ? 'Update' : 'Add'}</Button>
+      </div>
+    </div>
+  );
+
   return (
-    <Modal open={open} title={initial ? 'Edit Budget' : 'Add Budget'} onClose={onClose}>
+    <HalfSheet open={open} title={initial ? 'Edit Budget' : 'Add Budget'} onClose={onClose} footer={footer}>
       {/* §4.2 — scope leads the form (monthly or annual) */}
       <Field label="Scope">
         <div className="flex gap-2">
@@ -302,15 +314,6 @@ export default function BudgetFormModal(props: Props) {
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2 mt-3">
-        {initial ? (
-          <button type="button" onClick={del} className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline">Delete</button>
-        ) : <span />}
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : initial ? 'Update' : 'Add'}</Button>
-        </div>
-      </div>
-    </Modal>
+    </HalfSheet>
   );
 }

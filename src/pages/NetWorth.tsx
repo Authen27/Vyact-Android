@@ -64,6 +64,17 @@ export default function NetWorth() {
   const emergencyCover   = expense > 0 ? la / expense : 0;
   const savingsRatio     = monthlyIncome > 0 ? ((monthlyIncome - expense) / monthlyIncome) * 100 : 0;
 
+  // Board C — liquidity stacked bar totals (presentation of existing values).
+  const liqMix = { liquid: 0, short: 0, long: 0 };
+  for (const a of assets) {
+    const v = convert(a.value, a.currency, c, rates);
+    if (a.liquidity === 'liquid') liqMix.liquid += v;
+    else if (a.liquidity === 'short') liqMix.short += v;
+    else if (a.liquidity === 'long') liqMix.long += v;
+  }
+  const liqTot = liqMix.liquid + liqMix.short + liqMix.long || 1;
+  const pct = (n: number) => `${(n / liqTot) * 100}%`;
+
   function openAdd() { openAddAsset(); }
   function openEdit(a: Asset) { openEditAsset(a); }
 
@@ -88,33 +99,52 @@ export default function NetWorth() {
         <button className="btn-primary" onClick={openAdd}>+ Add Asset</button>
       </div>
 
-      {/* Net Worth hero */}
-      <div className={`rounded-2xl p-7 mb-4 text-center border ${nw >= 0 ? 'bg-sage/8 border-sage/20' : 'bg-terra/8 border-terra/20'}`}>
-        <div className="font-mono text-[0.65rem] tracking-[0.2em] uppercase text-ink-dim mb-2">Net Worth</div>
-        <div className={`text-5xl font-bold mb-1 ${nw >= 0 ? 'text-sage' : 'text-terra'}`}>
-          <Money amount={nw} currency={c} maxChars={11} />
-        </div>
-        <div className="flex justify-center gap-6 mt-4 text-sm flex-wrap">
-          <div className="text-center">
-            <div className="font-semibold text-sage"><Money amount={ta} currency={c} maxChars={11} /></div>
-            <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase">Assets</div>
+      {/* Board C — waterfall equation hero (neu): assets (+ owed) − liabilities. */}
+      <div className="rounded-r4 p-6 mb-4" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
+        <div className="mono-label mb-2">Net worth = assets {tr > 0 ? '+ owed to me ' : ''}− liabilities</div>
+        <Money amount={nw} currency={c} maxChars={12}
+          className={`num text-4xl font-bold ${nw >= 0 ? 'text-sage' : 'text-terra'}`} />
+        <div className="flex items-end flex-wrap gap-x-5 gap-y-2 mt-4">
+          <div>
+            <div className="mono-label mb-0.5">Assets</div>
+            <Money amount={ta} currency={c} maxChars={11} className="num text-lg font-semibold text-sage" />
           </div>
           {tr > 0 && (
             <>
-              <div className="text-ink-dim self-center text-lg">+</div>
-              <div className="text-center">
-                <div className="font-semibold text-denim"><Money amount={tr} currency={c} maxChars={11} /></div>
-                <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase">Owed to me</div>
+              <span className="text-ink-dim text-lg pb-1">+</span>
+              <div>
+                <div className="mono-label mb-0.5">Owed to me</div>
+                <Money amount={tr} currency={c} maxChars={11} className="num text-lg font-semibold text-denim" />
               </div>
             </>
           )}
-          <div className="text-ink-dim self-center text-lg">−</div>
-          <div className="text-center">
-            <div className="font-semibold text-terra"><Money amount={tl} currency={c} maxChars={11} /></div>
-            <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase">Liabilities</div>
+          <span className="text-ink-dim text-lg pb-1">−</span>
+          <div>
+            <div className="mono-label mb-0.5">Liabilities</div>
+            <Money amount={tl} currency={c} maxChars={11} className="num text-lg font-semibold text-terra" />
           </div>
         </div>
       </div>
+
+      {/* Board C — liquidity stacked bar. */}
+      {ta > 0 && (
+        <div className="rounded-r3 p-4 mb-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+          <div className="mono-label mb-2">Liquidity mix</div>
+          <div className="flex h-3.5 rounded-lg overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>
+            <div className="chart-grow" style={{ width: pct(liqMix.liquid), background: 'hsl(var(--sage))' }} />
+            <div className="chart-grow" style={{ width: pct(liqMix.short), background: 'hsl(var(--denim))', animationDelay: '60ms' }} />
+            <div className="chart-grow" style={{ width: pct(liqMix.long), background: 'var(--fore)', animationDelay: '120ms' }} />
+          </div>
+          <div className="flex gap-4 flex-wrap mt-2.5">
+            {([['Liquid', liqMix.liquid, 'hsl(var(--sage))'], ['Short-term', liqMix.short, 'hsl(var(--denim))'], ['Long-term', liqMix.long, 'var(--fore)']] as [string, number, string][])
+              .filter(([, v]) => v > 0).map(([lbl, v, col]) => (
+                <span key={lbl} className="mono-label flex items-center gap-1.5">
+                  <i className="inline-block w-[7px] h-[7px] rounded-full" style={{ background: col }} />{lbl} {fmt(v, c)}
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
 
       {/* Financial ratios */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -148,8 +178,8 @@ export default function NetWorth() {
             warn: savingsRatio >= 10,
           },
         ].map(r => (
-          <div key={r.label} className="bg-bg border border-line rounded-xl p-4">
-            <div className={`text-xl font-semibold mb-0.5 ${r.good ? 'text-sage' : r.warn ? 'text-honey' : 'text-terra'}`}>
+          <div key={r.label} className="rounded-r3 p-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+            <div className={`num text-xl font-semibold mb-0.5 ${r.good ? 'text-sage' : r.warn ? 'text-honey' : 'text-terra'}`}>
               {r.value}
             </div>
             <div className="text-[0.78rem] font-semibold text-ink mb-0.5">{r.label}</div>

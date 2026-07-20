@@ -113,8 +113,8 @@ export default function Splits() {
     const linkedDebtId = txn.linkedDebtId;
 
     return (
-      <div className="bg-bg border border-line rounded-xl overflow-hidden">
-        <button className="w-full px-5 py-4 flex items-center justify-between text-left hover:bg-bg3 transition-colors"
+      <div className="rounded-r3 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+        <button className="w-full px-5 py-4 flex items-center justify-between text-left hover:brightness-105 transition-[filter]"
           onClick={() => setExpanded(e => !e)}>
           <div>
             <div className="font-semibold text-ink">{txn.description}</div>
@@ -202,37 +202,38 @@ export default function Splits() {
         </div>
       </div>
 
-      {/* IOU summary */}
+      {/* Board M4 — who-owes-who hero: your net position + the two sides. */}
       {(owedToYou > 0 || youOwe > 0) && (
-        <div className="grid sm:grid-cols-2 gap-3 mb-5">
-          <div className="bg-sage/8 border border-sage/20 rounded-xl p-5 min-w-0">
-            <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase mb-1">Owed to You</div>
-            <Money amount={owedToYou} currency={c} maxChars={11} className="text-3xl font-semibold text-sage" />
-            <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim mt-1">{owedDetails.length} outstanding item{owedDetails.length !== 1 ? 's' : ''}</div>
-          </div>
-          <div className="bg-terra/8 border border-terra/20 rounded-xl p-5 min-w-0">
-            <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase mb-1">You Owe</div>
-            <Money amount={youOwe} currency={c} maxChars={11} className="text-3xl font-semibold text-terra" />
-            <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim mt-1">{youOweDetails.length} outstanding item{youOweDetails.length !== 1 ? 's' : ''}</div>
+        <div className="rounded-r4 p-5 mb-5" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
+          <div className="mono-label mb-1.5">Your net position</div>
+          <Money amount={owedToYou - youOwe} currency={c} maxChars={12}
+            className={`num text-3xl font-semibold ${owedToYou - youOwe >= 0 ? 'text-sage' : 'text-terra'}`} />
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            <div className="rounded-r3 px-4 py-3 min-w-0" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+              <div className="mono-label mb-1">Owed to you</div>
+              <Money amount={owedToYou} currency={c} maxChars={11} className="num text-xl font-semibold text-sage" />
+              <div className="mono-label mt-0.5">{owedDetails.length} item{owedDetails.length !== 1 ? 's' : ''}</div>
+            </div>
+            <div className="rounded-r3 px-4 py-3 min-w-0" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+              <div className="mono-label mb-1">You owe</div>
+              <Money amount={youOwe} currency={c} maxChars={11} className="num text-xl font-semibold text-terra" />
+              <div className="mono-label mt-0.5">{youOweDetails.length} item{youOweDetails.length !== 1 ? 's' : ''}</div>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="bg-coral-tint border border-coral/20 rounded-md px-4 py-3 mb-5 text-[0.84rem] text-ink-mid">
-        <span className="font-semibold text-ink">Add split transactions</span> from the Transactions page —
-        flag any expense (a shared bill) <em>or</em> income (a shared payout) as a split and assign
-        participants and shares. Use <span className="font-semibold text-ink">Track as debt</span> on
-        a "you owe" row to convert the IOU into a real debt that shows up on the Debts page and Net
-        Worth.
-      </div>
-
       {/* Split list */}
       {splitTxns.length === 0 ? (
         <Panel>
-          <div className="px-6 py-14 text-center">
+          <div className="px-6 py-14 text-center max-w-md mx-auto">
             <div className="text-4xl mb-3 opacity-60">🤝</div>
             <p className="text-ink-mid mb-2">No split transactions yet.</p>
-            <p className="text-[0.84rem] text-ink-dim">Add a transaction and mark it as a split to track shared expenses.</p>
+            <p className="text-[0.84rem] text-ink-dim leading-relaxed">
+              Add a transaction and flag it as a split — a shared bill (expense) or a shared payout
+              (income) — then assign participants and shares. On a "you owe" row, <span className="text-ink font-semibold">Track as debt</span>
+              &nbsp;turns the IOU into a real debt on the Debts page and Net Worth.
+            </p>
           </div>
         </Panel>
       ) : (

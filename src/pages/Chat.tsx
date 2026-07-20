@@ -377,22 +377,22 @@ export default function Chat() {
           )}
           {history.map((m, i) => (
             <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] px-4 py-2.5 rounded-lg ${
-                m.role === 'user'
-                  ? 'bg-coral text-white rounded-br-sm'
-                  : 'bg-bg3 text-ink border border-line rounded-bl-sm'
-              }`}>
-                <div className="text-[0.86rem] leading-relaxed whitespace-pre-wrap">{m.content}</div>
+              {/* Board D — .bub: user coral + accent-ink, AI neu canvas. */}
+              <div className="max-w-[85%] px-4 py-2.5 text-[0.86rem] leading-relaxed"
+                style={m.role === 'user'
+                  ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderRadius: '18px 18px 6px 18px', boxShadow: 'var(--neu-sm)' }
+                  : { background: 'var(--canvas)', color: 'var(--ff-ink)', borderRadius: '18px 18px 18px 6px', boxShadow: 'var(--neu-sm)' }}>
+                <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
             </div>
           ))}
           {thinking && (
             <div className="flex justify-start">
-              <div className="max-w-[85%] px-4 py-2.5 rounded-lg bg-bg3 text-ink-dim border border-line">
+              <div className="max-w-[85%] px-4 py-2.5" style={{ background: 'var(--canvas)', color: 'var(--ff-ink-3)', borderRadius: '18px 18px 18px 6px', boxShadow: 'var(--neu-sm)' }}>
                 <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-ink-dim rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-ink-dim rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-ink-dim rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: 'var(--ff-ink-3)', animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: 'var(--ff-ink-3)', animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: 'var(--ff-ink-3)', animationDelay: '300ms' }} />
                 </div>
               </div>
             </div>

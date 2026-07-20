@@ -5,7 +5,7 @@ import { useStore } from '../store';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, today } from '../lib/format';
-import { CURRENCIES, DEFAULT_RATES, LOCALES, PROFILE_TYPES } from '../constants';
+import { CURRENCIES, DEFAULT_RATES, LOCALES } from '../constants';
 import { sb } from '../lib/supabase';
 import {
   enrollMfaTotp, verifyMfaEnrolment, listMfaFactors, unenrollMfaFactor, updatePassword,
@@ -14,12 +14,16 @@ import {
 } from '../lib/auth';
 import WhatsAppLink from '../components/settings/WhatsAppLink';
 import { POLICY_VERSION } from './Privacy';
-import type { Profile, Theme } from '../types';
+import Chip from '../components/ui/Chip';
+import {
+  NOTIF_GROUPS, NOTIF_TYPE_LABEL, NOTIF_LOCKED, typeEnabled, requestWebPushPermission,
+} from '../lib/notifications';
+import type { Profile, Theme, NotifType } from '../types';
 import type { Factor } from '@supabase/supabase-js';
 
 const THEMES: { key: Theme; label: string; desc: string }[] = [
-  { key: 'warm',   label: 'Paper Warm', desc: 'Cream & coral — default' },
-  { key: 'dark',   label: 'Dark',       desc: 'Warm palette on dark ink' },
+  { key: 'dark',   label: 'Nocturne',   desc: 'Aurora dark — default' },
+  { key: 'warm',   label: 'Mist',       desc: 'Aurora light' },
   { key: 'system', label: 'System',     desc: 'Follow OS preference' },
 ];
 
@@ -57,6 +61,8 @@ export default function Settings() {
   const resetRates  = useStore(s => s.resetRates);
   const setTheme    = useStore(s => s.setTheme);
   const toast       = useStore(s => s.toast);
+  const notificationPrefs = useStore(s => s.notificationPrefs);
+  const updateNotificationPrefs = useStore(s => s.updateNotificationPrefs);
 
   // Danger Zone (v9.8.0) — erase / deactivate / delete
   const [erasing, setErasing] = useState(false);
@@ -290,15 +296,6 @@ export default function Settings() {
               <input className="input w-full" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
             </div>
             <div>
-              <label className="mono-label mb-1.5 block">Household Type</label>
-              <select className="input w-full" value={profile.household}
-                onChange={e => updateProfile({ household: e.target.value as Profile['household'] })}>
-                {Object.entries(PROFILE_TYPES).map(([k, v]) => (
-                  <option key={k} value={k}>{v.icon} {v.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label className="mono-label mb-1.5 block">Date Format</label>
               <select className="input w-full" value={profile.dateFormat}
                 onChange={e => updateProfile({ dateFormat: e.target.value as Profile['dateFormat'] })}>
@@ -350,19 +347,128 @@ export default function Settings() {
 
         {/* ── Appearance ──────────────────────────────────── */}
         <Panel title="Appearance">
+          {/* Board E — .theme-thumb: neu thumbnail, accent ring when active. */}
           <div className="p-5 grid sm:grid-cols-3 gap-3">
-            {THEMES.map(th => (
-              <button key={th.key} onClick={() => setTheme(th.key)}
-                className={`border-2 rounded-lg p-4 text-left transition-all ${
-                  theme === th.key ? 'border-coral bg-coral/5' : 'border-line bg-bg3 hover:border-coral/40'
-                }`}>
-                <div className="text-sm font-semibold text-ink mb-0.5">{th.label}</div>
-                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{th.desc}</div>
-                {theme === th.key && <div className="mt-2 text-[0.65rem] font-mono text-coral uppercase tracking-widest">Active</div>}
-              </button>
-            ))}
+            {THEMES.map(th => {
+              const on = theme === th.key;
+              return (
+                <button key={th.key} onClick={() => setTheme(th.key)}
+                  className="rounded-r3 p-3.5 text-left border-none cursor-pointer transition-shadow"
+                  style={{ background: 'var(--canvas)', boxShadow: on ? 'var(--neu-sm), 0 0 0 2px var(--accent)' : 'var(--neu-sm)' }}>
+                  <div className="flex flex-col gap-1 mb-2" aria-hidden>
+                    {[0, 1, 2].map(i => (
+                      <span key={i} className="h-1.5 rounded-full"
+                        style={{ background: i === 0 ? 'var(--accent)' : 'var(--ff-line-2)', width: `${90 - i * 18}%` }} />
+                    ))}
+                  </div>
+                  <div className="text-[0.86rem] font-display font-semibold text-ink mb-0.5">{th.label}</div>
+                  <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{th.desc}</div>
+                  {on && <div className="mt-2 text-[0.65rem] font-mono uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Active</div>}
+                </button>
+              );
+            })}
           </div>
         </Panel>
+
+        {/* ── Notifications (spec §Settings ▸ Notifications) ── */}
+        <div id="notifications" className="scroll-mt-20">
+        <Panel title="Notifications">
+          <div className="p-5 space-y-5">
+            <label className="flex items-center justify-between gap-3 cursor-pointer">
+              <div>
+                <div className="text-sm font-semibold text-ink">All notifications</div>
+                <div className="text-[0.76rem] text-ink-dim mt-0.5">Master switch — turns every alert on or off.</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={notificationPrefs.master}
+                onChange={e => updateNotificationPrefs({ master: e.target.checked })}
+                className="accent-coral w-[18px] h-[18px] flex-shrink-0"
+              />
+            </label>
+
+            {NOTIF_GROUPS.map(g => (
+              <div key={g.label}>
+                <div className="mono-label mb-1.5">{g.label}</div>
+                <div className="rounded-r3 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+                  {g.types.map((ty: NotifType, i) => {
+                    const locked = NOTIF_LOCKED.includes(ty);
+                    const enabled = typeEnabled(notificationPrefs, ty);
+                    return (
+                      <label
+                        key={ty}
+                        className={`flex items-center justify-between gap-3 px-3.5 py-2.5 ${i > 0 ? 'border-t border-line' : ''} ${locked ? 'opacity-60' : 'cursor-pointer'}`}
+                      >
+                        <span className="text-[0.84rem] text-ink">
+                          {NOTIF_TYPE_LABEL[ty]}
+                          {locked && <span className="mono-label ml-2 text-ink-dim">always on</span>}
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          disabled={locked || !notificationPrefs.master}
+                          onChange={e => updateNotificationPrefs({ perType: { ...notificationPrefs.perType, [ty]: e.target.checked } })}
+                          className="accent-coral flex-shrink-0"
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            <div>
+              <div className="mono-label mb-1.5">Quiet hours</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mono-label mb-1 block">From</label>
+                  <input type="time" className="input w-full" value={notificationPrefs.quietStart}
+                    onChange={e => updateNotificationPrefs({ quietStart: e.target.value })} />
+                </div>
+                <div>
+                  <label className="mono-label mb-1 block">To</label>
+                  <input type="time" className="input w-full" value={notificationPrefs.quietEnd}
+                    onChange={e => updateNotificationPrefs({ quietEnd: e.target.value })} />
+                </div>
+              </div>
+              <p className="text-[0.74rem] text-ink-dim mt-1.5">
+                Informational alerts are held during quiet hours; action-required alerts still badge the bell.
+              </p>
+            </div>
+
+            <div>
+              <div className="mono-label mb-1.5">Reminder lead time</div>
+              <div className="flex gap-1.5">
+                {([1, 3, 7] as const).map(d => (
+                  <Chip key={d} on={notificationPrefs.defaultLeadDays === d}
+                    onClick={() => updateNotificationPrefs({ defaultLeadDays: d })}>
+                    {d} day{d > 1 ? 's' : ''} before
+                  </Chip>
+                ))}
+              </div>
+            </div>
+
+            <label className="flex items-center justify-between gap-3 cursor-pointer">
+              <div>
+                <div className="text-sm font-semibold text-ink">Browser push</div>
+                <div className="text-[0.76rem] text-ink-dim mt-0.5">Show a system notification for action-required alerts.</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={notificationPrefs.webPushEnabled}
+                onChange={async e => {
+                  if (e.target.checked) {
+                    const granted = await requestWebPushPermission();
+                    if (!granted) { toast('Enable notifications for Vyact in your browser settings first', 'error'); return; }
+                  }
+                  updateNotificationPrefs({ webPushEnabled: e.target.checked });
+                }}
+                className="accent-coral w-[18px] h-[18px] flex-shrink-0"
+              />
+            </label>
+          </div>
+        </Panel>
+        </div>
 
         {/* ── Localisation ────────────────────────────────── */}
         <Panel title="Language & Currency">

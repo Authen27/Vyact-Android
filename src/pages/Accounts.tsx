@@ -30,6 +30,9 @@ const KIND_LABEL: Record<AccountKind, string> = {
   investment: 'Investment',
   loan: 'Loan',
 };
+const KIND_ICON: Record<AccountKind, string> = {
+  bank: '🏦', cash: '💵', credit_card: '💳', investment: '📈', loan: '🏛️',
+};
 
 export default function Accounts() {
   const accounts        = useStore(s => s.accounts);
@@ -139,25 +142,23 @@ export default function Accounts() {
       )}
 
       {!flagOff && active.length > 0 && (
-        <Panel>
-          <div className="divide-y divide-line">
-            {active.map(acc => (
-              <AccountRow
-                key={acc.id}
-                acc={acc}
-                linkLabel={linkLabel(acc)}
-                balance={balanceOf(acc)}
-                baseCur={baseCur}
-                txns={transactions}
-                rates={rates}
-                onEdit={() => openEditAccount(acc)}
-                onArchive={() => toggleArchive(acc)}
-                onReconcile={(real) => handleReconcile(acc, real)}
-                ledgerEnabled
-              />
-            ))}
-          </div>
-        </Panel>
+        <div className="grid sm:grid-cols-2 gap-3">
+          {active.map(acc => (
+            <AccountRow
+              key={acc.id}
+              acc={acc}
+              linkLabel={linkLabel(acc)}
+              balance={balanceOf(acc)}
+              baseCur={baseCur}
+              txns={transactions}
+              rates={rates}
+              onEdit={() => openEditAccount(acc)}
+              onArchive={() => toggleArchive(acc)}
+              onReconcile={(real) => handleReconcile(acc, real)}
+              ledgerEnabled
+            />
+          ))}
+        </div>
       )}
 
       {!flagOff && archived.length > 0 && (
@@ -170,24 +171,22 @@ export default function Accounts() {
             {showArchived ? '▾' : '▸'} Archived ({archived.length})
           </button>
           {showArchived && (
-            <Panel>
-              <div className="divide-y divide-line opacity-70">
-                {archived.map(acc => (
-                  <AccountRow
-                    key={acc.id}
-                    acc={acc}
-                    linkLabel={linkLabel(acc)}
-                    balance={null}
-                    baseCur={baseCur}
-                    txns={transactions}
-                    rates={rates}
-                    onEdit={() => openEditAccount(acc)}
-                    onArchive={() => toggleArchive(acc)}
-                    ledgerEnabled={false}
-                  />
-                ))}
-              </div>
-            </Panel>
+            <div className="grid sm:grid-cols-2 gap-3 opacity-70">
+              {archived.map(acc => (
+                <AccountRow
+                  key={acc.id}
+                  acc={acc}
+                  linkLabel={linkLabel(acc)}
+                  balance={null}
+                  baseCur={baseCur}
+                  txns={transactions}
+                  rates={rates}
+                  onEdit={() => openEditAccount(acc)}
+                  onArchive={() => toggleArchive(acc)}
+                  ledgerEnabled={false}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -223,8 +222,12 @@ function AccountRow(props: {
   const estimated = acc.confidence && acc.confidence !== 'confirmed';
 
   return (
-    <div className="px-4 py-3">
+    <div className="rounded-r3 p-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
       <div className="flex items-center gap-3">
+        <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-[15px] flex-shrink-0"
+          style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>
+          {KIND_ICON[acc.kind]}
+        </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-ink font-medium truncate">{acc.name}</span>

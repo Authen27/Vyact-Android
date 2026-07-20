@@ -28,17 +28,25 @@ const config: Config = {
         line2:     'hsl(var(--line2))',
       },
       fontFamily: {
-        display: ['Newsreader', 'Georgia', 'serif'],
-        ui:      ['"Inter Tight"', 'system-ui', 'sans-serif'],
+        display: ['Outfit', '"Inter Tight"', 'sans-serif'],
+        ui:      ['Inter', 'system-ui', 'sans-serif'],
         mono:    ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       borderRadius: {
-        sm: '4px', md: '8px', lg: '14px', pill: '999px',
+        sm: '6px', md: '8px', lg: '18px', pill: '999px',
+        r1: '8px', r2: '12px', r3: '18px', r4: '26px',
       },
       boxShadow: {
-        '1': '0 2px 6px hsl(var(--shadow) / 0.06)',
-        '2': '0 8px 20px hsl(var(--shadow) / 0.10)',
-        '3': '0 16px 40px hsl(var(--shadow) / 0.18)',
+        '1': 'var(--neu-sm)',
+        '2': 'var(--neu)',
+        '3': 'var(--neu-lg)',
+        neu: 'var(--neu)',
+        'neu-sm': 'var(--neu-sm)',
+        'neu-inset': 'var(--neu-inset)',
+        'neu-hover': 'var(--neu-hover)',
+      },
+      transitionTimingFunction: {
+        spring: 'cubic-bezier(.34,1.56,.64,1)',
       },
       keyframes: {
         modalIn: {

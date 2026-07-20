@@ -342,33 +342,60 @@ export interface RecurringSchedule {
   updated_at?: string;
 }
 
-// v7 — Notifications
+// ── Notifications (Aurora v10.1 — 13-type model, notifications-spec.md) ──
+// The 13 canonical types. P1 = action-required (pinned, decision buttons);
+// P2 = informational (read / tap-to-navigate).
 export type NotifType =
-  | 'upcoming_bill' | 'missed_payment' | 'budget_threshold'
-  | 'goal_milestone' | 'weekly_digest' | 'custom_reminder';
+  | 'recurring_due_confirm' | 'recurring_reminder' | 'recurring_posted'
+  | 'budget_threshold' | 'income_landed' | 'insight_fresh' | 'trend_alert'
+  | 'debt_payment_due' | 'stale_balance' | 'invite_received'
+  | 'member_activity' | 'sync_conflict' | 'milestone';
+
+export type NotifPriority = 'P1' | 'P2';
+
+/** Serializable action descriptor. The NotificationSheet maps (notification,
+ *  action.id) → a store handler at click time (a `run` function can't persist). */
+export interface NotifActionSpec {
+  id: string;
+  label: string;
+  kind: 'primary' | 'neu' | 'ghost';
+}
 
 export interface Notification {
   id: string;
   type: NotifType;
+  priority: NotifPriority;
   title: string;
   body: string;
   createdAt: string;
   dueAt?: string;
   status: 'unread' | 'read' | 'dismissed';
+  /** Active household this belongs to — the bell + list are scoped to it. */
+  householdId?: string;
+  memberId?: string;
+  /** Money value the row highlights (rendered mono, tone from `type`). */
+  amountRef?: number;
+  /** Route (with `?param=` context) opened on row tap / a nav action. */
+  deepLink?: string;
+  actions?: NotifActionSpec[];
+  /** Per-instance tint override (e.g. budget @100% → crit); else NOTIF_META. */
+  tint?: string;
+  /** Context FKs — consumed by action handlers + dedupe. */
   scheduleId?: string;
-  goalId?: string;
   budgetId?: string;
-  custom?: { recur?: RecurrenceFreq };
+  debtId?: string;
+  accountId?: string;
+  txnId?: string;
+  inviteToken?: string;
+  /** Stable key so a given occurrence is only generated once. */
+  dedupeKey?: string;
 }
 
 export interface NotificationPrefs {
   master: boolean;
-  upcoming_bill: boolean;
-  missed_payment: boolean;
-  budget_threshold: boolean;
-  goal_milestone: boolean;
-  weekly_digest: boolean;
-  custom_reminder: boolean;
+  /** Per-type enable map; a type absent from the map is ENABLED by default.
+   *  `sync_conflict` cannot be disabled (enforced in UI). */
+  perType: Partial<Record<NotifType, boolean>>;
   quietStart: string;  // HH:MM
   quietEnd: string;    // HH:MM
   webPushEnabled: boolean;

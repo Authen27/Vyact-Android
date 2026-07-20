@@ -1,102 +1,50 @@
-// Vyact v6.4 — FloatingTools
+// Vyact — Ask Vyact drawer host (v10.1.1)
 //
-// Ask Vyact lives here as a floating action button that opens a right-side
-// drawer, available on every authenticated screen.
+// Ask Vyact is a right-side drawer. Per the Batch A board the LAUNCHER moved
+// into the shell chrome — the desktop header "✦ Ask" chip and the mobile
+// tab-bar "✦ Ask" slot (both call `openAsk`) — so this component no longer
+// renders a floating action button. It only HOSTS the drawer, driven by the
+// store `askOpen` flag, and is mounted once in Layout.
 //
-// v9.5.3 (Insights Hub §6/§8): the Planner FAB was REMOVED — the Planner now
-// lives inside the Insights hub as the "Plan" tab. Its Sparkles icon is freed up
-// and adopted by Ask Vyact (was MessageCircle). The /planner and /chat routes
-// remain for deep links.
+// The /planner and /chat routes remain for deep links.
 
-import React, { Suspense, useState, useEffect, type ReactNode } from 'react';
+import React, { Suspense, useEffect, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Sparkles, X } from 'lucide-react';
+import { X } from 'lucide-react';
+import { useStore } from '../../store';
 
 const Chat = React.lazy(() => import('../../pages/Chat'));
 
-type Tool = 'chat' | null;
-
-import ls from '../../lib/localStorageCompat';
-const KEY = 'floating_last';
-
 export default function FloatingTools() {
-  const [tool, setTool] = useState<Tool>(null);
   const location = useLocation();
+  const askOpen = useStore(s => s.askOpen);
+  const closeAsk = useStore(s => s.closeAsk);
 
   // Esc closes the drawer for keyboard users.
   useEffect(() => {
-    if (!tool) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTool(null); };
+    if (!askOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeAsk(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tool]);
+  }, [askOpen, closeAsk]);
 
-  function open(t: Tool) {
-    setTool(t);
-    try { if (t) ls.setString(KEY, t); } catch { /* noop */ }
-  }
-
-  // Hide on the onboarding flow + auth routes — these are full-screen overlays
-  // with no household context, so Ask Vyact / the Add-Transaction FAB don't apply.
-  // (After the hooks so they always run — rules-of-hooks.)
-  if (location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/auth/')) return null;
+  // Never surface on the onboarding / auth full-screen overlays (no household
+  // context). Closing defensively keeps a stale open-flag from leaking across
+  // a route change into those surfaces.
+  const suppressed = location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/auth/');
+  if (suppressed || !askOpen) return null;
 
   return (
-    <>
-      {/* Stacked FABs in the bottom-right. Sit above the primary AddFab
-          (v7.4.4) so the Add-Transaction button stays the most prominent
-          action; offset above MobileBar (~56px) on small screens. */}
-      <div className="fixed right-4 bottom-[160px] lg:bottom-[160px] z-40 flex flex-col gap-2.5">
-        <Fab
-          label="Ask Vyact"
-          tone="denim"
-          onClick={() => open('chat')}
-          active={tool === 'chat'}
-        >
-          <Sparkles size={18} />
-        </Fab>
-      </div>
-
-      {tool && (
-        <Drawer onClose={() => setTool(null)} title="Ask Vyact">
-          <Suspense fallback={<DrawerLoadingState />}>
-            <Chat />
-          </Suspense>
-        </Drawer>
-      )}
-    </>
+    <Drawer onClose={closeAsk} title="Ask Vyact">
+      <Suspense fallback={<DrawerLoadingState />}>
+        <Chat />
+      </Suspense>
+    </Drawer>
   );
 }
 
 function DrawerLoadingState() {
   return <div className="mono-label">Loading…</div>;
-}
-
-interface FabProps {
-  label: string;
-  tone: 'coral' | 'denim';
-  active?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}
-function Fab({ label, tone, active, onClick, children }: FabProps) {
-  const bg = tone === 'coral' ? 'bg-coral hover:bg-coral/90' : 'bg-denim hover:bg-denim/90';
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      className={`group flex items-center gap-2 ${bg} text-white rounded-full shadow-2 transition-all
-                  px-3.5 h-11 hover:pr-4 hover:scale-[1.03] ${active ? 'ring-2 ring-white/50' : ''}`}
-    >
-      {children}
-      <span className="font-mono text-[0.6rem] tracking-[0.14em] uppercase font-semibold hidden sm:inline">
-        {label}
-      </span>
-    </button>
-  );
 }
 
 interface DrawerProps {

@@ -286,17 +286,37 @@ export default function Reports() {
         </Panel>
         <Panel title="Category Breakdown" sub="This period">
           <CategoryDonut data={donutData} currency={baseCur} />
-          {/* Needs vs Wants breakdown */}
-          <div className="mt-4 flex gap-4 text-[0.98rem]">
-            <div className="flex-1 bg-bg3 rounded-lg p-3 border border-line flex flex-col items-center min-w-0">
-              <div className="font-mono text-[0.7rem] tracking-wider uppercase text-ink-dim mb-1">Needs</div>
-              <Money amount={needsWants.needs} currency={baseCur} maxChars={9} className="font-bold text-sage text-lg" />
-            </div>
-            <div className="flex-1 bg-bg3 rounded-lg p-3 border border-line flex flex-col items-center min-w-0">
-              <div className="font-mono text-[0.7rem] tracking-wider uppercase text-ink-dim mb-1">Wants</div>
-              <Money amount={needsWants.wants} currency={baseCur} maxChars={9} className="font-bold text-honey text-lg" />
-            </div>
-          </div>
+          {/* Board D — needs-vs-wants verdict split bar. Both segments round
+              their OWN outer corner (rather than relying solely on the
+              container's overflow-hidden to clip square corners into shape)
+              and the wants segment fills via flex-1 instead of an explicit
+              percent width, so independent per-child pixel rounding can never
+              leave a 1px gap/seam or bleed past the pill's rounded ends. */}
+          {(needsWants.needs > 0 || needsWants.wants > 0) && (() => {
+            const total = needsWants.needs + needsWants.wants || 1;
+            const nPct = (needsWants.needs / total) * 100;
+            const wPct = (needsWants.wants / total) * 100;
+            const bothVisible = needsWants.needs > 0 && needsWants.wants > 0;
+            return (
+              <div className="mt-4">
+                <div className="mono-label mb-1.5">Needs vs Wants</div>
+                <div className="flex h-8 rounded-full overflow-hidden" style={{ boxShadow: 'var(--neu-inset)' }} aria-hidden>
+                  {needsWants.needs > 0 && (
+                    <div className={`flex items-center justify-center text-white font-display font-bold text-[11px] whitespace-nowrap overflow-hidden ${bothVisible ? 'rounded-l-full' : 'rounded-full'}`}
+                      style={{ width: needsWants.wants > 0 ? `${nPct}%` : '100%', background: 'hsl(var(--sage))' }}>{nPct >= 16 ? `Needs ${Math.round(nPct)}%` : ''}</div>
+                  )}
+                  {needsWants.wants > 0 && (
+                    <div className={`flex items-center justify-center font-display font-bold text-[11px] whitespace-nowrap overflow-hidden flex-1 ${bothVisible ? 'rounded-r-full' : 'rounded-full'}`}
+                      style={{ background: 'hsl(var(--honey))', color: 'var(--accent-ink)' }}>{wPct >= 16 ? `Wants ${Math.round(wPct)}%` : ''}</div>
+                  )}
+                </div>
+                <div className="flex justify-between mt-1.5 mono-label">
+                  <span className="text-sage">Needs {fmt(needsWants.needs, baseCur)}</span>
+                  <span className="text-honey">Wants {fmt(needsWants.wants, baseCur)}</span>
+                </div>
+              </div>
+            );
+          })()}
         </Panel>
       </div>
 

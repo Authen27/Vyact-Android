@@ -63,16 +63,17 @@ export default function Insights() {
         </p>
       </div>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 mb-5 bg-bg3 border border-line rounded-lg p-1 overflow-x-auto">
+      {/* Board D — .tri: the 3-tab pill (For You / Learn / Plan). */}
+      <div className="flex gap-1 p-1 mb-5 rounded-pill overflow-x-auto" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setTab(id)}
             aria-pressed={tab === id}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md whitespace-nowrap text-[0.8rem] font-medium transition-colors ${
-              tab === id ? 'bg-bg2 text-ink shadow-sm' : 'text-ink-mid hover:text-ink'
-            }`}
+            className="flex-1 flex items-center justify-center gap-1.5 h-[30px] px-3 rounded-pill whitespace-nowrap text-[0.8rem] font-medium border-none cursor-pointer transition-[box-shadow,color]"
+            style={tab === id
+              ? { background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--ink)' }
+              : { background: 'transparent', color: 'var(--ff-ink-3)' }}
           >
             <Icon size={14} /> {label}
           </button>
@@ -99,7 +100,8 @@ function ForYou({ feed, onOpenReel }: { feed: FeedCard[]; onOpenReel: (startInde
       {/* Launch hero — the reel is the primary, mobile-first experience. */}
       <button
         onClick={() => onOpenReel(0)}
-        className="w-full flex items-center justify-between gap-4 rounded-xl border border-coral/30 bg-coral/[0.06] px-5 py-4 mb-4 text-left hover:bg-coral/[0.1] transition-colors"
+        className="w-full flex items-center justify-between gap-4 rounded-r4 px-5 py-4 mb-4 text-left border-none cursor-pointer"
+        style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}
       >
         <div className="min-w-0">
           <div className="display-italic text-xl text-ink">Your insights are ready</div>
@@ -108,13 +110,14 @@ function ForYou({ feed, onOpenReel }: { feed: FeedCard[]; onOpenReel: (startInde
         <span className="flex-shrink-0 inline-flex items-center gap-1.5 btn-primary"><Play size={15} /> Open</span>
       </button>
 
-      {/* Preview list — tap any card to open the reel at that point. */}
+      {/* Board D — .icard: neu insight-preview cards, tap to open the reel there. */}
       <div className="grid sm:grid-cols-2 gap-2.5">
         {feed.map((c, i) => (
           <button
             key={c.id}
             onClick={() => onOpenReel(i)}
-            className="flex items-start gap-3 rounded-lg border border-line bg-bg2 px-4 py-3 text-left hover:bg-bg3 transition-colors"
+            className="flex items-start gap-3 rounded-r3 px-4 py-3.5 text-left border-none cursor-pointer transition-[box-shadow,transform] hover:-translate-y-0.5"
+            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}
           >
             <span className="text-xl flex-shrink-0 leading-6" aria-hidden>{c.emoji}</span>
             <div className="min-w-0 flex-1">

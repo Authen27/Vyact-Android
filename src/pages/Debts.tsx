@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Pencil, Trash2, ChevronDown, ChevronUp, CreditCard } from 'lucide-react';
 import { useStore } from '../store';
@@ -105,8 +105,8 @@ export default function Debts() {
             { label: 'Min. Monthly',   node: <Money amount={totalMinPay} currency={c} maxChars={11} className="text-honey" />,              cls: 'text-honey' },
             { label: 'Debt-to-Income', node: <span>{`${dti.toFixed(1)}%`}</span>,                                                            cls: dti > 36 ? 'text-terra' : dti > 25 ? 'text-honey' : 'text-sage' },
           ].map(s => (
-            <div key={s.label} className="bg-bg border border-line rounded-lg p-4 text-center min-w-0">
-              <div className={`text-xl font-semibold ${s.cls}`}>{s.node}</div>
+            <div key={s.label} className="rounded-r3 p-4 text-center min-w-0" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+              <div className={`num text-xl font-semibold ${s.cls}`}>{s.node}</div>
               <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase mt-0.5">{s.label}</div>
             </div>
           ))}
@@ -172,16 +172,29 @@ export default function Debts() {
             const expanded  = expandId === d.id;
 
             return (
-              <div key={d.id} className="bg-bg border border-line rounded-xl overflow-hidden">
+              <div key={d.id} className="rounded-r3 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: i === 0 ? 'var(--neu), 0 0 0 1.5px color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--neu-sm)' }}>
                 {/* Priority badge */}
                 {i === 0 && (
-                  <div className="bg-coral px-4 py-1.5 flex items-center gap-2">
-                    <span className="font-mono text-[0.6rem] tracking-widest text-white uppercase">
+                  <div className="px-4 py-1.5 flex items-center gap-2" style={{ background: 'var(--accent)' }}>
+                    <span className="font-mono text-[0.6rem] tracking-widest uppercase" style={{ color: 'var(--accent-ink)' }}>
                       {profile.payoffStrategy === 'avalanche' ? '⚡ Highest APR — pay this first' : '🎯 Smallest balance — pay this first'}
                     </span>
                   </div>
                 )}
                 <div className="p-5">
+                  {/* Board C — payoff-journey ring on the priority debt. */}
+                  {i === 0 && (
+                    <div className="flex items-center gap-3.5 mb-4">
+                      <PayoffRing pct={paidPct} monthsLeft={months} />
+                      <div>
+                        <div className="mono-label mb-0.5">Payoff journey</div>
+                        <div className="text-[0.82rem] text-ink-mid leading-snug">
+                          {fmt(prinBase - balBase, c)} cleared of {fmt(prinBase, c)}.
+                          {months !== null && months > 0 ? ` On track to clear in ${months} month${months === 1 ? '' : 's'}.` : months === 0 ? ' Cleared! 🎉' : ''}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2.5">
                       <span className="text-xl">{meta.icon}</span>
@@ -198,7 +211,7 @@ export default function Debts() {
 
                   {/* Payoff progress bar */}
                   <div className="h-1.5 bg-bg3 rounded-full mb-3 overflow-hidden">
-                    <div className="h-full rounded-full bg-sage transition-all" style={{ width: `${paidPct}%` }} />
+                    <div className="h-full rounded-full bg-sage chart-grow transition-all" style={{ width: `${paidPct}%` }} />
                   </div>
                   <div className="text-[0.75rem] text-ink-dim mb-3">
                     {paidPct.toFixed(0)}% paid off · {fmt(prinBase - balBase, c)} cleared
@@ -259,6 +272,28 @@ export default function Debts() {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Board C — circular payoff-journey ring: % of principal cleared + a projected
+ *  debt-free month. Presentation only (paidPct / monthsLeft are already computed). */
+function PayoffRing({ pct, monthsLeft }: { pct: number; monthsLeft: number | null }) {
+  const r = 30, circ = 2 * Math.PI * r;
+  const off = circ * (1 - Math.max(0, Math.min(100, pct)) / 100);
+  const free = monthsLeft != null && monthsLeft > 0
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() + monthsLeft); return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }); })()
+    : null;
+  return (
+    <div className="flex flex-col items-center gap-0.5 flex-shrink-0">
+      <svg width="76" height="76" viewBox="0 0 76 76">
+        <circle cx="38" cy="38" r={r} fill="none" stroke="var(--sunken)" strokeWidth="7" />
+        <circle cx="38" cy="38" r={r} fill="none" stroke="hsl(var(--sage))" strokeWidth="7" strokeLinecap="round"
+          strokeDasharray={circ} strokeDashoffset={off} transform="rotate(-90 38 38)"
+          className="ring-grow" style={{ '--ring-from': circ } as CSSProperties} />
+        <text x="38" y="43" textAnchor="middle" fontSize="16" fontWeight="700" fill="var(--ff-ink)" className="num">{Math.round(pct)}%</text>
+      </svg>
+      {free && <div className="mono-label">by {free}</div>}
     </div>
   );
 }

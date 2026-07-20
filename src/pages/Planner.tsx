@@ -12,9 +12,12 @@ const SEVERITY_ICON: Record<Severity, typeof AlertTriangle> = {
   info: Info,
 };
 const SEVERITY_COLOR: Record<Severity, string> = {
-  critical: 'text-terra border-terra/40 bg-coral-tint',
-  watch:    'text-honey border-honey/40 bg-honey/5',
-  info:     'text-denim border-denim/40 bg-denim/5',
+  critical: 'text-terra',
+  watch:    'text-honey',
+  info:     'text-denim',
+};
+const SEVERITY_SPINE: Record<Severity, string> = {
+  critical: 'hsl(var(--terra))', watch: 'hsl(var(--honey))', info: 'hsl(var(--denim))',
 };
 const DOMAIN_ICON: Record<Domain, string> = {
   income: '💰', expenses: '💸', investments: '📈', debt: '⬇️', tax: '📋',
@@ -99,9 +102,11 @@ export default function Planner({ onNavigate }: PlannerProps = {}) {
               {grouped[domain].map(r => {
                 const Icon = SEVERITY_ICON[r.severity];
                 return (
-                  <div key={r.id} className={`px-4 py-3.5 border-b border-line last:border-b-0 border-l-4 ${SEVERITY_COLOR[r.severity]}`}>
+                  // Board D — .sev: neu severity-spined card (colored left spine by rule outcome).
+                  <div key={r.id} className="mb-2 last:mb-0 rounded-r2 py-3.5 pl-4 pr-4"
+                    style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', borderLeft: `3px solid ${SEVERITY_SPINE[r.severity]}` }}>
                     <div className="flex items-start gap-3">
-                      <Icon size={16} className="mt-0.5 flex-shrink-0" />
+                      <Icon size={16} className={`mt-0.5 flex-shrink-0 ${SEVERITY_COLOR[r.severity]}`} />
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-ink mb-1">{r.title}</div>
                         <div className="text-[0.84rem] text-ink-mid leading-relaxed">{r.body}</div>

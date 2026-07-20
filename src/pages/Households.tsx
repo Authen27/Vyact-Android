@@ -58,6 +58,7 @@ export default function Households() {
   const createHousehold = useStore(s => s.createHousehold);
   const deleteHousehold = useStore(s => s.deleteHousehold);
   const renameHousehold = useStore(s => s.renameHousehold);
+  const updateProfile = useStore(s => s.updateProfile);
   const myRole = useStore(s => s.myRole);
   const toast = useStore(s => s.toast);
 
@@ -111,6 +112,36 @@ export default function Households() {
         <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim mb-6">
           Local-only mode — set Supabase env vars to enable cloud
         </p>
+
+        {/* Basic household identity (name/type) still lives on this device even
+            without cloud — it just isn't shared with other members/devices. */}
+        {active && (
+          <Panel title="Household Settings" sub={active.name}>
+            <div className="p-5 grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="mono-label mb-1.5 block">Name</label>
+                <div className="flex gap-2">
+                  <Input value={active.name} readOnly className="flex-1" />
+                  <Button variant="ghost" onClick={() => {
+                    const next = prompt('New name:', active.name);
+                    if (!next || next === active.name) return;
+                    renameHousehold(active.id, next).then(() => toast('Renamed', 'success'));
+                  }}>Rename</Button>
+                </div>
+              </div>
+              <div>
+                <label className="mono-label mb-1.5 block">Household Type</label>
+                <Select value={active.type as ProfileTypeKey}
+                  onChange={e => updateProfile({ household: e.target.value as ProfileTypeKey })}>
+                  {Object.entries(PROFILE_TYPES).map(([k, v]) => (
+                    <option key={k} value={k}>{v.icon} {v.label}</option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+          </Panel>
+        )}
+
         <Panel>
           <div className="p-6 max-w-prose">
             <p className="text-ink-mid leading-relaxed mb-3">
@@ -231,6 +262,23 @@ export default function Households() {
               }}
             />
           )}
+
+          {/* Household settings — type lives on the household record itself, not
+              the user's profile, so it's edited here rather than in Settings. */}
+          <div className="mt-3.5">
+            <Panel title="Household Settings">
+              <div className="p-4 max-w-xs">
+                <label className="mono-label mb-1.5 block">Household Type</label>
+                <Select value={active.type as ProfileTypeKey}
+                  disabled={!can(myRole, 'edit_household_settings')}
+                  onChange={e => updateProfile({ household: e.target.value as ProfileTypeKey })}>
+                  {Object.entries(PROFILE_TYPES).map(([k, v]) => (
+                    <option key={k} value={k}>{v.icon} {v.label}</option>
+                  ))}
+                </Select>
+              </div>
+            </Panel>
+          </div>
 
           {/* Danger zone */}
           <div className="mt-6">

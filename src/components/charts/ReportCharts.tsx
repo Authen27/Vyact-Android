@@ -64,8 +64,8 @@ export function IncomeExpenseArea({ data, currency }: ChartProps) {
           />
           <Tooltip formatter={(value: number, name: string) => [fmt(value, currency), name]} />
           <Legend iconType="circle" />
-          <Area type="monotone" dataKey="income" name="Income" stroke={hsl('sage')} strokeWidth={2.2} fill="url(#incomeGrad)" />
-          <Area type="monotone" dataKey="expense" name="Expense" stroke={hsl('terra')} strokeWidth={2.2} fill="url(#expenseGrad)" />
+          <Area type="monotone" dataKey="income" name="Income" stroke={hsl('sage')} strokeWidth={2.2} fill="url(#incomeGrad)" animationDuration={900} animationEasing="ease-out" />
+          <Area type="monotone" dataKey="expense" name="Expense" stroke={hsl('terra')} strokeWidth={2.2} fill="url(#expenseGrad)" animationDuration={900} animationEasing="ease-out" />
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -127,7 +127,7 @@ export function NetBarChart({ data, currency }: ChartProps) {
             />
             <ReferenceLine y={0} stroke={hsl('ink-dim')} strokeWidth={1} />
             <Tooltip cursor={{ fill: 'hsl(var(--bg3))' }} content={<NetTooltip currency={currency} />} />
-            <Bar dataKey="net" name="Net" radius={[3, 3, 0, 0]}>
+            <Bar dataKey="net" name="Net" radius={[3, 3, 0, 0]} animationDuration={900} animationEasing="ease-out">
               {data.map((entry, index) => (
                 <Cell key={index} fill={entry.net >= 0 ? hsl('sage') : hsl('terra')} />
               ))}
@@ -147,7 +147,7 @@ export function CategoryBars({ data, currency }: CategoryChartProps) {
   const max = sorted[0].amount;
   return (
     <div className="py-2">
-      {sorted.map(entry => {
+      {sorted.map((entry, i) => {
         const category = getCat(entry.catId);
         const width = Math.round(entry.amount / max * 100);
         return (
@@ -157,8 +157,8 @@ export function CategoryBars({ data, currency }: CategoryChartProps) {
             </div>
             <div className="bg-bg3 h-1.5 rounded-full overflow-hidden">
               <div
-                className="h-full rounded-full transition-[width] duration-500"
-                style={{ width: `${width}%`, background: category.color }}
+                className="h-full rounded-full chart-grow transition-[width] duration-500"
+                style={{ width: `${width}%`, background: category.color, animationDelay: `${i * 60}ms` }}
               />
             </div>
             <div className="font-mono text-[0.66rem] text-ink-mid text-right">{fmtShort(entry.amount, currency)}</div>

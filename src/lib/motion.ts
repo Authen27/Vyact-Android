@@ -59,3 +59,27 @@ export const staggerItem: Variants = {
   hidden: { opacity: 0, y: 10 },
   visible: { opacity: 1, y: 0, transition: spring },
 };
+
+/** Scrim behind a sheet — pure fade. reduced-motion falls to instant via MotionConfig. */
+export const scrim: Variants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1, transition: ease },
+  exit: { opacity: 0, transition: ease },
+};
+
+/** Aurora bottom half-sheet (forms doctrine): slides up from the bottom edge.
+ *  Under `reducedMotion="user"` framer collapses the y-transform, leaving a fade. */
+export const sheetUp: Variants = {
+  hidden: { y: '100%', opacity: 0.6 },
+  visible: { y: 0, opacity: 1, transition: { ...spring, stiffness: 360, damping: 34 } },
+  // Exit is opacity-only: a transform exit (y) inside AnimatePresence can stall
+  // mid-animation and block child removal, leaving the sheet stuck on screen.
+  exit: { opacity: 0, transition: ease },
+};
+
+/** Aurora full-width top pull-down (notifications / household switch). */
+export const sheetDown: Variants = {
+  hidden: { y: '-100%', opacity: 0.6 },
+  visible: { y: 0, opacity: 1, transition: { ...spring, stiffness: 360, damping: 34 } },
+  exit: { opacity: 0, transition: ease },
+};
