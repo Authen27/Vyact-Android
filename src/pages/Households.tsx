@@ -11,9 +11,10 @@ import { Card, Panel } from '../components/ui/Card';
 import EmptyState from '../components/ui/EmptyState';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
+import HalfSheet from '../components/ui/HalfSheet';
 import { Input, Select, Field, FieldRow } from '../components/ui/Input';
 import Badge from '../components/ui/Badge';
-import { PROFILE_TYPES, CURRENCIES } from '../constants';
+import { PROFILE_TYPES, CURRENCIES, deterministicColor } from '../constants';
 import {
   createInviteLink, listInvitations, revokeInvitation, INVITE_LABEL_SENTINEL,
   changeMemberRole, removeMembership, leaveHousehold, listActivity,
@@ -48,6 +49,31 @@ interface Invitation {
 // `log_domain_activity()` trigger writes.
 type ActivityEntry = ActivityRowData;
 
+// Board E · M1/D1 — same avatar-initials fallback used by the household-switch
+// pull-down (components/layout/HouseholdSheet.tsx), kept local since it's a
+// two-line string helper not worth sharing a module for.
+const initials = (name: string) =>
+  name.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || 'H';
+
+// Board E · M1 — .role pill: owner solid accent, admin denim-tint, everyone
+// else a neu-inset neutral chip. Read-only display only — an editable role
+// keeps the native <Select> below it (a real dropdown beats a fake chip).
+function RoleChip({ role }: { role: AppRole }) {
+  const style = role === 'owner'
+    ? { background: 'var(--accent)', color: 'var(--accent-ink)' }
+    : role === 'admin'
+    ? { background: 'color-mix(in srgb, hsl(var(--denim)) 16%, transparent)', color: 'hsl(var(--denim))' }
+    : { background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' };
+  return (
+    <span
+      className={`font-mono text-[0.62rem] tracking-wider uppercase px-2.5 py-1 rounded-pill flex-shrink-0 whitespace-nowrap ${role === 'owner' || role === 'admin' ? '' : 'text-ink-mid'}`}
+      style={style}
+    >
+      {roleLabel(role)}
+    </span>
+  );
+}
+
 export default function Households() {
   const cloudEnabled = useStore(s => s.cloudEnabled);
   const session = useStore(s => s.session);
@@ -58,6 +84,7 @@ export default function Households() {
   const createHousehold = useStore(s => s.createHousehold);
   const deleteHousehold = useStore(s => s.deleteHousehold);
   const renameHousehold = useStore(s => s.renameHousehold);
+  const updateProfile = useStore(s => s.updateProfile);
   const myRole = useStore(s => s.myRole);
   const toast = useStore(s => s.toast);
 
@@ -111,6 +138,36 @@ export default function Households() {
         <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim mb-6">
           Local-only mode — set Supabase env vars to enable cloud
         </p>
+
+        {/* Basic household identity (name/type) still lives on this device even
+            without cloud — it just isn't shared with other members/devices. */}
+        {active && (
+          <Panel title="Household Settings" sub={active.name}>
+            <div className="p-5 grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="mono-label mb-1.5 block">Name</label>
+                <div className="flex gap-2">
+                  <Input value={active.name} readOnly className="flex-1" />
+                  <Button variant="ghost" onClick={() => {
+                    const next = prompt('New name:', active.name);
+                    if (!next || next === active.name) return;
+                    renameHousehold(active.id, next).then(() => toast('Renamed', 'success'));
+                  }}>Rename</Button>
+                </div>
+              </div>
+              <div>
+                <label className="mono-label mb-1.5 block">Household Type</label>
+                <Select value={active.type as ProfileTypeKey}
+                  onChange={e => updateProfile({ household: e.target.value as ProfileTypeKey })}>
+                  {Object.entries(PROFILE_TYPES).map(([k, v]) => (
+                    <option key={k} value={k}>{v.icon} {v.label}</option>
+                  ))}
+                </Select>
+              </div>
+            </div>
+          </Panel>
+        )}
+
         <Panel>
           <div className="p-6 max-w-prose">
             <p className="text-ink-mid leading-relaxed mb-3">
@@ -145,17 +202,49 @@ export default function Households() {
         </Button>
       </div>
 
-      {/* Household cards */}
+      {/* Household cards — board E · .hh-card: same neu treatment + member
+          avatar stack as the household-switch pull-down (HouseholdSheet.tsx);
+          only the active card has a roster to show, others fall back to
+          their initials. */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
         {households.map(h => {
           const meta = PROFILE_TYPES[h.type as ProfileTypeKey] || PROFILE_TYPES.family;
           const isActive = h.id === currentHouseholdId;
+          // `members` (below) is the cloud Membership[] rows for the active
+          // household; the avatar stack wants the entity-level Member[] (has
+          // .name), same source HouseholdSheet.tsx uses for its own stack.
+          const stack = isActive ? householdMembers.slice(0, 3) : [];
           return (
-            <div key={h.id} className={`panel p-5 cursor-pointer transition-all ${isActive ? 'border-coral ring-1 ring-coral/30' : 'hover:border-line2'}`}
-              onClick={() => switchHousehold(h.id)}>
+            <button key={h.id} onClick={() => switchHousehold(h.id)}
+              className="text-left rounded-r3 p-5 transition-transform hover:-translate-y-0.5"
+              style={{
+                background: 'var(--canvas)',
+                boxShadow: isActive
+                  ? 'var(--neu), 0 0 0 2px var(--accent), 0 0 24px color-mix(in srgb, var(--accent) 30%, transparent)'
+                  : 'var(--neu)',
+              }}>
               <div className="flex items-start justify-between mb-3">
-                <span className="text-2xl">{meta.icon}</span>
-                {isActive && <Badge tone="alert">ACTIVE</Badge>}
+                {stack.length > 0 ? (
+                  <span className="flex" aria-hidden>
+                    {stack.map((m, i) => (
+                      <span key={m.id}
+                        className="w-8 h-8 rounded-full flex items-center justify-center font-display font-bold text-[11px]"
+                        style={{
+                          background: i === 0 ? 'var(--coral-grad)' : deterministicColor(m.name || m.id),
+                          marginLeft: i === 0 ? 0 : -8,
+                          boxShadow: '0 0 0 2px var(--canvas)',
+                          color: i === 0 ? 'var(--accent-ink)' : '#fff',
+                        }}>
+                        {initials(m.name || '?')}
+                      </span>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="text-2xl" aria-hidden>{meta.icon}</span>
+                )}
+                {isActive
+                  ? <span className="mono-label px-2 py-0.5 rounded-pill flex-shrink-0" style={{ background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent)' }}>✓ current</span>
+                  : null}
               </div>
               <div className="font-semibold text-ink mb-0.5">{h.name}</div>
               <div className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim mb-3">
@@ -164,7 +253,7 @@ export default function Households() {
               <div className="font-mono text-[0.62rem] text-ink-dim">
                 Created {new Date(h.createdAt).toLocaleDateString()}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
@@ -232,6 +321,23 @@ export default function Households() {
             />
           )}
 
+          {/* Household settings — type lives on the household record itself, not
+              the user's profile, so it's edited here rather than in Settings. */}
+          <div className="mt-3.5">
+            <Panel title="Household Settings">
+              <div className="p-4 max-w-xs">
+                <label className="mono-label mb-1.5 block">Household Type</label>
+                <Select value={active.type as ProfileTypeKey}
+                  disabled={!can(myRole, 'edit_household_settings')}
+                  onChange={e => updateProfile({ household: e.target.value as ProfileTypeKey })}>
+                  {Object.entries(PROFILE_TYPES).map(([k, v]) => (
+                    <option key={k} value={k}>{v.icon} {v.label}</option>
+                  ))}
+                </Select>
+              </div>
+            </Panel>
+          </div>
+
           {/* Danger zone */}
           <div className="mt-6">
             <Panel title="Danger Zone">
@@ -294,9 +400,19 @@ export default function Households() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={async (name, type, currency) => {
-          await createHousehold(name, type, currency);
-          toast(`Created ${name}`, 'success');
-          setCreateOpen(false);
+          try {
+            await createHousehold(name, type, currency);
+            toast(`Created ${name}`, 'success');
+            setCreateOpen(false);
+          } catch (e) {
+            // HH-REG-001 — this previously had no catch, so any failure
+            // (expired session, RLS denial, network blip) surfaced as
+            // nothing at all: the modal just sat there with no feedback.
+            // Re-throw so CreateHouseholdModal knows to keep the typed
+            // values instead of clearing them like a successful submit.
+            toast((e as Error).message, 'error');
+            throw e;
+          }
         }}
       />
 
@@ -354,9 +470,7 @@ function MembersList({
                   {ROLE_OPTIONS.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
                 </Select>
               ) : (
-                <Badge tone={m.role === 'owner' ? 'alert' : m.role === 'admin' ? 'info' : 'neutral'}>
-                  {roleLabel(m.role)}
-                </Badge>
+                <RoleChip role={m.role} />
               )}
               {isMe ? (
                 <button onClick={onLeave} className="p-1.5 text-ink-mid hover:text-terra" title="Leave">
@@ -446,8 +560,13 @@ function CreateHouseholdModal({ open, onClose, onCreated }: {
       <form onSubmit={async e => {
         e.preventDefault(); if (!name.trim()) return;
         setSubmitting(true);
-        try { await onCreated(name.trim(), type, currency); }
-        finally { setSubmitting(false); setName(''); }
+        try {
+          await onCreated(name.trim(), type, currency);
+          setName('');
+        } catch {
+          // Already toasted by onCreated — keep the typed name/type/currency
+          // so a transient failure doesn't force retyping.
+        } finally { setSubmitting(false); }
       }}>
         <Field label="Name"><Input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Smith Family · Acme Consulting · …" required /></Field>
         <Field label="Type">
@@ -514,7 +633,7 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
   }
 
   return (
-    <Modal open={open} onClose={() => { reset(); onClose(); }} title={`Invite to ${householdName}`}>
+    <HalfSheet open={open} onClose={() => { reset(); onClose(); }} title={`Invite to ${householdName}`}>
       {link ? (
         <div>
           <div className="text-center mb-4">
@@ -604,7 +723,7 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
           </div>
         </form>
       )}
-    </Modal>
+    </HalfSheet>
   );
 }
 

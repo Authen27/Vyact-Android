@@ -222,7 +222,12 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
 
     // v7: run recurring + refresh notifications on every load
     await get().runRecurringEngine();
-    get().refreshNotifications();
+    void get().refreshNotifications();
+
+    // Every household gets a default Cash account from day one (idempotent —
+    // no-op once one exists). Runs after refresh()/seeding so `accounts` is
+    // populated either way.
+    try { await get().ensureDefaultCashAccount(); } catch { /* best-effort */ }
 
     set({ loading: false });
   },
@@ -345,6 +350,8 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
       try { setLocalString('last_cloud_hid', id); } catch { /* noop */ }
     }
     await get().refresh();
+    void get().refreshNotifications();   // reload the new household's notifications (cross-device)
+    try { await get().ensureDefaultCashAccount(); } catch { /* best-effort */ }
     get().toast('Switched profile', 'success');
   },
 
@@ -503,11 +510,24 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     const next = Object.keys(cloudPatch).length
       ? await adapter.updateProfile(currentHouseholdId, cloudPatch)
       : profile;
+    // Household Type / base currency are HOUSEHOLD-level fields, not user-profile
+    // fields — persist them to the household record itself via updateHousehold,
+    // not just the profile blob. supabaseAdapter.updateProfile already writes
+    // these to `households` internally, so this is a harmless no-op there; for
+    // the local adapter this is the ONLY path that actually persists
+    // HouseholdMeta.type/baseCurrency — without it, a Household Type change
+    // looked applied in-session (see the in-memory patch below) but silently
+    // reverted on reload because it was never written to the household record.
+    if (patch.household !== undefined || patch.baseCurrency !== undefined) {
+      await adapter.updateHousehold(currentHouseholdId, {
+        ...(patch.household    !== undefined ? { type: patch.household } : {}),
+        ...(patch.baseCurrency !== undefined ? { baseCurrency: patch.baseCurrency } : {}),
+      });
+    }
     const merged = { ...profile, ...next, ...(nsOverride ? { numberSystem: nsOverride } : {}) };
-    // v8.1.2 — household-level fields (base currency, type) also live on the
-    // HouseholdMeta list that the profile switcher / menu drawer reads. Keep that
-    // list in sync so the drawer's "· {currency}" label updates immediately
-    // instead of staying stale until the next full reload.
+    // Keep the in-memory households list in sync so the drawer's "· {currency}"
+    // label / type badge updates immediately instead of staying stale until the
+    // next full reload.
     const households = (patch.baseCurrency !== undefined || patch.household !== undefined)
       ? get().households.map(h => h.id === currentHouseholdId
           ? { ...h,

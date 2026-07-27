@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
-import { Card, Panel } from '../components/ui/Card';
+import { Panel } from '../components/ui/Card';
 import EmptyState from '../components/ui/EmptyState';
 import { CategoryDonut } from '../components/charts/DonutCharts';
 import {
@@ -11,7 +11,7 @@ import {
 import {
   reportableTxns, effectiveAmount,
 } from '../lib/calculations';
-import { fmt, fmtSigned, getMonthKey, nowMonthKey } from '../lib/format';
+import { fmt, getMonthKey, nowMonthKey } from '../lib/format';
 import { useCategoryClassifications } from '../lib/categorization';
 import { getMoneyMapMode } from '../lib/featureFlags';
 import Money from '../components/ui/Money';
@@ -212,16 +212,41 @@ export default function Reports() {
             Financial performance over time
           </p>
         </div>
+<<<<<<< ANDROID
         {/* Full-width, equal-share tabs on mobile so all 5 fit (at ~320px the
             fixed-width strip clipped "YEAR"); natural width from sm up. */}
         <div className="flex w-full sm:w-auto bg-bg3 border border-line rounded-md p-0.5 gap-px">
+||||||| UPSTREAM-BASE
+        <div className="flex bg-bg3 border border-line rounded-md p-0.5 gap-px">
+=======
+        {/* Board D M1 §.srail — the period selector is an inset SEGMENTED rail
+            (one sunken pill; the active segment is a raised accent-tinted chip),
+            matching the Transactions type rail. */}
+        <div
+          className="inline-flex max-w-full gap-1 p-1 rounded-pill overflow-x-auto [&::-webkit-scrollbar]:hidden"
+          style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)', scrollbarWidth: 'none' }}
+          role="tablist" aria-label="Report period"
+        >
+>>>>>>> UPSTREAM
           {(['day','week','month','quarter','year'] as Period[]).map(p => (
             <button
               key={p}
+              role="tab" aria-selected={period === p}
               onClick={() => setPeriod(p)}
+<<<<<<< ANDROID
               className={`flex-1 sm:flex-none min-w-0 font-mono text-[0.62rem] tracking-normal sm:tracking-[0.1em] uppercase font-medium px-2 sm:px-3.5 py-1.5 rounded transition-all ${
                 period === p ? 'bg-coral text-white shadow-1' : 'text-ink-mid hover:text-ink hover:bg-bg4'
               }`}
+||||||| UPSTREAM-BASE
+              className={`font-mono text-[0.62rem] tracking-[0.1em] uppercase font-medium px-3.5 py-1.5 rounded transition-all ${
+                period === p ? 'bg-coral text-white shadow-1' : 'text-ink-mid hover:text-ink hover:bg-bg4'
+              }`}
+=======
+              className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] whitespace-nowrap flex-shrink-0"
+              style={period === p
+                ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
+                : { color: 'var(--ff-ink-3)', background: 'transparent' }}
+>>>>>>> UPSTREAM
             >
               {PERIOD_LABELS[p]}
             </button>
@@ -263,13 +288,35 @@ export default function Reports() {
         </div>
       )}
 
-      {/* Stats cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3.5">
-        <Card label="All-Time Income"   accent="sage"  value={<Money amount={allInc} currency={baseCur} className="text-sage" maxChars={8} />} />
-        <Card label="All-Time Expenses" accent="terra" value={<Money amount={allExp} currency={baseCur} className="text-terra" maxChars={8} />} />
-        <Card label="Net Flow"          accent="coral" value={<Money amount={allInc - allExp} currency={baseCur} className={allInc - allExp >= 0 ? 'text-sage' : 'text-terra'} maxChars={8} />} />
-        <Card label={`Avg ${PERIOD_TITLE[period]} Net`} accent="honey" value={<Money amount={avgNet} currency={baseCur} className={avgNet >= 0 ? 'text-sage' : 'text-terra'} maxChars={8} />} />
-      </div>
+      {/* Board D M1 §.stat — neu stat tiles with a delta subline, scrolling as a
+          carousel on phones and settling into a row on wider screens.
+          "Accidental Wealth" rule: expenses are INFORMATION, so the total spent
+          renders in neutral ink — crit is reserved for genuine failures. */}
+      {(() => {
+        const kept = allInc > 0 ? Math.round(((allInc - allExp) / allInc) * 100) : 0;
+        const avgIncome  = data.length ? data.reduce((s, d) => s + d.income, 0) / data.length : 0;
+        const avgExpense = data.length ? data.reduce((s, d) => s + d.expense, 0) / data.length : 0;
+        const per = PERIOD_LABELS[period].toLowerCase();
+        const tiles: { lbl: string; value: React.ReactNode; delta: string }[] = [
+          { lbl: 'Income · all time',   value: <Money amount={allInc} currency={baseCur} className="num font-bold text-[21px] leading-none text-sage" maxChars={9} />, delta: `avg ${fmt(Math.round(avgIncome), baseCur)}/${per}` },
+          { lbl: 'Expenses · all time', value: <Money amount={allExp} currency={baseCur} className="num font-bold text-[21px] leading-none text-ink"  maxChars={9} />, delta: `avg ${fmt(Math.round(avgExpense), baseCur)}/${per}` },
+          { lbl: 'Net flow',            value: <Money amount={allInc - allExp} currency={baseCur} className={`num font-bold text-[21px] leading-none ${allInc - allExp >= 0 ? 'text-sage' : 'text-terra'}`} maxChars={9} />, delta: allInc > 0 ? `kept ${kept}%` : 'no income yet' },
+          { lbl: `Avg ${PERIOD_TITLE[period]} net`, value: <Money amount={avgNet} currency={baseCur} className={`num font-bold text-[21px] leading-none ${avgNet >= 0 ? 'text-sage' : 'text-terra'}`} maxChars={9} />, delta: `over ${data.length} ${per}${data.length === 1 ? '' : 's'}` },
+        ];
+        return (
+          <div className="flex gap-2.5 overflow-x-auto pb-1 -mx-1 px-1 mb-3.5 sm:grid sm:grid-cols-2 lg:grid-cols-4 sm:overflow-visible sm:mx-0 sm:px-0 [&::-webkit-scrollbar]:hidden"
+            style={{ scrollbarWidth: 'none' }}>
+            {tiles.map(t => (
+              <div key={t.lbl} className="min-w-[132px] flex-shrink-0 sm:min-w-0 rounded-r2 px-[15px] py-[13px]"
+                style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+                <div className="mono-label mb-[7px]">{t.lbl}</div>
+                {t.value}
+                <div className="text-[10px] text-ink-dim mt-[5px]">{t.delta}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Income vs Expense area chart (Recharts) */}
       <Panel title="Income vs Expenses Trend" sub={PERIOD_TITLE[period]} className="mb-3.5">
@@ -288,17 +335,48 @@ export default function Reports() {
         </Panel>
         <Panel title="Category Breakdown" sub="This period">
           <CategoryDonut data={donutData} currency={baseCur} />
-          {/* Needs vs Wants breakdown */}
-          <div className="mt-4 flex gap-4 text-[0.98rem]">
-            <div className="flex-1 bg-bg3 rounded-lg p-3 border border-line flex flex-col items-center min-w-0">
-              <div className="font-mono text-[0.7rem] tracking-wider uppercase text-ink-dim mb-1">Needs</div>
-              <Money amount={needsWants.needs} currency={baseCur} maxChars={9} className="font-bold text-sage text-lg" />
-            </div>
-            <div className="flex-1 bg-bg3 rounded-lg p-3 border border-line flex flex-col items-center min-w-0">
-              <div className="font-mono text-[0.7rem] tracking-wider uppercase text-ink-dim mb-1">Wants</div>
-              <Money amount={needsWants.wants} currency={baseCur} maxChars={9} className="font-bold text-honey text-lg" />
-            </div>
-          </div>
+          {/* Board D — needs-vs-wants verdict split bar. Both segments round
+              their OWN outer corner (rather than relying solely on the
+              container's overflow-hidden to clip square corners into shape)
+              and the wants segment fills via flex-1 instead of an explicit
+              percent width, so independent per-child pixel rounding can never
+              leave a 1px gap/seam or bleed past the pill's rounded ends. */}
+          {(needsWants.needs > 0 || needsWants.wants > 0) && (() => {
+            const total = needsWants.needs + needsWants.wants || 1;
+            const nPct = (needsWants.needs / total) * 100;
+            const wPct = (needsWants.wants / total) * 100;
+            const bothVisible = needsWants.needs > 0 && needsWants.wants > 0;
+            // Board D M2 — the bar carries a plain-language verdict, not just
+            // percentages. Thresholds are descriptive, never scolding.
+            const verdict = nPct >= 70 ? { text: 'solid',        cls: 'text-sage' }
+                          : nPct >= 50 ? { text: 'balanced',     cls: 'text-sage' }
+                          : nPct >= 35 ? { text: 'wants-leaning', cls: 'text-honey' }
+                          :              { text: 'mostly wants', cls: 'text-honey' };
+            return (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="mono-label">Needs vs Wants</span>
+                  <span className={`text-[11.5px] font-semibold ${verdict.cls}`}>
+                    {Math.round(nPct)}% needs — {verdict.text}
+                  </span>
+                </div>
+                <div className="flex h-8 rounded-full overflow-hidden" style={{ boxShadow: 'var(--neu-inset)' }} aria-hidden>
+                  {needsWants.needs > 0 && (
+                    <div className={`flex items-center justify-center text-white font-display font-bold text-[11px] whitespace-nowrap overflow-hidden ${bothVisible ? 'rounded-l-full' : 'rounded-full'}`}
+                      style={{ width: needsWants.wants > 0 ? `${nPct}%` : '100%', background: 'hsl(var(--sage))' }}>{nPct >= 16 ? `Needs ${Math.round(nPct)}%` : ''}</div>
+                  )}
+                  {needsWants.wants > 0 && (
+                    <div className={`flex items-center justify-center font-display font-bold text-[11px] whitespace-nowrap overflow-hidden flex-1 ${bothVisible ? 'rounded-r-full' : 'rounded-full'}`}
+                      style={{ background: 'hsl(var(--honey))', color: 'var(--accent-ink)' }}>{wPct >= 16 ? `Wants ${Math.round(wPct)}%` : ''}</div>
+                  )}
+                </div>
+                <div className="flex justify-between mt-1.5 mono-label">
+                  <span className="text-sage">Needs {fmt(needsWants.needs, baseCur)}</span>
+                  <span className="text-honey">Wants {fmt(needsWants.wants, baseCur)}</span>
+                </div>
+              </div>
+            );
+          })()}
         </Panel>
       </div>
 

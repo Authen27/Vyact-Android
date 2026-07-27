@@ -93,21 +93,24 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
   };
 
   return (
-    <div className="relative inline-flex items-center gap-2">
+    <div className="relative inline-flex items-center gap-1.5">
       <div className="relative">
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line bg-bg2 hover:bg-bg3 text-[0.84rem] text-ink"
+          className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] flex items-center gap-1.5 flex-shrink-0"
+          style={picker || views.length
+            ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
+            : { color: 'var(--ff-ink-3)', background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
           onClick={() => setPicker(p => !p)}
           aria-haspopup="listbox"
           aria-expanded={picker}
         >
           <Bookmark className="w-3.5 h-3.5" />
-          <span>Views{views.length ? ` (${views.length})` : ''}</span>
+          <span>★ Views{views.length ? ` (${views.length})` : ''}</span>
           <ChevronDown className="w-3.5 h-3.5" />
         </button>
         {picker && (
-          <div role="listbox" className="absolute right-0 z-30 mt-1 w-72 rounded-md border border-line2 bg-bg2 shadow-3 p-1">
+          <div role="listbox" className="absolute right-0 z-30 mt-1.5 w-72 rounded-r3 p-1.5" style={{ background: 'var(--glass-strong)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)', border: '1px solid var(--glass-line)', boxShadow: 'var(--cast-3)' }}>
             {views.length === 0 && (
               <div className="px-3 py-4 text-xs text-ink-dim text-center">
                 No saved views yet. Save the current filters to reuse later.
@@ -117,7 +120,7 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
               <div key={v.id} className="flex items-center gap-1 group">
                 <button
                   type="button"
-                  className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded text-[0.84rem] text-ink text-left hover:bg-bg3"
+                  className="flex-1 flex items-center gap-2 px-2 py-1.5 rounded-r2 text-[0.84rem] text-ink text-left hover:bg-[var(--glass-hi)]"
                   onClick={() => apply(v)}
                 >
                   <Check className="w-3.5 h-3.5 opacity-0" />
@@ -127,7 +130,7 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
                 <button
                   type="button"
                   aria-label={`Delete ${v.name}`}
-                  className="p-1.5 rounded text-ink-dim hover:text-terra hover:bg-bg3 opacity-0 group-hover:opacity-100"
+                  className="p-1.5 rounded-r2 text-ink-dim hover:text-terra hover:bg-[var(--glass-hi)] opacity-0 group-hover:opacity-100"
                   onClick={() => del(v)}
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -140,7 +143,8 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
 
       <button
         type="button"
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line bg-bg2 hover:bg-bg3 text-[0.84rem] text-ink"
+        className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] flex items-center gap-1.5 flex-shrink-0"
+        style={{ color: 'var(--ff-ink-3)', background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
         onClick={() => setSaving(true)}
       >
         <BookmarkPlus className="w-3.5 h-3.5" />
@@ -148,7 +152,7 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
       </button>
 
       {saving && (
-        <div role="dialog" aria-label="Save view" className="absolute right-0 top-full mt-1 z-40 w-80 rounded-md border border-line2 bg-bg2 shadow-3 p-3">
+        <div role="dialog" aria-label="Save view" className="absolute right-0 top-full mt-1.5 z-40 w-80 rounded-r3 p-3" style={{ background: 'var(--glass-strong)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)', border: '1px solid var(--glass-line)', boxShadow: 'var(--cast-3)' }}>
           <h4 className="text-[0.84rem] font-semibold text-ink mb-2">Save current filters</h4>
           <input
             autoFocus

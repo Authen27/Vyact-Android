@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v9.8.2`** (consumer)
+> **Current production version: `v10.13.0`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -24,6 +24,1278 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v10.13.0 — Onboarding rebuilt + wired to real money *(2026-07-24)*
+
+The onboarding flow is rebuilt to the Aurora `revamp/Vyact Aurora · Onboarding.html`
+design and — for the first time — turns what you type into **real, first-class
+money-model objects** you can see and edit from day one, instead of an
+"estimated reference baseline" that wiped itself.
+
+- **Redesigned six-screen flow** (`pages/Onboarding.tsx`): Welcome (currency set
+  once here) → Who + your **first name** → What matters (multi-select) → Money in
+  (take-home) → Money out (fixed bills with **amounts inline** + a live running
+  total) → Reveal. pip greets you by name from step 2 on, and the Reveal is fully
+  computed from what you entered (room left = take-home − fixed bills, your
+  biggest fixed cost and its share of pay, a first Pulse). The separate
+  cash/debt "snapshot" step is gone — take-home is the one cash figure.
+- **The captured numbers become real money** (`lib/onboardingWiring.ts`):
+  1. Monthly take-home → the default **Cash account's opening balance**
+     (cash-in-hand today).
+  2. Take-home → a recurring **paycheck** (income, monthly on the 1st, credited
+     to Cash). Starts the *next* 1st (strictly future) so it never
+     double-counts the opening balance, and is **approval-gated**
+     (`autoConfirm:false`).
+  3. Each fixed bill → a recurring **expense** (monthly on the 2nd, debiting
+     Cash, in its mapped category) — future-dated + approval-gated, so
+     **nothing auto-pays until you review it in Recurring**.
+  4. The bills together → a **budget for your join month** (created even if the
+     month is already underway), one allocation per category.
+- **The money model is untouched by onboarding.** None of the above posts a
+  transaction — opening balances, future-dated approval-gated *schedules* and
+  budgets don't move spend/income. Verified in-browser end to end: after
+  completing onboarding the transaction count was **unchanged** (nothing
+  auto-posted), the Cash opening balance became the take-home figure, a
+  day-1 income schedule and five day-2 expense schedules were created (all
+  `autoConfirm:false`, future-dated, funded by Cash), and the join-month budget
+  landed with its allocations.
+- New `store.saveOnboardingBudget` creates the join-month budget without the
+  owner/admin role gate — onboarding is, by definition, the owner setting up
+  their own household (and local-only mode never populates `myRole`).
+- New pure-helper unit tests (`lib/__tests__/onboardingWiring.test.ts`, 8 cases)
+  pin the future-date math (schedules never start today), the chip→category
+  map, and the per-category allocation merge.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 169/170 (the one failure is the
+pre-existing clock-dependent golden snapshot, unrelated; +8 new wiring tests;
+money invariants green), `vite build` 0. Full flow walked in-browser
+(salaried path, ₹/$ inputs), reveal figures correct, wiring inspected in the
+live store.
+
+---
+
+## v10.12.0 — Section reshuffle + mobile Net Worth hero *(2026-07-24)*
+
+- **Sections regrouped** (`components/layout/navModel.ts`, the single source
+  of truth for the TopBar tabs, SubNav pills, ⌘K palette and mobile tab bar):
+  **Track** = Dashboard · Transactions · Splits; **Plan** = Budgets ·
+  Recurring · Debts · Accounts (Recurring moved in from Track); **Analyze** =
+  Net Worth · Reports · Insights (Net Worth moved in from Plan). Every route
+  stays reachable; `sectionForPath` and the SubNav derive from the model, so
+  the whole shell followed automatically.
+- **Dashboard mobile is now a swipeable hero carousel.** The Net Worth hero
+  used to be desktop-only, folded into the Cash Flow card's footer on mobile.
+  It's now its own full card that sits *beside* Cash Flow in a horizontal
+  snap-scroll — swipe to see net worth, assets and liabilities without
+  leaving Home. Desktop is unchanged (the two heroes stay side-by-side). The
+  now-redundant folded "Net worth" footer line was removed so the figure
+  isn't shown twice; the mobile footer shows the savings rate instead.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 161/162 (pre-existing clock snapshot,
+unrelated), `vite build` 0. Verified in-browser at mobile (375px, carousel
+scrolls Cash Flow → Net Worth) and desktop (1280px, reverts to the 2-col
+grid); Recurring now lands under Plan and Net Worth under Analyze with the
+correct SubNav pills; no console errors.
+
+---
+
+## v10.11.1 — Fix: households could not be deleted; failed creates were silent *(2026-07-24)*
+
+Two production bugs reported by a real user, both triaged to root cause and fixed.
+
+- **Deleting a household always failed** with `insert or update on table
+  "activity_log" violates foreign key constraint
+  "activity_log_household_id_fkey"`. Root cause: `activity_log.household_id`
+  is `references households(id) on delete cascade` — deleting a household
+  cascades to delete every row referencing it (memberships, transactions,
+  budgets, goals, debts, assets), and EACH of those cascaded deletes fires
+  the `log_domain_activity()` audit trigger (TD-08), which tries to insert a
+  fresh `activity_log` row for a household that, within the same
+  transaction, `households(id)` no longer contains — so the insert's own FK
+  check fails and the whole delete rolls back. This reproduced for **every**
+  real household (every household has at least its owner's membership row).
+  Fixed in `supabase/migrations/20260724120000_fix_household_delete_activity_log_fk.sql`:
+  `log_domain_activity()` now swallows `foreign_key_violation` on that
+  specific insert — a log entry for a household disappearing in the same
+  transaction has no reader anyway (activity_log's own FK is also `on delete
+  cascade`, so it would be removed the instant the delete completed). Applied
+  to prod and verified live via a self-rolling-back `DO` block
+  (`supabase/tests/household_delete_activity_log_regression.sql`):
+  `memberships_before=1 household_gone=t orphan_activity_log_rows=0`.
+- **"Sometimes I can't create a new household."** `CreateHouseholdModal`'s
+  submit handler (`react/src/pages/Households.tsx`) had no `catch` around
+  `await onCreated(...)` — any failure (an expired session making
+  `getUser()` momentarily return no user, an RLS denial, a network blip)
+  became an unhandled promise rejection: no toast, no message, the button
+  just reverted from "Creating…" to "Create" with zero feedback. Fixed by
+  wrapping the create call in `try/catch` + toast (matching the
+  rename/leave/delete handlers already on this page) and re-throwing so the
+  modal keeps the typed household name instead of clearing it like a
+  successful submit.
+- **Regression coverage added** (`react/e2e/TEST_CASE_INVENTORY.md` §16):
+  `HH-REG-001`/`HH-REG-002` document both bugs with root cause + fix +
+  verification; `HH-FC-007`/`HH-FC-008` cover create/delete directly (the
+  existing HH-FC rows only covered switching/roles/invites). A new
+  `HouseholdsPage` Playwright page object is wired into the fixture, ready
+  for Lane B (the cloud test harness is still not implemented — see
+  `e2e/README.md` — so these register as `test.fixme` backlog placeholders
+  for now, consistent with every other `@cloud` row in the inventory).
+
+Gates: `tsc` 0, `eslint` 0 errors (1 pre-existing unrelated warning), `vitest`
+161/162 (pre-existing clock-dependent snapshot, unrelated), `vite build` 0.
+DB fix verified live against production (`vyact` / `dmxqkvploojokffuhxnz`)
+both before the fix (bug reproduced exactly) and after (bug gone, no
+orphaned rows) via zero-cost, self-rolling-back `DO` blocks — no user data
+touched. `get_advisors` shows no new security/performance findings.
+
+---
+
+## v10.11.0 — Aurora fidelity · Batch E: Settings, Households, Onboarding *(2026-07-23)*
+
+Closes the three follow-ups tracked-but-deferred at the end of v10.5.0 (Batch E's
+original ship): the grouped Settings list, the Households card grid + invite
+half-sheet + role chips, and the Onboarding progress-ribbon/choice-card flow.
+Presentation only — profile/password/MFA/danger-zone logic, household RLS and
+invite flows, and the onboarding state machine are all untouched.
+
+- **Settings is now the board's grouped `.set-group` navigation list**, not a
+  flat stack of always-open panels. Every panel — Appearance, Notifications,
+  Language & currency, Exchange rates, Debt preferences, Sync & backup,
+  Password, Security, Account stats, Legal & policies — is a compact row
+  (icon · label · value preview · chevron) under a caption (*Preferences* /
+  *Data & security* / *About*), expanding in place to the exact same content
+  and logic that used to render open-by-default; one row open at a time.
+  Danger Zone gets its own **quarantined group** (sunken/inset background,
+  never mixed into a regular list) instead of just being the last panel in the
+  stack. A `#notifications` deep link (already used by Help/legal footers)
+  still opens straight to that row.
+- **Households page's household grid now matches the household-switch
+  pull-down** (`HouseholdSheet.tsx`, Batch A): neu cards, the active
+  household's real member-avatar stack (others fall back to initials), and a
+  glowing accent ring + "✓ current" pill on the active card. Member rows get
+  **role chips** (`.role` pill — solid accent for Owner, denim-tint for Admin,
+  neu-inset neutral for everyone else) in place of the generic badge; the
+  editable case keeps the native `<Select>` (a real dropdown beats a fake
+  chip). The **invite flow is now a half-sheet** (`HalfSheet`, the same
+  forms-doctrine container used everywhere else) instead of a generic modal.
+- **Onboarding gets the pip-guided ribbon + neu choice cards.** The pip mascot
+  now leads a compact header card at every step, and the flat progress bar is
+  a coral-gradient neu ribbon. The segment picker (step 1) uses neu cards with
+  an accent ring + ✓ badge on selection; every chip-style choice throughout
+  the flow (adults/dependents/concern in step 2, fixed-cost chips in step 4)
+  now uses the shared `Chip` component instead of hand-rolled pill buttons,
+  for the same look and feel as every other add/edit form in the app. The
+  Reveal step's stat cards and "picture confirmed" bar are restyled to match.
+
+Gates: `tsc` 0, `eslint` 0 errors (all warnings pre-existing, untouched by this
+diff), `vitest` 161/162 (the one failure is the pre-existing clock-dependent
+golden snapshot — unrelated), `vite build` 0. Verified in-browser: Settings'
+grouped rows expand/collapse correctly and the Danger Zone group's inset/sunken
+styling computes correctly; the full Onboarding flow (all 5 steps) walks
+through with the restyled ribbon, cards, and chips, landing on a correct Reveal
+screen. The Households card-grid/invite-sheet/role-chip changes are a direct
+adaptation of the already-shipped, already-verified `HouseholdSheet.tsx`
+pattern; multi-household cloud mode isn't reachable in this local-only dev
+session, so that specific surface rests on the tsc pass + pattern reuse rather
+than a fresh live click-through.
+
+---
+
+## v10.10.0 — Net Worth goes live: default Cash account + live account balances *(2026-07-23)*
+
+Closes the last gap in the Money Model: Net Worth's asset side now reads real,
+live account balances instead of static `Asset.value` numbers, and every
+household gets exactly one default Cash account from day one.
+
+- **Every household gets a default "Cash in Hand" account, even at $0.** A new
+  `ensureDefaultCashAccount()` (`crudSlice`) runs idempotently at app boot
+  (`init()`) and household switch (`switchHousehold()`) — best-effort, never
+  blocks. Exactly one cash-kind account per household is enforced at two
+  layers: `upsertAccount` throws if a second one is attempted, and
+  `AccountFormModal`'s Kind dropdown hides "Cash" once one exists (still
+  selectable when editing the real one). This was necessary because
+  `accountValueOf()` collapses every cash-kind account to the same literal
+  `'cash'` key — a second one would silently double-count every cash
+  transaction against both accounts.
+- **Net Worth's Assets column is now LIVE, not static.** New `liveAssetRows()` /
+  `liveTotalAssets()` (`lib/accountBalance.ts`) fold every non-archived
+  cash/bank/investment `Account`'s real computed balance
+  (`computeAccountBalance`) into the Assets list, de-duped against any legacy
+  `Asset` a first-class account was backfilled from (`account.assetId` link) —
+  so a Phase-1-backfilled account replaces its old static asset row instead of
+  double-counting it, while genuinely standalone assets (real estate,
+  retirement, vehicles) keep working exactly as before. Bank/investment
+  accounts created in Settings → Accounts now show up on Net Worth
+  automatically — previously this only worked for investment accounts via a
+  broken auto-created shadow asset that froze at $0 forever and never updated;
+  that whole mechanism is removed.
+- **Onboarding's captured cash figure now funds the real Cash account**, not
+  just the ephemeral reference baseline. `Onboarding.tsx` links the entered
+  amount to the default Cash account's `openingBalance` (marked
+  `confidence:'estimated', source:'onboarding'`), guarded so it never clobbers
+  a balance already set. Net Worth is dynamic — driven by both cash and bank
+  transactions — from the moment onboarding completes.
+- **Amount field auto-focuses on Add Transaction** (not Edit) with the value
+  pre-selected, so typing immediately overwrites it instead of landing in
+  Description — the #1 source of "I typed the amount in the wrong field"
+  confusion. `NumericKeypad.tsx`'s `AmountField` gained an `autoFocus` prop.
+- Fixed a pre-existing Net Worth grid overflow guard (single-column fallback).
+- New pinned invariant test — `§7 INV-7b` in
+  `moneyModel.invariants.test.ts` — locks the de-dup/live-fold behavior into
+  the money-model gate.
+
+---
+
+## v10.9.2 — Aurora fidelity · Batch D 3/3 · Ask Vyact (boards M6/M7/D3) *(2026-07-22)*
+
+Final Analyze-section increment — Ask Vyact, completing Batch D.
+
+- **The empty state is the hero** (board M6). The intent chips are now board
+  `.intent` **rows** — an inset icon tile beside each label — grouped by the
+  four production buckets (Capture · Inquire · Plan · Manage), replacing the
+  flat pill row. Each `Intent` carries an `icon` glyph (new field on the type).
+- **The privacy line reads in sage, not coral/terra.** "Private by design —
+  nothing leaves it" is a *reassurance*; per the design system, crit is reserved
+  for genuine failures, so a promise is not styled as an alarm.
+- **Desktop is a right glass drawer over the dimmed app** (board D3). The Ask
+  drawer (already launched from the top-bar ✦ chip + mobile tab-bar slot) is now
+  a `glass-strong` panel with the board's header — a ✦ tile, the name, and the
+  "On-device · private" subline — and a footer that states *Esc or click outside
+  to close*. Width tightened to the board's 440px. `Chat` gained an `embedded`
+  prop so the drawer's own header replaces the page's `<h1>` (the `/chat` route
+  still renders standalone with its title).
+- Conversation bubbles were already board-correct (`.bub.me` coral-right /
+  `.bub.ai` neu-left) and are left as-is.
+
+Not built: the board's live voice-**listening** overlay (pulsing mic + building
+transcript). The mic button and Web Speech wiring already exist; the animated
+listening state is a follow-up, flagged rather than faked.
+
+## v10.9.1 — Aurora fidelity · Batch D 2/3 · Insights hub (boards M3/M5/D2) *(2026-07-22)*
+
+Second Analyze-section increment — the Insights hub.
+
+- **For You launch hero is glass over the ambient aurora** (board M3) and now
+  says the quiet part out loud: *"A 60-second story on where your money moved —
+  computed on your device, never guessed."* Leads with `{n} fresh cards this
+  week` and a `▶ Play the reel` primary, over an "Or browse them" label.
+- **Insight preview cards follow board `.icard`** — a severity **spine** down the
+  left edge (sage positive · honey constructive · coral neutral, from the feed's
+  existing `tone`), the emoji, then the number that matters at 26px tinted to
+  match, then one line. Replaces the flat horizontal row.
+- **Plan groups by SEVERITY, not domain** (board M5). Recommendations now sit
+  under `▲ Critical · n` / `⚠ Watch · n` / `ⓘ Info · n` headers with the domain
+  riding each card as a pill — the board's information hierarchy, inverted from
+  the previous by-domain panels. The redundant 3-card severity count strip is
+  gone (the group headers carry the counts).
+- **The "no AI" promise is compact and denim-tinted** (board M5): *Recommendations
+  follow fixed rules — no AI, no guessing. You decide what to act on.* Replaces
+  the long bordered disclaimer while keeping the not-financial-advice line.
+- **When nothing is critical the tone stays warm**, not empty: *"Nothing critical
+  right now — you're steady 🌿"*.
+- **Desktop shows what mobile tabs between** (board D2) — on `lg` the hub is
+  `1.5fr · 1fr`: For You on the left, and a rail on the right carrying a
+  condensed **Plan · recommendations** column (top 3, severity-spined, "🔒 rules,
+  no AI") over a **Learn · evergreen** tile grid. Selecting Learn or Plan still
+  opens that surface full-width; the rail is hidden below `lg`.
+
+Unchanged after review: the For You reel (board M4) and Learn (board M8) already
+match their frames — Learn has the search, Lessons/Updates segment, topic chips
+and format badges. Learn's featured-media hero is not built: it needs real
+thumbnail media the bundled library doesn't carry.
+
+## v10.9.0 — Aurora fidelity · Batch D 1/3 · Reports (boards M1/M2) *(2026-07-22)*
+
+First Analyze-section (Batch D) fidelity increment — Reports.
+
+- **Expenses render in neutral ink, not terra.** The all-time Expenses stat was
+  styled `text-terra`, which breaks the design system's "Accidental Wealth" rule
+  (CLAUDE.md): *crit is reserved for genuine failures — never for "money spent"*.
+  The board shows the figure in plain ink; spend is information, not alarm.
+- **Period selector is the board's segmented rail** (board M1 §`.srail`) — one
+  sunken inset pill whose active segment is a raised accent-tinted chip,
+  matching the Transactions type rail. Replaces the bordered control with the
+  solid-coral active button.
+- **Stat tiles follow board `.stat`** — neu tiles carrying a **delta subline**
+  (`avg $870/month`, `kept 67%`, `over 12 months`) under each figure, and they
+  **scroll as a carousel on phones** before settling into a row on wider
+  screens. Replaces the bordered `<Card>` grid.
+- **Needs-vs-wants gains its plain-language verdict** (board M2) — the bar's
+  header now reads e.g. `90% needs — solid`, with descriptive (never scolding)
+  thresholds: solid ≥70 · balanced ≥50 · wants-leaning ≥35 · mostly wants.
+
+Also dropped two dead imports in `Reports.tsx` (`fmtSigned` was already unused
+before this change; `Card` became unused here).
+
+## v10.8.4 — Aurora fidelity · Batch C desktop · Debts/Net Worth/Accounts two-column layouts (boards D2/D3/D4) *(2026-07-22)*
+
+The Plan section's **desktop** frames, which the M-frame passes (v10.8.0–v10.8.3)
+didn't cover. Mobile/tablet layouts are unchanged throughout — every new block is
+`lg:`-gated and the existing mobile renderings are now `lg:hidden`.
+
+- **Debts · board D2** — desktop splits into payoff order (440px) + priority
+  detail (1fr). The left column is a compact **numbered payoff list** (rank,
+  kind glyph, APR / % paid, balance) with the priority outlined in the accent;
+  the right column expands the selected debt: payoff ring, `Debt-free by <month>
+  · $X cleared so far`, a four-tile **min pay / interest-per-month /
+  principal-per-month / months-left** strip, Record payment, and the `?debtId`
+  payments drill-through. **Clicking a numbered row moves that debt into the
+  detail panel** (defaults to the priority); the "⚡ Pay this first" badge shows
+  only for the actual priority debt.
+- **Net Worth · board D3** — the waterfall hero and the four ratio tiles now sit
+  **side by side** on desktop (`1fr · 340px`, ratios reflowing to 2×2 in the
+  narrower column) instead of stacking; the balance sheet keeps its two columns
+  below.
+- **Accounts · board D4** — desktop splits into the wallet (1fr) + a **persistent
+  ledger rail** (520px). Selecting a wallet card moves it into the rail, which
+  shows the kind tile, computed running balance, the account's ledger, and an
+  inline reconcile field that **speaks each kind's own language** — bank →
+  "bank says" / Balance check, cash → "cash on hand" / Balance check,
+  investment → "current value" / Update value — plus ★ Default · Edit · Archive.
+  Reconciling still writes the account-level offset, never a transaction.
+
+Not built (no data to back it honestly): the board's credit-card **cycle
+utilization** panel (limit · statement · due · min) needs a credit-limit field
+that `Account` doesn't carry — omitted rather than faked.
+
+### Fixed
+- **Accounts scrolled sideways on phones** once a household actually had
+  accounts. The wallet grids declared `grid sm:grid-cols-2` with no explicit
+  track below `sm`, so the implicit column sized to *max-content* and a wallet
+  card could never shrink. Added `grid-cols-1`. Pre-existing since the wallet
+  cards shipped; it stayed invisible in local-only previews because that seed
+  carries no first-class accounts.
+
+## v10.8.3 — Aurora fidelity · Batch C 4/4 · Accounts wallet strip + action language (board M5) *(2026-07-22)*
+
+Final Plan-section (Batch C) fidelity increment — Accounts, completing Batch C:
+
+- **Type-totals strip (board M5).** A four-tile strip — Bank · Cards · Invest ·
+  Cash — leads the wallet, each showing that type's count and ledger-computed
+  total (negatives in terra with an explicit "−"). Tapping a tile filters the
+  wallet to that type; tap again to clear.
+- **Per-type action language on each wallet card (board M5).** Every card now
+  footers its own verb: bank/card → **ledger ▸**, cash → **balance check ▸**
+  (honey), investment → **update value ▸**. Cash/investment open the reconcile
+  input; the rest toggle the per-account ledger — replacing the row of generic
+  icon buttons. The ★ default now reads "★ default — pre-fills Add Transaction".
+- **Honest footer note:** "Balances are computed from the ledger — never typed
+  over. ★ marks the default per currency." No money logic changed — the strip
+  totals and card balances come from the same `computeAccountBalance` the page
+  already trusts (a cash balance that nets its ledger proves it).
+
+## v10.8.2 — Aurora fidelity · Batch C 3/4 · Net Worth waterfall + stale chip (board M4/D3) *(2026-07-22)*
+
+Third Plan-section (Batch C) fidelity increment — Net Worth:
+
+- **The equation is now a visual waterfall (board M4).** The hero replaces the
+  text equation with three scaled bars you read at a glance — the full
+  assets(+owed) bar, the slice liabilities take from it, and the net-worth
+  remainder — over a denim spine, with net worth in neutral ink. Bar widths are
+  the real proportions (liabilities and net worth as a share of gross assets).
+- **Inline "update?" stale chip on aging balances (board M4).** A liquid/short
+  asset not touched in 30+ days now carries a dashed-honey "update?" chip that
+  opens its edit sheet — the same staleness rule that drives the mount-time
+  toast, surfaced where you can act on it. Presentation only; no money changed.
+- Removed dead `totalMonthlyDebtPayment` import/var that lingered unused on the
+  page.
+
+## v10.8.1 — Aurora fidelity · Batch C 2/4 · Debts strategy toggle + neutral balances (board M3/D2) *(2026-07-22)*
+
+Second Plan-section (Batch C) fidelity increment — Debts:
+
+- **On-page strategy toggle with an honest trade-off (board M3/D2).** Avalanche/
+  Snowball is now a segmented control on the Debts page itself (was only
+  changeable in Settings): switching resorts the priority list live and restates
+  the real trade-off — "saves you $X in interest" / "$X more interest, but frees
+  a balance sooner". The dollar figure is a genuine projection, not a guess.
+  - Driven by a new **pure** `simulatePayoffInterest()` in `lib/calculations.ts`
+    that runs the standard snowball/avalanche cascade (rolling freed minimums +
+    the profile's extra payment) month-by-month in base currency and totals the
+    interest paid. It's a forecast — it never touches stored balances or any
+    aggregator, so the money-model invariants + golden file are unchanged
+    (160/161; the 1 failure remains the pre-existing clock snapshot).
+- **Balances render in neutral ink (board M3: "loss is information").** Total
+  Debt and each debt's balance move from terra → neutral ink; honey still marks
+  the monthly obligation, and terra is reserved for genuinely critical states.
+  Debt-to-income keeps its healthy/watch/high semantic colour.
+
+## v10.8.0 — Aurora fidelity · Batch C 1/4 · Budgets pace chart (board M1/M2/D1) *(2026-07-22)*
+
+First Plan-section (Batch C) fidelity increment — Budgets, from the board-vs-shipped audit:
+
+- **Cumulative-spend pace hero (board M1/D1).** The month hero is now the
+  board's cumulative-spend-vs-limit chart instead of a flat progress bar: a
+  filled coral area traces spend day-by-day, a dashed line marks the limit, the
+  today dot sits at the current cumulative, and a dotted run-rate projection
+  continues to month-end. Leads with **remaining** ("$X left of $limit"), the
+  "$X/day keeps you green" sentence, an on-pace/watch/over status pill, a left
+  accent spine, and the overall-usage trough beneath — with a
+  "projected · lands $X under/over" axis note.
+  - The chart is driven by a new **pure** `cumulativeSpendSeries()` in
+    `lib/calculations.ts` that reuses the same `reportableTxns`/`effectiveDinero`
+    machinery as `spendByCategoryInRange`, so the series endpoint can never
+    contradict the tracked spend total. No money aggregator was modified; the
+    invariant + golden suites are unchanged.
+- **Add-Budget half-sheet restyled to the forms doctrine (board M2).** Replaced
+  the pre-Aurora bordered scope-buttons + month/year/currency dropdowns with:
+  period **chips** (next six months + two annual years, with the bound period
+  always representable), one big **amount hero** for the total, and allocations
+  as tappable neu rows with a "＋ Add category" row and the "Suggest" affordance.
+  Footer is a single "Create budget · $X allocated" primary with the honest
+  "$X stays flexible — allocate any time" note (or Delete on edit). All
+  save/identity/BUDGET_EXISTS logic is byte-identical — presentation only.
+
+## v10.7.1 — Aurora fidelity pass 7/× · bug batch (Transactions, Calendar, Add Transaction, Recurring, pip) *(2026-07-20)*
+
+Six fixes from a direct board-vs-shipped review:
+
+- **Today/Yesterday date-chip collision, fixed.** `today()` (`lib/format.ts`)
+  computes via `toISOString()` (UTC); the form's `yesterdayStr()` used
+  local-time getters. West of UTC during local early-morning hours the two
+  bases could yield the **same string**, so both chips showed "on"
+  simultaneously with no way to tell them apart or undo the selection.
+  `yesterdayStr()` now shares `today()`'s UTC basis.
+- **"All details ▾" disclosure removed from Add Transaction.** Member, split,
+  and currency selection had already migrated to the main sheet in earlier
+  passes, leaving only the Private checkbox behind the toggle — a one-item
+  disclosure was pure friction. Promoted onto the main sheet, always visible.
+- **Add Schedule (Recurring) restyled to match Add Transaction's theme.** The
+  sheet still used the pre-Aurora bordered `Field`/`Input`/`Select` primitives;
+  rebuilt with the same chip/mono-label/bare-amount-hero conventions (type
+  chips, `AmountField`, `CategoryChip` grid, chip rows for owner/recurrence/
+  weekday/monthly-mode/ends/reminder, the same inline switch used for Add
+  Transaction's split toggle, single-primary-button footer). Logic
+  (`save`/`buildRruleStr`/`populateFromSchedule`) untouched.
+- **Pip logo gradient-id collision fixed.** `Brand.tsx`'s `<Pip>` used a
+  literal `id="pip-grad"`; TopBar (desktop) and MobileHeader both mount a Pip
+  at once, producing duplicate DOM ids — invalid HTML and a latent rendering
+  hazard. Now unique per instance via `useId()`.
+- **Transactions view brought closer to the board (M1/D1):** search + the
+  calendar toggle now share the board's first toolbar row; the type rail
+  gained board-styled **Filters** and **★ Views** chip triggers (replacing a
+  bare icon button and a pre-Aurora bordered `SavedViewsBar`, which is now
+  restyled to match); month-group headers are now the board's floating glass
+  pill card with a small circular chevron toggle (was a full-bleed straight
+  bar).
+- **Transactions calendar (`TxnCalendar`) rebuilt to the board's `.cal` spec:**
+  heat dots (opacity scaled to that day's spend vs. the month's peak) plus a
+  sage income dot, replacing the old bordered/legend-swatch day cells with
+  per-day amount labels. Future days with a firing schedule carry the board's
+  `↻` mark. The desktop right-rail instance now renders as the board's
+  described "mini heat calendar" (30px cells) via a new `mini` prop.
+
+## v10.7.0 — Aurora fidelity pass 6/× · Batch B board D1 (Transactions desktop right rail) *(2026-07-18)*
+
+- **Two-column desktop Transactions** (board D1 `1fr · 340px`): the list keeps
+  the left column; a sticky right rail carries
+  - a **month summary card** — the CURRENT month's true (unfiltered) In / Out
+    / Net, computed by the same `monthlyData` aggregate the dashboard trusts;
+  - the **heat calendar**, now permanently resident on desktop (day-tap still
+    filters the list, projected recurring days still render).
+- The Calendar toggle button and the toggled full-width calendar are now
+  mobile/tablet-only — below `lg` nothing changes.
+- **Transaction rows regain the account in the sub-line** ("Groceries · Today
+  · Visa" per the board), resolved through the same `resolveAccount` path the
+  old leading chip used — so the account info removed from the gutter in
+  v10.6.7 is back where the board actually places it.
+
+## v10.6.7 — Aurora fidelity pass 5/× · Batch B quick wins (Track rows, type rail, schedule sentences) *(2026-07-18)*
+
+First Batch B (Track) fidelity increment, from the board-vs-shipped audit:
+
+- **Transaction rows lead with the tinted category tile** (board B M1): 34px
+  rounded-9 tile with neu-sm shadow and a 15% category-color tint; transfer/
+  investment rows get their type glyph (🔄/📈) on a denim tint, and their
+  sub-line names the type instead of a blank category. The payment-method chip
+  no longer occupies the row gutter (the account stays visible in the edit
+  sheet and via filters). Applies everywhere `TxnRow` renders (Transactions,
+  Splits drill-ins).
+- **Recurring transactions carry a compact ↻ glyph** next to the description
+  (title = the recurrence), replacing the boxy "↻ monthly" text badge.
+- **The type filter is the board's segmented rail** — one sunken inset pill
+  containing All · Expense · Income · Transfer · Invest; the active segment is
+  a raised accent-tinted chip. Replaces the loose neu-chip row.
+- **Recurring schedules read as sentences** — rows now describe their rule via
+  `describeRRule` ("Monthly on the 16th") when the schedule carries an rrule;
+  legacy rows fall back to the plain frequency word (no more all-caps codes).
+
+Remaining Batch B items: desktop Transactions right rail (board D1 two-column)
+— next release; the full tap-to-edit sentence BUILDER for the recurring form
+(board M6) is deferred — the current form already has full RRULE parity via
+chips, the builder is a presentation upgrade tracked for a dedicated pass.
+
+## v10.6.6 — audit finding #1: mobile Dashboard status banner never empty *(2026-07-18)*
+
+From the Batch-A fidelity audit: board M1's signature status banner only
+rendered when a current-month budget existed (it's a budget-pace nudge), so
+budgetless users saw an empty slot between the pulse and the panels.
+
+- Added a **fallback**: when there's no current-month budget but there IS
+  this-month income, the banner shows a savings status instead — "✦ You've
+  kept $X this month — Y% of income" (sage) or "✦ You've overspent $X this
+  month" (honey). Uses only existing aggregates (no new money math). Null only
+  when there's genuinely nothing truthful to say (no budget AND no income).
+- Batch A fidelity audit otherwise clean: all screens verified at 375px +
+  1280px, no overflow/clipping (the only such bug, the theme selector, was
+  fixed in v10.6.5), correct responsive hiding, sheets at 720px centered on
+  desktop.
+
+## v10.6.5 — fix: desktop account-menu theme selector overflowed the dropdown *(2026-07-18)*
+
+User-reported: the theme selector looked broken on desktop. Root cause — the
+v10.6.4 theme `.mrow` put the icon tile + "Theme" label + three labeled chips
+(Light/Dark/Auto) on ONE row; in the 300px anchored dropdown that row was
+24px too wide, so the "Auto" chip was clipped by the glass-panel edge. (It fit
+in the 375px mobile sheet, which is why it passed there.)
+
+- Theme row restructured to **stack**: icon tile + "Theme" label on top, the
+  segmented control full-width (chips `flex-1`) below. Fits any container
+  width; verified the control sits fully inside the dropdown (246px inside a
+  300px panel) and each chip is equal-width.
+- Functionally verified end-to-end: clicking Light applies `data-theme="warm"`,
+  Dark applies `dark`, and the checked chip tracks the active theme.
+
+## v10.6.4 — Aurora fidelity pass 4/× · Batch A board M7 (Account menu) — Batch A complete *(2026-07-18)*
+
+Finishes Batch A: the account menu is rebuilt to board M7.
+
+- **Mobile → full-width top pull-down sheet** (board M7, same gesture family as
+  notifications/household). Header = 46px person avatar + name + "email · role"
+  ("Local-only mode · Owner" off-cloud). The account routes render as board
+  `.mrow` cards (sunken-inset icon tile · label · chevron): Households ·
+  Settings · Help & Guide. Theme is its own `.mrow` with the segmented control
+  on the right. Sync status line, then **Sign out** in crit color (shown only
+  when signed in).
+- **Desktop → anchored glass dropdown** (the D-pattern) using the SAME body,
+  widened to 300px to fit the card rows.
+- **Dropped the redundant household-switch row** that used to live inside this
+  menu — switching now lives solely on the household chip (TopBar on desktop,
+  MobileHeader on mobile); this menu's "Households" row navigates to household
+  management, matching the board.
+- Conflict/mapping note: the board lists a separate "Profile & preferences" row
+  above "Settings"; this app has no distinct profile page (profile lives inside
+  Settings), so that row is folded into Settings rather than fabricating a
+  duplicate destination. Flag for the Batch-A review.
+
+**Batch A fidelity status:** M1/D1 (Dashboard+shell), M2/M3/D2/D3 (Notification
++ Household sheets), M4/D4 (Add-Transaction), M7 (Account menu) all shipped.
+M6 (keypad-active) is intentionally skipped per the keypad-removal ruling; M5
+(system-states tile) is a designed-state inventory already covered by the A6
+toast/empty/EstimatedTag work — not a distinct screen.
+
+## v10.6.3 — fidelity fixes (user-reported) + token audit + split toggle inline *(2026-07-17)*
+
+Two pixel-fidelity bugs reported from prod, root-caused, plus the systemic
+hardening they exposed:
+
+- **"New household" dashed outline was invisible** — `border: 1.5px dashed
+  var(--line2)` is INVALID CSS: `--line2` is an HSL triplet token, so the
+  browser silently dropped the whole declaration. Fixed to
+  `hsl(var(--line2))`. This failure class produces zero errors in any gate
+  (tsc/eslint/build all pass), so:
+  - **New binding rule in CLAUDE.md** ("Token usage rule") documenting the
+    two token conventions and the required verification: computed-style
+    checks on every newly styled decorative property + a pre-ship grep for
+    unwrapped triplet tokens.
+  - **App-wide audit run**: one match found across the entire src tree
+    (PulseGauge's flagged line wraps at usage — false positive). No other
+    instances.
+- **Household sheet footer** ("Manage members & invites →") left-aligned per
+  user direction (the board centers it; explicit feedback overrides).
+- **Split toggle moved inline onto the Add-Transaction main sheet** (board
+  M4): "↔ Split with someone · off — splits create IOUs" row with a real
+  pill switch (sunken track, sage knob when on); the participant editor
+  expands in place. Previously the whole split section hid behind
+  "All details ▾".
+
+## v10.6.2 — Aurora fidelity pass 3/× · Batch A boards M4/D4 (Add-Transaction) *(2026-07-17)*
+
+Rebuilds the Add-Transaction sheet's presentation to board M4/D4 — around the
+user's standing removals (no keypad, no currency selector, no note field; all
+re-confirmed at the conflict checkpoint).
+
+- **Type chips centered** at the top of the sheet (board M4 row).
+- **Amount is bare on the sheet** — the inset field chrome around the amount
+  is gone; 38px mobile / 40px desktop mono with the muted 24px currency
+  prefix, exactly the board's `.amount` treatment (still a real editable
+  input with the native decimal keyboard, per the keypad removal).
+- **Category is a wrapped grid, not a scroller** — the 7 most-recent category
+  tiles + a "⌕ More" tile that expands to the full type-scoped set ("▴ Less"
+  collapses). The selected category is always kept visible in the collapsed
+  set (edits of an older transaction surface its category in slot 7).
+- **"Date · paid with" merged row** (board M4): Today/Yesterday chips, the
+  native date+time pickers, and the source-account chips now share ONE
+  labeled group ("paid into" for income, "from account"/"to account" wording
+  for transfer/investment). The account-required marker and the
+  add-accounts-on-Net-Worth tip carry over.
+- **Member row moved out of "All details" onto the main sheet**, as initials
+  chips per the board ("MR · You" style).
+- **Footer** — one full-width 50px "Save expense/income/transfer/investment"
+  primary button; "Save & add another" (create) or "Delete" (edit) is the
+  quiet mono cap link centered below it.
+- Known remainders flagged for the checkpoint: the split toggle still lives
+  in "All details" (board M4 shows it inline on the main sheet), and the
+  description field doesn't yet render the board's "suggested ✕" chrome
+  (autosuggest itself already works via the datalist).
+
+## v10.6.1 — Aurora fidelity pass 2/× · Batch A boards M2/M3/D2/D3 (Notification + Household sheets) *(2026-07-17)*
+
+- **Household sheet (board M3/D3):** the active household card now carries the
+  board's member AVATAR STACK — up to three overlapping member initials
+  (coral-grad first, deterministic colors after, 2px canvas ring) — and the
+  sub-line gains your role: "Family · USD · You're the owner". Honesty rule:
+  only the ACTIVE household shows the stack (the store only holds its roster);
+  other households keep their initials avatar rather than a fabricated one.
+  Role falls back to "Owner" in local-only mode (single-user data).
+- **Notification sheet (board M2/D2):** the list is inset so unread coral dots
+  sit in a proper gutter left of the icon tiles, and READ rows now drop their
+  tint — the icon tile flips to the sunken/inset treatment the board shows for
+  handled items. (The sheet's structure — Today/Earlier groups, inline
+  Approve/Skip/Review decisions, mark-all-read, settings footer, 720px desktop
+  column — already matched the board from v10.1.)
+
+## v10.6.0 — Aurora fidelity pass 1/× · Batch A boards M1+D1 (Dashboard + shell) *(2026-07-17)*
+
+First screen of the board-fidelity project: the shipped design is being brought
+up to the reference boards at `Vyact Redesign/design_handoff_vyact_aurora/
+reference/boards`, batch by batch, with user checkpoints between screens.
+Conflict rule: the boards are the spec, but anything the user explicitly
+changed earlier (coral Ask, keypad/note/currency removals) stays until they
+rule otherwise — each conflict is flagged as it's hit.
+
+**Shell (board M1/D1):**
+- New `MobileHeader` — phones lose the fixed glass top bar; a scrolling header
+  row carries pip → home · greeting ("Good morning / {name}") on Home, section
+  cap + page title elsewhere · household-TYPE chip → HouseholdSheet · bell ·
+  30px avatar (opens account menu). `TopBar` is now ≥sm only.
+- The avatar now identifies the PERSON (initials from the display name, per
+  board "MR"), and the household chip shows the household TYPE with the house
+  icon on both breakpoints — the name lives in the sheet, ending the
+  name-shown-twice problem for good.
+- `SubNav` → board treatment: mobile is the "Track ▸" accent cap + inset
+  segmented bar (active segment = raised accent-tinted chip); desktop keeps
+  the sticky bar with cap + 32px neu chips, active = inset + accent tint.
+- Mobile tab bar: active tab sits on an accent-tinted pill (board .m-tab.on).
+  Ask stays coral (user override of the board's denim).
+
+**Dashboard (board M1/D1):**
+- Cash-flow hero rebuilt to the board: left tone spine, "Cash flow · 6 months"
+  cap, big signed net, "↗ N% kept" pill, and the 6-month trend INSIDE the card
+  — scrubbable (tap/drag) with a pinned glass tooltip carrying an insight note
+  ("✦ N% above/below your 6-mo average"), dashed month marker, month axis row,
+  In/Out footer (+ Net worth link on mobile, savings rate on desktop).
+- Net-worth hero (desktop): denim spine, big number, Assets/Liabilities row.
+- Pulse block rebuilt as the board composite: conic-gradient ring (inset
+  trough + neu core) beside/above the four component METER BARS
+  (Budgets/Savings/Trend/Debt troughs with scores); mobile = bare
+  ring-plus-meters row, desktop = titled "Family Pulse Score™" card.
+- Desktop metric tiles (income/expenses/savings rate) with bottom accent bars;
+  insights render as 2×2 spine-cards (tone spine + emoji headline + subline).
+- Mobile pace banner: "You're on track this month — $X under budget pace"
+  (pro-rated against the current-month budget; hidden when none exists —
+  computed from existing aggregates only, board asks weekly which needs a
+  weekly budget engine we don't have; flagged at checkpoint).
+- Recent panel rows: board style — 34px tinted category tile, name +
+  "category · when" mono subline, signed amount.
+- Panels row is a 3-up on desktop (budgets · recent · spending donut).
+- Dashboard h1 greeting is desktop-only (mobile greeting lives in the header);
+  MiniPulse-next-to-greeting and the old sparkline are superseded.
+
+## v10.5.5 — transaction form: date+time one row, native clock picker, currency selector removed *(2026-07-16)*
+
+- **Date & time on one line.** The transaction form's Date row (Today /
+  Yesterday chips + date picker) now also carries the time picker, in an inner
+  non-wrapping group so the two pickers stay side-by-side even on a 375px
+  sheet. The separate Time row in "All details" is gone.
+- **Native clock time picker, consistent app-wide.** The custom hh:mm text
+  input + AM/PM chips are replaced by a native `<input type="time">` — the
+  same control Settings ▸ Notifications quiet hours already uses, and the one
+  that renders as the platform's round clock selector on mobile. There is now
+  exactly one way to pick a time anywhere in the app.
+- **Currency selector removed from the transaction form.** Every new
+  transaction records in the household's base currency; the chip row is gone
+  from "All details". Editing a legacy foreign-currency transaction keeps its
+  stored currency untouched (a small "Recorded in X; reports convert to Y"
+  note appears instead of a control).
+- Note: the user tested the v10.5.4 form-sheet conversions before that deploy
+  finished — verified the deployed `BudgetFormModal` chunk on production
+  already carries the HalfSheet `footer` API, so Add Budget/Debt/Asset/
+  Account/Schedule are live as bottom sheets since v10.5.4.
+
+## v10.5.4 — form-sheet consistency, coral identity color, transaction form cleanup *(2026-07-16)*
+
+Five more issues reported after v10.5.3.
+
+- **Transaction form:** removed the in-sheet numeric keypad and the optional
+  Note field, per explicit feedback that neither pulled its weight. The
+  amount field (`AmountField`, `components/ui/NumericKeypad.tsx`) is now a
+  real text input (`inputMode="decimal"`) instead of a display-only span
+  driven solely by the custom keypad — removing the keypad without this
+  would have left no way to enter an amount at all. A `sanitizeAmount()`
+  helper keeps typed/pasted input to a valid decimal (digits, one dot, max 2
+  places) the same way the old per-keystroke `applyKey()` did. Existing
+  transactions that already have a note keep it (nothing reads/writes
+  `Transaction.note` outside this one form); only the ability to set a new
+  one from this form is gone.
+- **Reversed the v10.5.3 avatar/Ask-Vyact color call** — that release
+  unified on `--rail` (the multicolor aurora gradient) reasoning from a
+  CLAUDE.md aside about "avatars, focus flourishes." Explicit follow-up
+  feedback: the household/account avatar and Ask Vyact should read as the
+  same **coral** identity color as the rest of the brand, not a separate
+  multicolor treatment. Added `--coral-grad` (the literal gradient already
+  used in two places, now named once) and pointed `AccountMenu`'s avatar,
+  `HouseholdSheet`'s avatar, and Ask Vyact's icon/text color (desktop chip +
+  mobile tab) all at coral (`var(--coral-grad)` / `var(--accent)`).
+- **Add Schedule / Add Budget / Add Asset / Add Account / Add Debt forms
+  now match Add Transaction's presentation.** All five were still wrapped in
+  the legacy `Modal` component (centered dialog, `bg-bg2`/`rounded-lg`, `X`
+  close) instead of `HalfSheet` (bottom sheet on mobile, glass dialog on
+  desktop, grabber, sticky footer) — a different container entirely, not a
+  close match with different field styling. Swapped the wrapper on all five
+  (`BudgetFormModal`, `DebtFormModal`, `AssetFormModal`, `AccountFormModal`,
+  `Recurring.tsx`'s schedule form), extracting each form's trailing
+  Delete/Cancel/Save row into `HalfSheet`'s `footer` prop the same way
+  `TransactionFormModal` already does.
+- **"Add Account" button didn't match the rest of the app's buttons** —
+  traced to the shared `<Button>` React component still rendering its own
+  legacy style (`font-mono uppercase`, flat `shadow-1`) instead of the
+  `.btn-primary`/`.btn-secondary`/`.btn-ghost`/`.btn-danger` CSS classes
+  (serif display font, normal case, neumorphic shadow) the rest of the app
+  moved to during the Aurora pass. `<Button>` now maps `variant` straight to
+  the matching `.btn-*` class, which fixes every one of its 10 consumers at
+  once (Accounts, Households, Chat, Onboarding, WhatsAppLink, and the five
+  form-sheet footers above) rather than patching each call site.
+- **Reports "Needs vs Wants" bar — still investigating.** Confirmed the
+  reporter is on the latest deployed build (checked the live production JS
+  bundle directly — the v10.5.3 fix is present) and the underlying math is
+  provably self-consistent (the percentage and the amounts shown below it
+  come from the identical numbers in the same render, verified against both
+  the demo dataset and the deployed bundle's source). Have not yet been able
+  to reproduce the specific visual defect — screenshot capture is
+  unavailable in this environment for this pass. Left open pending a closer
+  look at the reporter's actual rendered numbers.
+
+## v10.5.3 — household-type persistence, header redundancy, avatar/AI color consistency, verdict-bar robustness *(2026-07-16)*
+
+Five issues reported after v10.5.2. Root-caused against real code/DOM behaviour
+(not assumed); one item (Reports "Needs vs Wants" numeric mismatch) was
+investigated and found NOT reproducible — see below.
+
+- **Household Type silently reverted on reload (real bug, local-only mode).**
+  Settings' "Household Type" field called `updateProfile({household})`, which
+  patched the in-memory `households` list (so the UI looked correct for the
+  rest of the session) but never called `adapter.updateHousehold()` — the only
+  call that actually persists `HouseholdMeta.type` to storage. Cloud mode was
+  already correct (`supabaseAdapter.updateProfile` writes `households.type`
+  directly); local-only mode was not. `updateProfile` (`store/slices/dataSlice.ts`)
+  now also calls `adapter.updateHousehold()` for `household`/`baseCurrency`
+  patches — harmless no-op for cloud, the actual fix for local.
+- **Household Type relocated from Settings ▸ Profile to Households ▸ Household
+  Settings** — it's a property of the household record, not the user's profile,
+  so editing it lived in the wrong place. Local-only mode (previously just an
+  "enable cloud" banner with no household editing at all) now also gets a
+  Household Settings panel (name + type) for its single on-device household.
+- **Redundant household display on desktop.** `AccountMenu`'s dropdown carried
+  its own household-identity row (added in v10.5.1 to fix a *mobile* bug, since
+  mobile has no separate household chip) but it was never hidden on desktop,
+  where the TopBar's persistent household chip already covers the same
+  affordance — opening the avatar menu showed the household name twice at
+  once. The row is now `sm:hidden`; mobile is unaffected.
+- **Household avatar didn't match the app's own avatar convention.**
+  `HouseholdSheet`'s per-household avatars correctly use `--rail` (the
+  documented aurora gradient — CLAUDE.md: "avatars, focus flourishes"); the
+  identical avatar in `AccountMenu` instead used a one-off solid coral
+  gradient. Unified on `--rail` so the same household's identity color is
+  consistent everywhere it appears.
+- **Ask Vyact used the wrong semantic color.** Per the documented palette rule
+  (`--plum` = forecast/AI, `--denim` = banking/info), the AI assistant's
+  launcher (desktop chip + mobile tab) was styled with `--denim`. Switched to
+  `--plum`, consistent with how `insight_fresh`/`trend_alert` notifications
+  already tint themselves.
+- **Reports "Needs vs Wants" bar hardened against rounding artifacts.** Traced
+  the computation and verified live: the bar's percentage and the amounts
+  shown below it always derive from the exact same numbers, so a genuine
+  numeric mismatch isn't possible in this code path — confirmed with the
+  reporter that the actual complaint was visual, not numeric. Hardened anyway:
+  each visible segment now rounds its own outer corner explicitly (previously
+  relied solely on the container's `overflow-hidden` to clip square corners
+  into the pill shape) and the last segment fills via `flex-1` instead of an
+  explicit percent width, so independent per-child pixel rounding can never
+  leave a seam or bleed past the rounded ends.
+- **Notification system audited** (13-type model): the 6 wired generators
+  (`recurring_due_confirm`, `recurring_reminder`, `budget_threshold`,
+  `debt_payment_due`, `income_landed`, `stale_balance`) fire correctly on every
+  refresh, dedupe correctly, and their P1 web-push path is properly gated by
+  the master toggle, per-type toggle, and quiet hours. Confirmed the remaining
+  7 types (`recurring_posted`, `insight_fresh`, `trend_alert`,
+  `member_activity`, `sync_conflict`, `invite_received`, `milestone`) are
+  intentionally producer-deferred (documented since Batch A — they render in
+  the sheet and Settings but have no generator yet, by design, not a bug).
+  Generation logic is identical for desktop and PWA (no platform-specific code
+  path); actual OS-level push delivery on an installed PWA needs verification
+  on a real device, which is outside what this environment can exercise.
+
+## v10.5.2 — graph animation follow-up (chart/bar/ring entrance motion) *(2026-07-16)*
+
+Picks up the one item flagged "investigated, partially addressed" in v10.5.1: the
+hand-rolled bars/rings across Dashboard/Budgets/Debts/Net Worth never animated on
+load, and the Recharts-based charts animated with untuned defaults.
+
+- **Root cause:** every bar/ring renders its final value directly from data via
+  inline `style={{width}}`/`strokeDashoffset` on first paint. A CSS `transition`
+  only fires on a subsequent VALUE CHANGE, never on initial mount — so the
+  `transition-[width]`/`transition-all` classes already present on these elements
+  were silently inert on page load.
+- **Fix — `animation … backwards` fill-mode** (matches the design handoff's own
+  `vy-grow`/`vy-ringfill` keyframe technique): the browser holds the keyframe's
+  `from` value before paint, then animates to the element's own already-specified
+  inline value as the implicit "to" state — no per-instance keyframe generation
+  needed despite each bar/ring having a different target. Added `.chart-grow`
+  (`vy-grow`, width 0→final, 0.8s) and `.ring-grow` (`vy-ringfill`,
+  stroke-dashoffset from a `--ring-from` custom property, 1.1s) utilities to
+  `index.css`, reusing the existing `--ff-ease-out` token.
+- **Applied across every hand-rolled graph:** Dashboard's mini pulse ring +
+  budget-progress bar; Debts' payoff bar + payoff-journey ring; Budgets' pace-hero
+  bar, per-card overall bar, and per-category allocation bars (60ms stagger);
+  Net Worth's liquidity stacked bar (3 segments, 60/120ms stagger); Reports'
+  category breakdown bars (60ms stagger per row).
+- **Recharts charts tuned** to the brand's motion feel: `animationDuration={900}`
+  + `animationEasing="ease-out"` (the closest Recharts enum match to
+  `--ff-ease-out`'s cubic-bezier — Recharts doesn't accept an arbitrary bezier
+  string) on Reports' income/expense area chart, the saved-vs-overspent bar
+  chart, and the category donut's pie.
+- **Donut legend rows** now enter with the existing `staggerContainer`/
+  `staggerItem` framer-motion variants (same vocabulary as the Dashboard KPI
+  grid), replacing a static list with no entrance motion.
+- Scope: chart/graph entrance animation specifically, as flagged in v10.5.1 —
+  not a broader app-wide microanimation audit.
+
+## v10.5.1 — post-Batch-E bug fixes (household switcher, notification settings, glass legibility, mobile Learn controls) *(2026-07-14)*
+
+Five issues reported after Batch E shipped. All root-caused against real code/DOM
+behaviour (not assumed) before fixing.
+
+- **Household switcher from the avatar menu was broken.** `AccountMenu` embedded
+  a legacy `ProfileSwitcher` dropdown whose own expanding list was clipped by its
+  parent's `overflow-hidden` — it visually failed to show any options. Retired
+  `ProfileSwitcher` entirely; the avatar's household row now opens the same
+  `HouseholdSheet` pull-down as the TopBar chip (board M7: "same pull-down
+  gesture family" — one working switcher, not two). The sync-status badge that
+  lived inside the old dropdown is preserved as its own row in the avatar menu.
+- **Notification settings were never implemented.** The data layer
+  (`NotificationPrefs`, `updateNotificationPrefs`, quiet hours, per-type map) was
+  already wired into the generators from Batch A, but no Settings UI existed to
+  read or change any of it — the "Notification settings →" link pointed at a
+  section that didn't exist. Added a full **Settings ▸ Notifications** panel:
+  master toggle, all 13 types grouped and toggled (`sync_conflict` locked "always
+  on" per spec), quiet hours, reminder lead time, and a browser-push toggle that
+  requests permission before enabling.
+- **Notification / account / household flyouts were too transparent to read.**
+  The board's literal `--glass-strong` alpha (0.74 dark / 0.84 light) is tuned
+  for the mockup's flat color blocks; against real dense financial typography it
+  let numbers and headings behind the sheet bleed through legibly. Raised to
+  0.97/0.97 (kept the blur + border, so it still reads as glass, not opaque) —
+  verified with real financial data behind the sheet in both themes.
+- **The Learn tab's Play/Text controls were unreachable on mobile**, hidden
+  under the bottom tab bar. Root cause: `EvergreenReel`/`ForYouReel`/`ArticleReel`
+  are full-screen overlays rendered as normal children of the routed page tree,
+  which sits inside `<main className="... z-[1]">` (Layout.tsx). That z-index
+  makes `<main>` its own stacking context — no z-index a *descendant* sets
+  (however high) can ever outrank a true sibling of `<main>` like
+  `MobileTabBar`/`AddFab`. Fixed by portalling all three reels to `document.body`
+  with `createPortal`, escaping the trap entirely. Verified with
+  `elementFromPoint` at the button's exact pixel before and after.
+- **Dashboard Pulse gauge card** ("the centerpiece of the Dashboard," per its own
+  comment) was still the pre-Aurora flat card — never converted during Batch A.
+  Restyled to neu (`--elevated` + `--neu`, inset ring track) to match every other
+  Dashboard tile.
+
+**Investigated, partially addressed:** "microanimations and the graph experience
+not matching the design" — Recharts' default entrance animation is present but
+untuned to the board's `--vy-ease`/spring vocabulary, and the board's literal
+SVG stroke-draw-in trick (`chart-line`/`chart-fill`) isn't implemented. This is
+a broader, more open-ended chart-animation pass; flagged as a follow-up rather
+than rushed against a shared chart component without full verification.
+
+Gates: `tsc` 0, `eslint` 0 errors, `vitest` 160/161 (pre-existing clock
+snapshot), `vite build` 0, money invariants unmoved (presentation + one bug-fixed
+navigation path only — no money logic touched). Every fix above was verified
+against real DOM/computed-style behaviour in a live browser, not assumed.
+
+## v10.5.0 — Aurora Batch E: Profile + first-run (Auth · Help · Settings) *(2026-07-14)*
+
+Fifth and final screen-level batch — the **Profile / first-run** surfaces restyled
+to the batch-e board. Presentation only; auth, session, OTP-verification, and
+household/RLS logic are unchanged (invariants green).
+
+- **Auth:** `AuthShell` (shared by every auth screen — sign in/up, reset password,
+  accept invite) is now a single **glass `auth-card`** on the aurora ambient
+  background, with the **pip** mascot leading the wordmark. One edit point,
+  every auth screen inherits it.
+- **Help:** FAQ rows are the board's **`.faq`** — a neu accordion that deepens its
+  shadow while open, with a rotating "+" affordance. Search, the support-ticket
+  form, and all 9 topics are unchanged.
+- **Settings → Appearance:** the theme picker is now **`.theme-thumb`** neu
+  cards with a mini contrast-bar preview and an accent ring on the active theme.
+- **Danger Zone reviewed, left as-is:** the account-deletion controls are already
+  quarantined correctly (OTP-gated, red-accented only on the truly destructive
+  action) — restyling it further risked the security path for no real gain.
+
+**Tracked follow-ups (not in this batch):** the full grouped `.set-group` list
+treatment across every Settings panel, the Households page's card grid + invite
+half-sheet + role chips (the household **switcher** pull-down already shipped in
+Batch A), and the Onboarding progress-ribbon/choice-card flow. These are larger,
+logic-adjacent surfaces (RLS invites, onboarding state machine) better done as a
+deliberate follow-up rather than rushed at the tail of this pass.
+
+Gates: `tsc` 0, `eslint` 0 errors, `vitest` 160/161 (pre-existing clock snapshot),
+`vite build` 0, money invariants unmoved. Verified in-browser: 9 neu FAQ cards
+(open/close works), 3 neu theme thumbnails, and the sign-in screen renders the
+pip + glass card — no runtime errors.
+
+**This closes the planned Aurora batch sequence (A→E, v10.1.0→v10.5.0).**
+
+## v10.4.0 — Aurora Batch D: Analyze (Reports · Insights · Ask Vyact) *(2026-07-14)*
+
+Fourth screen-level batch — the **Analyze** section restyled to the batch-d board.
+Presentation only; no aggregation, insight-feed, planner-rule, or on-device
+assistant logic changed (invariants green).
+
+- **Reports:** a **needs-vs-wants verdict split bar** (neu-inset track, sage/honey
+  fill proportional to spend) replaces the two flat need/want boxes. Stat cards,
+  the income/expense area chart, and every breakout table are unchanged.
+- **Insights:** the For You / Learn / Plan switcher is now the board's **`.tri`**
+  neu pill; the For You launch hero and preview cards (`.icard`) are restyled to
+  neu with a hover lift. The reel (already rebuilt in v9.9.x) and Learn library
+  are untouched — presentation is on-device, adds no financial math.
+- **Plan (Planner):** recommendation rows are now **neu severity-spined cards**
+  (colored left spine: terra/honey/denim by rule outcome) instead of a flat
+  border-left row. Every recommendation still traces to one rule + one data
+  point — zero AI, zero hallucination, unchanged.
+- **Ask Vyact:** chat bubbles restyled to the board's **`.bub`** — user messages
+  in accent-ink-on-coral, assistant replies in a neu canvas bubble, each with the
+  correct corner-radius "tail." The on-device pipeline (normalise → extract →
+  classify → resolve → phrase) is untouched — presentation only.
+
+Gates: `tsc` 0, `eslint` 0 errors, `vitest` 160/161 (pre-existing clock snapshot),
+`vite build` 0, money invariants unmoved. Verified in-browser: verdict bar +
+"Needs vs Wants" label render, the tri-tab pill shows 8 neu insight cards, a real
+chat round-trip renders 2 board-styled bubbles, the Plan tab shows 3 severity
+cards — no runtime errors anywhere.
+
+## v10.3.0 — Aurora Batch C: Plan (Budgets · Debts · Net Worth · Accounts) *(2026-07-14)*
+
+Third screen-level batch — the **Plan** section, restyled to the batch-c board.
+Presentation of already-computed values; the money model, reconciliation, EMI splits
+and every aggregation are untouched (invariants green).
+
+- **Net Worth:** neu **waterfall equation** hero (assets + owed − liabilities → net),
+  a **liquidity stacked bar** (liquid / short / long), and the four financial-ratio
+  tiles restyled to neu. Balance-sheet lists and the stale-balance reminder preserved.
+- **Debts:** a **payoff-journey ring** on the priority debt (percent of principal cleared
+  + projected debt-free month), neu summary tiles + debt cards, accent-ink priority badge.
+  Record-payment still launches the pre-seeded Add-Transaction sheet (EMI split unchanged).
+- **Budgets:** a **current-month pace hero** — cumulative spend vs limit with a
+  plain-language daily allowance ("$X/day keeps you green — N days left", or an over-budget
+  line). Budget cards restyled to neu. Container + allocations model unchanged.
+- **Accounts:** account rows are now neu **wallet cards** in a grid, each with a kind glyph
+  tile. The per-account ledger, the fix-balance / update-value **reconcile** (offset, never
+  a transaction) and archive/default controls are all preserved exactly.
+
+The add-budget allocation half-sheet and the ledger bottom-sheet are tracked as batch-C
+follow-ups. Gates: `tsc` 0, `eslint` 0 errors, `vitest` 160/161 (pre-existing clock
+snapshot), `vite build` 0, money invariants unmoved. Verified in-browser (waterfall,
+liquidity bar, payoff ring, no runtime errors across all four surfaces).
+
+## v10.2.0 — Aurora Batch B: Track (Transactions · Splits · Recurring) *(2026-07-14)*
+
+Second screen-level batch — the **Track** section, restyled to the batch-b board.
+Presentation + interaction only; all filter/split/RRULE logic, the money model, and
+the Family Pulse computation are unchanged (invariants green).
+
+**Transactions:**
+- **Type chip-rail** (All · Expense · Income · Transfer · Investment) as the primary
+  filter, replacing the buried dropdown.
+- **Filter half-sheet** (board M2) — the four `<select>` filters (type / category /
+  month / member) are now neu **chip groups** in a `HalfSheet`, and the apply button
+  previews the live result **count + net** before you commit.
+- **Sticky glass month headers** — the month-group accordion headers are now glass
+  (`--glass` + blur) so they read as a distinct layer while rows scroll under them.
+- The deep-link context pill, calendar, saved views, pagination and projected-recurring
+  rows are all preserved as-is.
+
+**Splits:**
+- **Who-owes-who hero** (board M4) — a single neu card leading with your **net position**,
+  then the two sunken sub-tiles (Owed to you / You owe). Replaces the two flat cards.
+- Split rows restyled to neu; the always-on explainer banner is gone — its guidance now
+  lives in the (Pip-free) empty state. Settle / Mark-paid / Track-as-debt behaviour is
+  unchanged (settling marks the IOU paid — it does NOT mint a settlement transaction,
+  which would double-count against the split money model).
+
+**Recurring:**
+- **Upcoming-7-day strip** (board M5) — a horizontal rail of neu cards for every schedule
+  due in the next week, each with a category glyph, amount, and a **countdown badge**
+  (Due today / Tomorrow / in N days; honey-tinted when ≤ 1 day).
+- The RRULE schedule form (daily/weekly/monthly-DOM/monthly-Nth/annual + ends + reminder
+  + auto-confirm) is preserved. The board's tap-to-edit **sentence-builder** and the
+  calendar pull-down layer are tracked as Batch-B follow-ups.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 160/161 (pre-existing clock snapshot), `vite build`
+0, money invariants unmoved. Verified in-browser (chip-rail, glass headers, filter sheet
+with 34 chips, upcoming strip).
+
+## v10.1.2 — Aurora Batch A shell fixes (pull-down sheets, avatar, add-FAB) *(2026-07-14)*
+
+Bug-fix pass on the v10.1.0/v10.1.1 shell, from board review. Presentation only.
+
+- **Pull-down sheets rendered empty (notifications + household switch).** The
+  `PullDownSheet` body used `flex-1` (flex-basis:0) inside a content-sized,
+  `overflow-y-auto` panel, which collapsed it to ~0px and clipped ALL content —
+  the notification list/empty-state and the household cards were in the DOM but
+  invisible, so both sheets looked broken. Fixed: the body is now `min-h-0`
+  (sizes to content, scrolls only once the sheet hits its 92dvh cap) and the
+  sheet is top-aligned (`items-start`). Both sheets now show their content.
+- **Account avatar didn't match the theme.** It used the jade→indigo→violet
+  rail gradient; the board's `.avatar` is the pip-coral gradient. Swapped to
+  `linear-gradient(135deg,#F4B6A8,#E26D5C)` with dark accent-ink initials.
+- **Mobile "+" add wasn't prominent.** Brought to the board's `.add-circle`
+  spec: 54px (was 48), `translateY(-16px)` so it floats above the bar, coral
+  fill with a coral glow shadow, dark-ink glyph, no border.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 160/161 (pre-existing clock snapshot),
+`vite build` 0, money invariants unmoved. Verified in a real browser (both
+sheets open/close and render content; avatar + add-FAB geometry confirmed).
+
+## v10.1.1 — Aurora Batch A shell chrome to board spec *(2026-07-13)*
+
+Follow-up patch that brings the app-shell **header and footer** to the Batch A board
+(`reference/boards/batch-a`, frames M1/M7/D1). v10.1.0 built inside the v10.0.0 shell but
+inherited its nav chrome; the board actually refines it. No logic/money/route changes.
+
+- **Mobile footer** is now the board's 5-slot tab bar: **Track · Plan · [ + ] · Analyze · ✦ Ask**
+  — the primary **+ Add sits dead-center** (opens the Add-Transaction sheet) and **✦ Ask** is the
+  far-right slot (opens the Ask drawer). "Home" moved to the header pip and "Profile" to the
+  header avatar, so they are no longer tabs.
+- **Desktop header** gains the **✦ Ask chip** and adopts the board order:
+  Jump-to ⌘K · ✦ Ask · bell · household · avatar.
+- The floating FABs are folded in: the **Ask** FAB is retired (now header chip + tab slot); the
+  **Add** FAB is **desktop-only** (mobile uses the center tab). Ask is now a store-owned drawer
+  (`askOpen`/`openAsk`/`closeAsk` in `modalSlice`) so both launchers open the same surface.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 160/161 (pre-existing clock snapshot), `vite build` 0,
+version-drift 0.
+
+## v10.1.0 — Aurora Batch A: notifications, household switch, amount-first entry, home polish *(2026-07-13)*
+
+First screen-level batch on top of the v10.0.0 Aurora shell. **All business logic, data
+models, routes, the money model, and the Family Pulse computation are unchanged** — this is
+presentation + interaction, plus one new synced entity (notifications). The Money-Model
+invariant + golden suites stay green (presentation-only; no figure moved).
+
+**Cross-device notifications (new synced entity):**
+- Notifications graduate from local-only to a **household-scoped Supabase entity**
+  (`notifications` table + RLS: read = member or `is_admin('roles')`, write = member;
+  `unique(household_id, dedupe_key)`; retention purge dismissed > 30 d / read > 90 d).
+  Migration `20260709120000_v101_notifications_sync.sql` (applied to prod).
+- `notifySlice` now generates locally, upserts to cloud (dedupe on `household_id,dedupe_key`),
+  fetches + purges on refresh, and falls back to per-household localStorage in local-only mode.
+  Read/dismiss/mark-all are optimistic then synced. Refresh is wired from data/recurring/
+  household-switch.
+
+**13-type notification model + full-screen sheet (A2/A3):**
+- `Notification` extended to the 13-type spec model (`priority` P1/P2, inline `actions`,
+  `deepLink`, `amountRef`, per-entity refs, `dedupeKey`). Six generators produce the types
+  whose source data already exists (recurring due/reminder/posted, budget threshold, income
+  landed, debt due, stale balance, invite, sync conflict, insight fresh); the detection-engine
+  types (trend, member activity, milestone) render but are producer-deferred.
+- New `NotificationSheet` — a full-width **pull-down** glass sheet (Today / Earlier groups,
+  P1 pinned first, inline per-type decision buttons that execute in place, mark-all-read,
+  "All caught up" + pip empty state). The bell (`NotificationCenter`) opens it and shows the
+  active-household unread count.
+
+**Household switch pull-down (A4):**
+- `HouseholdSheet` — a pull-down of household cards (active glows coral + accent ring),
+  "New household", and "Manage members & invites →". The TopBar household chip opens it;
+  switching reuses `switchHousehold`.
+
+**Amount-first Add-Transaction half-sheet (A5):**
+- `TransactionFormModal` presentation rebuilt on the forms-doctrine `HalfSheet`
+  (bottom sheet on mobile / centered glass dialog on desktop, single responsive panel):
+  amount-first with an in-sheet **numeric keypad**, **chips instead of dropdowns** for
+  type / category (recents-first) / date (Today·Yesterday·pick) / account / currency / member,
+  autosuggested description, an **"All details ▾"** disclosure, and **Save + "Save & add
+  another"**. **Reuses `upsertTransaction` and the transfer/investment swap matrix byte-for-byte**
+  — the money path is unchanged; only the presentation is new. `N` shortcut unchanged.
+
+**Home polish + system states (A6):**
+- Dashboard heroes restyled to neumorphism and made a **swipeable full-bleed carousel** on
+  mobile; Cash-Flow hero gains an inline **6-month net-flow sparkline**; a glanceable **Pulse
+  ring** sits beside the greeting; friendly empty states use the **pip** mascot.
+- Toasts gain an optional **action slot**; the Add-Transaction flow offers **Undo** on a
+  freshly-added plain expense/income (system-split rows — loan EMI / transfer / investment /
+  people-split — are intentionally excluded, since they create linked legs that must not be
+  one-tap-reversed).
+- Motion: sheet exits are opacity-only (avoids a transform-exit stall inside `AnimatePresence`);
+  the mobile grabber / desktop ✕ are real close controls.
+
+**Known tech debt (tracked, not shipped):** the Playwright e2e suite still targets the
+pre-Aurora DOM and was already substantially red on `main` after v10.0.0 (the FAB now collides
+with the legacy "+ Add Transaction" button; the e2e seed predates the v9.1 budget model). The
+redesigned form is proven in real Playwright for the core edit/delete flow, and the Page Object
++ component test hooks (`data-testid` on chips, correct keypad "Backspace" label, input
+`aria-label`s) are a down-payment. A full e2e migration to the Aurora DOM is deferred until the
+remaining redesign batches (B–E) ship. Non-Playwright gates are green: `tsc` 0, `eslint` 0,
+`vitest` 160/161 (the one failure is the pre-existing clock-dependent money snapshot, identical
+on a clean tree), `vite build` 0, money invariants unmoved.
+
+## v10.0.0 — "Aurora" full interface redesign (desktop + mobile) *(2026-07-09)*
+
+Complete visual + navigation redesign to the **Aurora** direction from the claude.ai/design
+handoff bundle (`Vyact-handoff/…/design_handoff_vyact_aurora`). **All business logic, data
+models, routes, and features are preserved** — only the presentation layer and the nav shell
+changed. Major version because the entire interface and navigation paradigm is new.
+
+**Design language — Neumorphic Fluid / Aurora:**
+- Cool nocturne base (deep teal-slate) with a jade/cyan/indigo/violet accent spectrum;
+  **pip coral stays the primary accent**. **Dark ("Nocturne") is now the default theme**;
+  the light theme ("Mist") keeps the stored `warm` attribute key so existing user prefs
+  survive. Soft dual-light **neumorphism** for cards/buttons/inputs/nav pills;
+  **glass** (blur + translucency) reserved for the command palette, account dropdown,
+  and popovers. Signature **aurora rail gradient** (jade→indigo→violet) runs as a 3px strip
+  atop the app bar and fills avatars.
+- **Type:** Outfit (display/headings — replaces Newsreader), Inter (UI/body — replaces
+  Inter Tight), JetBrains Mono for every figure (unchanged). `.display-italic`, `.num`,
+  `.mono-label`, `.panel`, `.btn-*`, `.input` class names kept — their definitions were
+  re-skinned, so every page inherited the redesign without call-site edits.
+- **Token architecture:** both legacy token layers (Tailwind HSL slots + `--ff-*`) were
+  remapped to Aurora values in `index.css`, plus new Aurora primitives (`--neu*`,
+  `--glass*`, `--rail`, `--ambient`, `--accent`). Category colors kept per handoff §4.7.
+  Ambient aurora glow replaces the old blueprint-grid backdrop.
+
+**Navigation — desktop (≥640px):** the left sidebar is gone. New top-anchored shell:
+- Sticky **glass app bar**: rail strip · pip + Vy·act wordmark · **Track / Plan / Analyze**
+  sliding-pill section tabs · "Jump to… ⌘K" search · notification bell · account menu.
+- **Contextual subnav** — neu pill row of the active section's routes, sticky under the bar.
+- **⌘K command palette** (glass modal): quick actions (Add transaction / New budget /
+  Ask Vyact) + every route grouped by section, fuzzy filter, full ↑/↓/↵/Esc keyboard support —
+  the guarantee that all functionality stays reachable.
+- **Account menu**: avatar pill on the rail gradient → glass dropdown with the household
+  switcher (ProfileSwitcher retained wholesale — switching, sync status, manage), the three
+  Account routes, a Light/Dark/Auto theme control, and sign out.
+- Section ↔ route map (no route lost): Track = Dashboard·Transactions·Splits·Recurring;
+  Plan = Budgets·Debts·Net Worth·Accounts; Analyze = Reports·Insights; Account menu =
+  Households·Settings·Help. Template/flag-based page visibility (the old Sidebar rules)
+  is enforced in the subnav, palette, and tab bar via a shared `navModel.ts`.
+
+**Navigation — mobile (<640px):** native-feeling shell — slim glass top bar (pip · search ·
+bell · account) + **bottom tab bar** (Home / Track / Plan / Analyze / Profile, active tab on
+an accent pill, ≥44px targets, safe-area padded); a section's secondary routes stay reachable
+through the same subnav pill scroller. `Sidebar.tsx` and `MobileBar.tsx` were deleted;
+new: `TopBar`, `SubNav`, `CommandPalette`, `AccountMenu`, `MobileTabBar`, `Brand`, `navModel`.
+
+Verified in-browser this release (local mode, both themes, desktop + mobile viewports):
+shell renders, ⌘K opens/filters/executes (quick action confirmed by the Add Budget modal
+opening), section pill slides and syncs with routes, subnav switches per section, account
+menu theme control flips Nocturne↔Mist live, bottom tabs navigate, FABs clear the tab bar.
+
+## v9.9.3 — Browser-verified fixes: blank-app on widget failure, reel counter, button contrast *(2026-07-04)*
+
+Full in-browser verification of the v9.9.2 flip-card flow (mobile viewport, real click-through
+of every interaction) surfaced three real defects, fixed here:
+
+- **CRITICAL: the app rendered a permanently blank screen if the Userback feedback widget
+  failed to load.** `main.tsx` gated `createRoot().render()` behind a top-level
+  `await Userback(...)` — any widget failure (adblocker, corporate proxy, unauthorized domain,
+  vendor outage) rejected the module and React never mounted. The widget is now fire-and-forget
+  with a swallow-on-error: the app always renders; feedback is best-effort.
+- **Reel progress indicator overflowed the screen.** The per-card dot column drew 117 dots
+  (one per lesson + end slide) — taller than any phone viewport, colliding with the flip-back
+  control. Replaced with a compact centered `n / 116` counter pill in both reels.
+- **"Text" button was nearly invisible on light backdrops.** Its white-ghost styling assumed a
+  dark photo behind it, but `object-contain` letterboxing puts theme-cream behind the controls.
+  Now a solid `btn-secondary` surface, readable over any infographic or letterbox.
+
+Verified in-browser this release: full-screen reel (375×812), un-cropped `object-contain`
+infographic, title scrim fade-in on tap + 4s auto-hide, flip settling at 180° in ~400ms with
+zero overshoot (sampled frame-by-frame), video autoplay on flip and full unmount on flip-back
+(no ghost audio), text face, no-media fallback face, swipe-to-next, and both FABs absent
+under `/insights`.
+
+## v9.9.2 — Flip-card detail view: fixes cropping, redundant blocks, and distracting FABs *(2026-07-04)*
+
+User-tested v9.9.1 against real screenshots and flagged concrete defects, all fixed here:
+
+- **Infographic was cropped, unreadable.** The image used `object-cover` (crop-to-fill) on a
+  portrait image taller than the viewport. Switched to `object-contain` — the full image is
+  always visible now, letterboxed rather than cut off.
+- **Redundant blocks removed**: the inline click-to-play video placeholder in the text reader
+  (dead once you'd already reached text), the icon/stat/diagram graphic repeated at the top of
+  the text reader (redundant with the infographic already shown), and the separate Share/Save/
+  close controls duplicated in a second full modal — all gone.
+- **New interaction model — a flip card, not a stacked action bar.** New
+  `FlippableCardDetail.tsx` (shared by `EvergreenReel`/`ArticleReel`): front face is the
+  infographic (or the code-visual fallback) with a title + dark scrim that auto-hides after 4s
+  and reappears on tap; two minimal controls — **Play** and **Text** — flip the card (a real
+  3D `rotateY` transition, reusing the shared `spring` from `lib/motion.ts`) to a back face
+  showing the autoplaying video or the article body; a rotate/back control flips back to the
+  front. Share/Save intentionally stay on the grid tile only, not duplicated in the detail view.
+- **Retired**: `EvergreenReader.tsx`, `FullScreenVideoOverlay.tsx`, `YouTubeShort.tsx` — all
+  superseded by the flip card's back faces.
+- **Floating Ask Vyact / Add-Transaction buttons now hidden under `/insights`** — extended the
+  existing `FloatingTools.tsx`/`AddFab.tsx` route-hide gate (already hiding during onboarding)
+  so they don't compete with the focused, full-screen card-reading experience.
+
+## v9.9.1 — Portrait infographics as the universal card viewer *(2026-07-04)*
+
+Every Insight card/article now opens through one unified, swipeable full-screen viewer instead
+of a lightweight text modal, following up directly on v9.9.0's video shorts:
+
+- **`EvergreenReel.tsx`** (Learn tab) and the new **`ArticleReel.tsx`** (What's New tab) are now
+  the *only* way any card/article opens — grid taps, the feed's deep-link, all of it. A card
+  with an admin-uploaded infographic shows it full-bleed portrait with a bottom action bar
+  ("Watch video" if a short is linked, "Read article", Share, Save); a card **without** one
+  falls back to the original code-visual + teaser + Read layout — no dead ends.
+- **New `FullScreenVideoOverlay.tsx`** — "Watch video" opens the short full-screen (fills the
+  viewport, autoplays, portrait on mobile) with an "Open in YouTube" link, layered over the
+  infographic rather than replacing it.
+- **Removed the small video play-badge** from `CardVisual.tsx` and the analogous icon from the
+  What's New grid tile — no longer meaningful now that every card routes through the same
+  viewer regardless of what media it has.
+- **`lib/insightVideos.ts`** generalised from `fetchEvergreenVideoLinks` (video-only) to
+  `fetchEvergreenMedia` (video + infographic in one read); `EvergreenCard`/`InsightArticle`
+  both gained `infographic_url`/`infographicUrl`.
+- **DB migration**: `supabase/migrations/20260704120000_v991_insight_infographics.sql` — adds
+  `content_items.infographic_url`/`infographic_updated_at`, plus the app's **first Supabase
+  Storage bucket** (`insight-infographics`, public read, `is_admin('content')`-gated write) so
+  admin can upload real image files (see admin v1.3.1). Applied to the live Supabase project.
+
+## v9.9.0 — YouTube short videos on Insight cards/articles *(2026-07-02)*
+
+Every piece of Insights content — the 116 evergreen cards, editorial articles, and curated
+external items, all rows in `content_items` — can now carry an optional YouTube short. No video
+files are stored in Vyact: only a URL + a last-updated timestamp, admin-authored in the Content
+CMS (see admin v1.3.0). YouTube is the CDN.
+
+- **Rendering:** `CardVisual.tsx` shows a small play-badge overlay on cards that have a video
+  (code-rendered icon/stat/diagram visual is untouched — video is additive, not a replacement).
+  `EvergreenReader.tsx` and `WhatsNew.tsx`'s article reader both gained a new
+  **`YouTubeShort.tsx`** component: click-to-play (no autoplay iframe sitting in the DOM by
+  default) plus an explicit **"Open in YouTube"** link so users can like/comment/subscribe on
+  the actual video.
+- **New `lib/youtube.ts`** — normalises any URL shape (`watch?v=`, `/shorts/`, `youtu.be/`,
+  already-embed) to a video id, and builds both a privacy-enhanced `youtube-nocookie.com` embed
+  URL and the canonical watch URL for redirection.
+- **Evergreen cards are bundled JSON, not DB rows the client reads directly** — but the DB seed
+  for all 116 cards already exists in `content_items` (same `slug` as the JSON's `id`). New
+  **`lib/insightVideos.ts`** does one small `content_items` read (`slug, video_url` where
+  `format='card'`) and merges it onto the bundled cards at runtime in `EvergreenLearn.tsx` — no
+  changes to the JSON asset itself, no new table.
+- **`InsightArticle`/`insightsApi.ts`** gained `videoUrl`, selected directly off `content_items`
+  for the What's New tab (articles/external items aren't bundled, so no merge step needed there).
+- **DB migration**: `supabase/migrations/20260702120000_v99_insight_video_shorts.sql` — additive
+  `content_items.video_url` / `video_updated_at` columns. Applied to the live Supabase project;
+  existing row-level RLS policies already cover the new columns (no policy changes needed).
 
 ## v9.8.2 — Danger Zone mobile fix, real "last updated" dates, working support contact *(2026-07-01)*
 

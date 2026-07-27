@@ -211,6 +211,46 @@ export function spendByCategoryInRange(
   return out;
 }
 
+/** Cumulative spend (base currency) at the end of each calendar day in
+ *  `[start, upto]`, restricted to `categories`. Board-C Budgets pace chart:
+ *  drives the cumulative-spend-vs-limit hero. Uses the same
+ *  `reportableTxns`/`effectiveDinero` machinery as `spendByCategoryInRange`,
+ *  so the final entry's `cumulative` equals that function's total over the
+ *  same window — the chart never contradicts the tracked spend. Returns one
+ *  entry per day (inclusive). */
+export function cumulativeSpendSeries(
+  transactions: Transaction[],
+  categories: Set<string>,
+  start: string,
+  upto: string,
+  baseCurrency: string,
+  rates: ExchangeRates,
+): { date: string; cumulative: number }[] {
+  if (upto < start) return [];
+  // per-day exact spend within the category set (dinero space)
+  const perDay = new Map<string, Dinero<number>>();
+  for (const t of reportableTxns(transactions)) {
+    if (t.type !== 'expense' || !categories.has(t.category)) continue;
+    if (t.date < start || t.date > upto) continue;
+    const d = effectiveDinero(t, baseCurrency, rates);
+    const prev = perDay.get(t.date);
+    perDay.set(t.date, prev ? addDinero(prev, d) : d);
+  }
+  const out: { date: string; cumulative: number }[] = [];
+  let running: Dinero<number> | null = null;
+  const cur = new Date(`${start}T00:00:00`);
+  const end = new Date(`${upto}T00:00:00`);
+  // Guard against a malformed range spinning forever.
+  for (let guard = 0; cur <= end && guard < 400; guard++) {
+    const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}-${String(cur.getDate()).padStart(2, '0')}`;
+    const day = perDay.get(key);
+    if (day) running = running ? addDinero(running, day) : day;
+    out.push({ date: key, cumulative: running ? fromDinero(running) : 0 });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
 /** How many calendar months the period covers (used to derive a per-month
  *  view of an aggregated period limit). */
 export function periodMonths(period: BudgetPeriod | undefined): number {
@@ -263,6 +303,67 @@ export const totalMonthlyDebtPayment = (debts: Debt[], baseCurrency: string, rat
     d => convertViaUsdRates(toDinero(d.minimumPayment, d.currency), baseCurrency, rates),
     baseCurrency,
   ));
+
+// ── DEBT PAYOFF SIMULATION (forecast; not part of the money model) ──
+//
+// Board C · Debts strategy toggle. Simulates the standard debt-snowball /
+// avalanche cascade month-by-month in base currency to project total interest
+// paid, so the on-page toggle can state the honest trade-off ("Avalanche saves
+// you $340 in interest") instead of a fabricated figure. This is a PROJECTION —
+// it never mutates stored balances and is not consumed by any aggregator, so it
+// is outside the money-model invariants. When every debt is paid at exactly its
+// minimum (no rolling headroom) the two strategies are identical, which the
+// simulation reflects (savings → 0).
+export function simulatePayoffInterest(
+  debts: Debt[],
+  extraPerMonth: number,        // base currency, applied above the minimums
+  strategy: 'avalanche' | 'snowball',
+  baseCurrency: string,
+  rates: ExchangeRates,
+): { months: number; totalInterest: number; terminates: boolean } {
+  const work = debts
+    .filter(d => (d.direction || 'owed_by_me') !== 'owed_to_me' && d.currentBalance > 0)
+    .map(d => ({
+      balance: convert(d.currentBalance, d.currency, baseCurrency, rates),
+      rate: (d.interestRate || 0) / 100 / 12,
+      min: convert(d.minimumPayment, d.currency, baseCurrency, rates),
+    }));
+  if (!work.length) return { months: 0, totalInterest: 0, terminates: true };
+  // Total monthly budget = every original minimum + the extra. As debts clear,
+  // their freed minimum stays in the budget and rolls onto the priority debt.
+  const monthlyBudget = work.reduce((s, w) => s + Math.max(0, w.min), 0) + Math.max(0, extraPerMonth);
+  let totalInterest = 0;
+  let months = 0;
+  const CAP = 1200;   // 100 years — a runaway (budget < interest) bails out here
+  while (work.some(w => w.balance > 0.005) && months < CAP) {
+    months++;
+    let budget = monthlyBudget;
+    // 1) accrue interest
+    for (const w of work) {
+      if (w.balance <= 0) continue;
+      const interest = w.balance * w.rate;
+      totalInterest += interest;
+      w.balance += interest;
+    }
+    // 2) pay each active debt its own minimum (capped at balance)
+    for (const w of work) {
+      if (w.balance <= 0 || budget <= 0) continue;
+      const pay = Math.min(w.min, w.balance, budget);
+      w.balance -= pay;
+      budget -= pay;
+    }
+    // 3) cascade whatever is left (extra + freed minimums) onto priority order
+    const active = work.filter(w => w.balance > 0.005)
+      .sort((a, b) => strategy === 'avalanche' ? b.rate - a.rate : a.balance - b.balance);
+    for (const w of active) {
+      if (budget <= 0.005) break;
+      const pay = Math.min(budget, w.balance);
+      w.balance -= pay;
+      budget -= pay;
+    }
+  }
+  return { months, totalInterest, terminates: months < CAP };
+}
 
 // ── PULSE SCORE — 4 components ─────────────────────────────────
 // Goals were removed as a module, so Goal Progress is no longer a Pulse

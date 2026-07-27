@@ -4,6 +4,7 @@ import { toast as toastVariant } from '../../lib/motion';
 
 export default function ToastHost() {
   const toasts = useStore(s => s.toasts);
+  const dismissToast = useStore(s => s.dismissToast);
   // Container stays mounted (even empty) so AnimatePresence can play the EXIT of
   // the last toast. `layout` lets the remaining toasts slide up to fill the gap.
   return (
@@ -22,9 +23,18 @@ export default function ToastHost() {
               initial="hidden"
               animate="visible"
               exit="exit"
-              className={`pointer-events-auto bg-bg2 border border-line2 ${accent} border-l-[3px] text-ink px-4 py-3 rounded-md font-mono text-[0.7rem] tracking-wide shadow-2`}
+              className={`pointer-events-auto bg-bg2 border border-line2 ${accent} border-l-[3px] text-ink px-4 py-3 rounded-md font-mono text-[0.7rem] tracking-wide shadow-2 flex items-center gap-3`}
             >
-              {t.text}
+              <span className="flex-1">{t.text}</span>
+              {t.action && (
+                <button
+                  type="button"
+                  onClick={() => { t.action!.run(); dismissToast(t.id); }}
+                  className="flex-shrink-0 font-mono text-[0.66rem] tracking-wider uppercase text-coral hover:underline"
+                >
+                  {t.action.label}
+                </button>
+              )}
             </motion.div>
           );
         })}

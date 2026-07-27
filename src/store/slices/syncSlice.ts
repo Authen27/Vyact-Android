@@ -9,7 +9,8 @@ import type { Store } from '../../store';
 import { readLocalString, setLocalString } from '../localJson';
 import { subscribeBudgets } from '../../lib/realtime';
 
-export interface ToastMsg { id: string; text: string; type: 'success' | 'error' | 'info' | 'warning'; }
+export interface ToastAction { label: string; run: () => void; }
+export interface ToastMsg { id: string; text: string; type: 'success' | 'error' | 'info' | 'warning'; action?: ToastAction; }
 
 export interface SyncSlice {
   theme: Theme;
@@ -20,12 +21,14 @@ export interface SyncSlice {
   manualRefresh: () => Promise<void>; // full-sweep resync behind the Refresh button
   subscribeRealtime: (householdId: string) => () => void;
   setTheme: (t: Theme) => void;
-  toast: (text: string, type?: ToastMsg['type']) => void;
+  toast: (text: string, type?: ToastMsg['type'], action?: ToastAction) => void;
   dismissToast: (id: string) => void;
 }
 
 export const createSyncSlice: StateCreator<Store, [], [], SyncSlice> = (set, get) => ({
-  theme: (readLocalString('theme', 'warm') as Theme) || 'warm',
+  // Aurora (v10): dark "Nocturne" is the primary theme. Stored prefs win;
+  // 'warm' remains the attribute name for the light "Mist" theme.
+  theme: (readLocalString('theme', 'dark') as Theme) || 'dark',
   loading: true,
   toasts: [],
   lastSyncedAt: null,   // R4 (sync fix) — set by refresh() on success
@@ -97,10 +100,11 @@ export const createSyncSlice: StateCreator<Store, [], [], SyncSlice> = (set, get
     }
   },
 
-  toast: (text, type = 'success') => {
+  toast: (text, type = 'success', action) => {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    set(s => ({ toasts: [...s.toasts, { id, text, type }] }));
-    setTimeout(() => get().dismissToast(id), 3200);
+    set(s => ({ toasts: [...s.toasts, { id, text, type, action }] }));
+    // An actionable toast (e.g. Undo) lingers longer so it can actually be used.
+    setTimeout(() => get().dismissToast(id), action ? 6000 : 3200);
   },
   dismissToast: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),
 });

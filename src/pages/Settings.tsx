@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Download, FileText, Clipboard, ShieldAlert, Cloud, Trash2, PauseCircle, XOctagon } from 'lucide-react';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, today } from '../lib/format';
-import { CURRENCIES, DEFAULT_RATES, LOCALES, PROFILE_TYPES } from '../constants';
+import { CURRENCIES, DEFAULT_RATES, LOCALES } from '../constants';
 import { sb } from '../lib/supabase';
 import {
   enrollMfaTotp, verifyMfaEnrolment, listMfaFactors, unenrollMfaFactor, updatePassword,
@@ -14,12 +14,16 @@ import {
 } from '../lib/auth';
 import WhatsAppLink from '../components/settings/WhatsAppLink';
 import { POLICY_VERSION } from './Privacy';
-import type { Profile, Theme } from '../types';
+import Chip from '../components/ui/Chip';
+import {
+  NOTIF_GROUPS, NOTIF_TYPE_LABEL, NOTIF_LOCKED, typeEnabled, requestWebPushPermission,
+} from '../lib/notifications';
+import type { Profile, Theme, NotifType } from '../types';
 import type { Factor } from '@supabase/supabase-js';
 
 const THEMES: { key: Theme; label: string; desc: string }[] = [
-  { key: 'warm',   label: 'Paper Warm', desc: 'Cream & coral — default' },
-  { key: 'dark',   label: 'Dark',       desc: 'Warm palette on dark ink' },
+  { key: 'dark',   label: 'Nocturne',   desc: 'Aurora dark — default' },
+  { key: 'warm',   label: 'Mist',       desc: 'Aurora light' },
   { key: 'system', label: 'System',     desc: 'Follow OS preference' },
 ];
 
@@ -35,6 +39,57 @@ function formatPolicyDate(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+// Board E · M1/D1 — the grouped `.set-group` navigation list: a compact row
+// (icon · label · optional value preview · chevron) per setting, grouped
+// under a caption, expanding in place to reveal the exact same panel content
+// that used to render open-by-default. One row open at a time per page.
+function SettingRow({ icon, label, value, open, onToggle, children, id }: {
+  icon: ReactNode; label: string; value?: string; open: boolean; onToggle: () => void;
+  children: ReactNode; id?: string;
+}) {
+  return (
+    <div id={id}>
+      <button
+        type="button" onClick={onToggle} aria-expanded={open}
+        className="w-full flex items-center gap-3 px-3.5 py-3 text-left border-none cursor-pointer bg-transparent"
+      >
+        <span
+          className="w-7 h-7 rounded-full flex items-center justify-center text-[13px] flex-shrink-0"
+          style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
+        >
+          {icon}
+        </span>
+        <span className="flex-1 text-[0.86rem] text-ink font-medium truncate">{label}</span>
+        {value && <span className="text-[0.76rem] text-ink-dim whitespace-nowrap">{value}</span>}
+        <span
+          className="text-ink-dim text-lg leading-none flex-shrink-0"
+          style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s ease' }}
+          aria-hidden
+        >
+          ›
+        </span>
+      </button>
+      {open && <div className="pb-1">{children}</div>}
+    </div>
+  );
+}
+
+function SettingsGroup({ caption, danger, children }: { caption: string; danger?: boolean; children: ReactNode }) {
+  return (
+    <div>
+      <div className="mono-label mb-1.5 px-1">{caption}</div>
+      <div
+        className="rounded-r3 divide-y divide-line overflow-hidden mb-4"
+        style={danger
+          ? { background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }
+          : { background: 'var(--canvas)', boxShadow: 'var(--neu)' }}
+      >
+        {children}
+      </div>
+    </div>
+  );
 }
 
 export default function Settings() {
@@ -57,6 +112,8 @@ export default function Settings() {
   const resetRates  = useStore(s => s.resetRates);
   const setTheme    = useStore(s => s.setTheme);
   const toast       = useStore(s => s.toast);
+  const notificationPrefs = useStore(s => s.notificationPrefs);
+  const updateNotificationPrefs = useStore(s => s.updateNotificationPrefs);
 
   // Danger Zone (v9.8.0) — erase / deactivate / delete
   const [erasing, setErasing] = useState(false);
@@ -156,8 +213,15 @@ export default function Settings() {
   const [email, setEmail]     = useState(profile.email);
   const [saving, setSaving]   = useState(false);
   const [rateEdits, setRateEdits] = useState<Record<string, string>>({});
-  const [ratesOpen, setRatesOpen] = useState(false);
   const [extraPay, setExtraPay] = useState(String(profile.extraPayment || 0));
+
+  // Board E · M1 — one row open at a time across the grouped settings list.
+  // A direct #notifications deep-link (Help/legal footers already link there)
+  // opens straight to that row instead of landing on a collapsed page.
+  const [openRow, setOpenRow] = useState<string | null>(
+    () => (typeof window !== 'undefined' && window.location.hash === '#notifications') ? 'notifications' : null,
+  );
+  const toggleRow = (key: string) => setOpenRow(r => r === key ? null : key);
 
   // MFA / Security state (TD-15)
   const [mfaQr, setMfaQr] = useState('');
@@ -290,15 +354,6 @@ export default function Settings() {
               <input className="input w-full" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
             </div>
             <div>
-              <label className="mono-label mb-1.5 block">Household Type</label>
-              <select className="input w-full" value={profile.household}
-                onChange={e => updateProfile({ household: e.target.value as Profile['household'] })}>
-                {Object.entries(PROFILE_TYPES).map(([k, v]) => (
-                  <option key={k} value={k}>{v.icon} {v.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
               <label className="mono-label mb-1.5 block">Date Format</label>
               <select className="input w-full" value={profile.dateFormat}
                 onChange={e => updateProfile({ dateFormat: e.target.value as Profile['dateFormat'] })}>
@@ -348,76 +403,169 @@ export default function Settings() {
         {/* ── WhatsApp link (cloud-only; renders nothing in local mode) ── */}
         <WhatsAppLink />
 
-        {/* ── Appearance ──────────────────────────────────── */}
-        <Panel title="Appearance">
-          <div className="p-5 grid sm:grid-cols-3 gap-3">
-            {THEMES.map(th => (
-              <button key={th.key} onClick={() => setTheme(th.key)}
-                className={`border-2 rounded-lg p-4 text-left transition-all ${
-                  theme === th.key ? 'border-coral bg-coral/5' : 'border-line bg-bg3 hover:border-coral/40'
-                }`}>
-                <div className="text-sm font-semibold text-ink mb-0.5">{th.label}</div>
-                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{th.desc}</div>
-                {theme === th.key && <div className="mt-2 text-[0.65rem] font-mono text-coral uppercase tracking-widest">Active</div>}
-              </button>
-            ))}
-          </div>
-        </Panel>
+        {/* ── Preferences (board E · .set-group grouped list) ── */}
+        <SettingsGroup caption="Preferences">
+          <SettingRow icon="◐" label="Appearance" value={THEMES.find(th => th.key === theme)?.label}
+            open={openRow === 'appearance'} onToggle={() => toggleRow('appearance')}>
+            <div className="px-3.5 pb-3 grid sm:grid-cols-3 gap-3">
+              {THEMES.map(th => {
+                const on = theme === th.key;
+                return (
+                  <button key={th.key} onClick={() => setTheme(th.key)}
+                    className="rounded-r3 p-3.5 text-left border-none cursor-pointer transition-shadow"
+                    style={{ background: 'var(--canvas)', boxShadow: on ? 'var(--neu-sm), 0 0 0 2px var(--accent)' : 'var(--neu-sm)' }}>
+                    <div className="flex flex-col gap-1 mb-2" aria-hidden>
+                      {[0, 1, 2].map(i => (
+                        <span key={i} className="h-1.5 rounded-full"
+                          style={{ background: i === 0 ? 'var(--accent)' : 'var(--ff-line-2)', width: `${90 - i * 18}%` }} />
+                      ))}
+                    </div>
+                    <div className="text-[0.86rem] font-display font-semibold text-ink mb-0.5">{th.label}</div>
+                    <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{th.desc}</div>
+                    {on && <div className="mt-2 text-[0.65rem] font-mono uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Active</div>}
+                  </button>
+                );
+              })}
+            </div>
+          </SettingRow>
 
-        {/* ── Localisation ────────────────────────────────── */}
-        <Panel title="Language & Currency">
-          <div className="p-5 grid sm:grid-cols-2 gap-4">
-            <div>
-              <label className="mono-label mb-1.5 block">Language</label>
-              <select className="input w-full" value={profile.language}
-                onChange={e => updateProfile({ language: e.target.value })}>
-                {Object.entries(LOCALES).map(([k, v]) => (
-                  <option key={k} value={k}>{v.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="mono-label mb-1.5 block">Base Currency</label>
-              <select className="input w-full" value={profile.baseCurrency}
-                onChange={e => updateProfile({ baseCurrency: e.target.value })}>
-                {Object.entries(CURRENCIES).map(([code, meta]) => (
-                  <option key={code} value={code}>{meta.symbol} {code} — {meta.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="sm:col-span-2">
-              <label className="mono-label mb-1.5 block">Number System</label>
-              <select className="input w-full" value={profile.numberSystem ?? 'western'}
-                onChange={e => updateProfile({ numberSystem: e.target.value as 'western' | 'indian' })}>
-                <option value="western">Western — K (thousand) · M (million) · B (billion) · T (trillion)</option>
-                <option value="indian">Indian — K (thousand) · L (lakh = 1,00,000) · Cr (crore = 1,00,00,000)</option>
-              </select>
-              <p className="text-[0.74rem] text-ink-dim mt-1.5">
-                Used when large amounts are compacted (KPI tiles, summary rows, charts).
-              </p>
-            </div>
-          </div>
-        </Panel>
+          <SettingRow icon="🔔" label="Notifications" id="notifications"
+            open={openRow === 'notifications'} onToggle={() => toggleRow('notifications')}>
+            <div className="px-3.5 pb-3 space-y-5">
+              <label className="flex items-center justify-between gap-3 cursor-pointer">
+                <div>
+                  <div className="text-sm font-semibold text-ink">All notifications</div>
+                  <div className="text-[0.76rem] text-ink-dim mt-0.5">Master switch — turns every alert on or off.</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={notificationPrefs.master}
+                  onChange={e => updateNotificationPrefs({ master: e.target.checked })}
+                  className="accent-coral w-[18px] h-[18px] flex-shrink-0"
+                />
+              </label>
 
-        {/* ── Exchange Rates (accordion, collapsed by default) ──── */}
-        <Panel>
-          <button
-            type="button"
-            onClick={() => setRatesOpen(o => !o)}
-            aria-expanded={ratesOpen}
-            className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-bg3/40 transition-colors"
-          >
-            <div>
-              <div className="display-italic text-2xl text-ink leading-tight">Exchange Rates</div>
-              <div className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim mt-1">
-                USD base · {Object.keys(CURRENCIES).length - 1} currencies
+              {NOTIF_GROUPS.map(g => (
+                <div key={g.label}>
+                  <div className="mono-label mb-1.5">{g.label}</div>
+                  <div className="rounded-r3 overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+                    {g.types.map((ty: NotifType, i) => {
+                      const locked = NOTIF_LOCKED.includes(ty);
+                      const enabled = typeEnabled(notificationPrefs, ty);
+                      return (
+                        <label
+                          key={ty}
+                          className={`flex items-center justify-between gap-3 px-3.5 py-2.5 ${i > 0 ? 'border-t border-line' : ''} ${locked ? 'opacity-60' : 'cursor-pointer'}`}
+                        >
+                          <span className="text-[0.84rem] text-ink">
+                            {NOTIF_TYPE_LABEL[ty]}
+                            {locked && <span className="mono-label ml-2 text-ink-dim">always on</span>}
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={enabled}
+                            disabled={locked || !notificationPrefs.master}
+                            onChange={e => updateNotificationPrefs({ perType: { ...notificationPrefs.perType, [ty]: e.target.checked } })}
+                            className="accent-coral flex-shrink-0"
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              <div>
+                <div className="mono-label mb-1.5">Quiet hours</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="mono-label mb-1 block">From</label>
+                    <input type="time" className="input w-full" value={notificationPrefs.quietStart}
+                      onChange={e => updateNotificationPrefs({ quietStart: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="mono-label mb-1 block">To</label>
+                    <input type="time" className="input w-full" value={notificationPrefs.quietEnd}
+                      onChange={e => updateNotificationPrefs({ quietEnd: e.target.value })} />
+                  </div>
+                </div>
+                <p className="text-[0.74rem] text-ink-dim mt-1.5">
+                  Informational alerts are held during quiet hours; action-required alerts still badge the bell.
+                </p>
+              </div>
+
+              <div>
+                <div className="mono-label mb-1.5">Reminder lead time</div>
+                <div className="flex gap-1.5">
+                  {([1, 3, 7] as const).map(d => (
+                    <Chip key={d} on={notificationPrefs.defaultLeadDays === d}
+                      onClick={() => updateNotificationPrefs({ defaultLeadDays: d })}>
+                      {d} day{d > 1 ? 's' : ''} before
+                    </Chip>
+                  ))}
+                </div>
+              </div>
+
+              <label className="flex items-center justify-between gap-3 cursor-pointer">
+                <div>
+                  <div className="text-sm font-semibold text-ink">Browser push</div>
+                  <div className="text-[0.76rem] text-ink-dim mt-0.5">Show a system notification for action-required alerts.</div>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={notificationPrefs.webPushEnabled}
+                  onChange={async e => {
+                    if (e.target.checked) {
+                      const granted = await requestWebPushPermission();
+                      if (!granted) { toast('Enable notifications for Vyact in your browser settings first', 'error'); return; }
+                    }
+                    updateNotificationPrefs({ webPushEnabled: e.target.checked });
+                  }}
+                  className="accent-coral w-[18px] h-[18px] flex-shrink-0"
+                />
+              </label>
+            </div>
+          </SettingRow>
+
+          <SettingRow icon="🌐" label="Language & currency" value={`${profile.language.toUpperCase()} · ${profile.baseCurrency}`}
+            open={openRow === 'language'} onToggle={() => toggleRow('language')}>
+            <div className="px-3.5 pb-3 grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="mono-label mb-1.5 block">Language</label>
+                <select className="input w-full" value={profile.language}
+                  onChange={e => updateProfile({ language: e.target.value })}>
+                  {Object.entries(LOCALES).map(([k, v]) => (
+                    <option key={k} value={k}>{v.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mono-label mb-1.5 block">Base Currency</label>
+                <select className="input w-full" value={profile.baseCurrency}
+                  onChange={e => updateProfile({ baseCurrency: e.target.value })}>
+                  {Object.entries(CURRENCIES).map(([code, meta]) => (
+                    <option key={code} value={code}>{meta.symbol} {code} — {meta.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="mono-label mb-1.5 block">Number System</label>
+                <select className="input w-full" value={profile.numberSystem ?? 'western'}
+                  onChange={e => updateProfile({ numberSystem: e.target.value as 'western' | 'indian' })}>
+                  <option value="western">Western — K (thousand) · M (million) · B (billion) · T (trillion)</option>
+                  <option value="indian">Indian — K (thousand) · L (lakh = 1,00,000) · Cr (crore = 1,00,00,000)</option>
+                </select>
+                <p className="text-[0.74rem] text-ink-dim mt-1.5">
+                  Used when large amounts are compacted (KPI tiles, summary rows, charts).
+                </p>
               </div>
             </div>
-            <span className="text-ink-mid text-xl" aria-hidden>{ratesOpen ? '−' : '+'}</span>
-          </button>
-          {ratesOpen && (
-            <div className="px-4 pb-4 border-t border-line">
-              <p className="text-[0.84rem] text-ink-mid my-4">
+          </SettingRow>
+
+          <SettingRow icon="⇄" label="Exchange rates" value={`${Object.keys(CURRENCIES).length - 1} currencies`}
+            open={openRow === 'rates'} onToggle={() => toggleRow('rates')}>
+            <div className="px-3.5 pb-3">
+              <p className="text-[0.84rem] text-ink-mid mb-3">
                 Rates relative to USD. All multi-currency amounts are converted through these.
               </p>
               <div className="grid sm:grid-cols-3 gap-2">
@@ -441,308 +589,319 @@ export default function Settings() {
                 </button>
               </div>
             </div>
-          )}
-        </Panel>
+          </SettingRow>
 
-        {/* ── Debt Preferences ─────────────────────────────── */}
-        <Panel title="Debt Preferences">
-          <div className="p-5 grid sm:grid-cols-2 gap-4">
-            <div>
-              <label className="mono-label mb-1.5 block">Payoff Strategy</label>
-              <select className="input w-full" value={profile.payoffStrategy}
-                onChange={e => updateProfile({ payoffStrategy: e.target.value as Profile['payoffStrategy'] })}>
-                <option value="avalanche">Avalanche — highest APR first (saves money)</option>
-                <option value="snowball">Snowball — smallest balance first (motivation)</option>
-              </select>
-            </div>
-            <div>
-              <label className="mono-label mb-1.5 block">Monthly Extra Payment ({profile.baseCurrency})</label>
-              <input className="input w-full" type="number" min="0" value={extraPay}
-                onChange={e => setExtraPay(e.target.value)} placeholder="0" />
-            </div>
-            <div className="sm:col-span-2 flex justify-end">
-              <button className="btn-primary" onClick={saveDebtPrefs}>Save Preferences</button>
-            </div>
-          </div>
-        </Panel>
-
-        {/* ── Sync & Backup ────────────────────────────────── */}
-        <Panel title="Sync & Backup">
-          <div className="p-5 space-y-4">
-            {cloudEnabled && (
-              <div className="flex items-center gap-2.5 bg-sage/10 border border-sage/30 rounded-md px-4 py-3">
-                <Cloud size={16} className="text-sage flex-shrink-0" />
-                <span className="text-[0.84rem] text-ink">Cloud sync is active — data syncs automatically with Supabase.</span>
+          <SettingRow icon="⬇️" label="Debt preferences" value={profile.payoffStrategy === 'avalanche' ? 'Avalanche' : 'Snowball'}
+            open={openRow === 'debt'} onToggle={() => toggleRow('debt')}>
+            <div className="px-3.5 pb-3 grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="mono-label mb-1.5 block">Payoff Strategy</label>
+                <select className="input w-full" value={profile.payoffStrategy}
+                  onChange={e => updateProfile({ payoffStrategy: e.target.value as Profile['payoffStrategy'] })}>
+                  <option value="avalanche">Avalanche — highest APR first (saves money)</option>
+                  <option value="snowball">Snowball — smallest balance first (motivation)</option>
+                </select>
               </div>
-            )}
-            <div className="flex items-start gap-2.5 rounded-md border border-honey/40 bg-honey/10 px-4 py-3 text-[0.82rem] leading-relaxed text-ink">
-              <ShieldAlert size={16} className="text-honey flex-shrink-0 mt-0.5" />
-              <span>Exported files can leave the app and any destructive data-reset workflow should be triggered only from Settings after an explicit review. Treat these actions as sensitive and verify the destination before continuing.</span>
-            </div>
-            <div className="grid sm:grid-cols-3 gap-3">
-              <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto" onClick={downloadBackup}>
-                <Download size={20} strokeWidth={1.6} />
-                <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Download Backup</span>
-                <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">JSON snapshot</span>
-              </button>
-              <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto" onClick={exportCSV}>
-                <FileText size={20} strokeWidth={1.6} />
-                <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Export CSV</span>
-                <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">Transactions</span>
-              </button>
-              <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto"
-                onClick={() => { navigator.clipboard.writeText(JSON.stringify({ profile, transactions, budgets, goals, debts, assets }, null, 2)); toast('Copied to clipboard', 'success'); }}>
-                <Clipboard size={20} strokeWidth={1.6} />
-                <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Copy to Clipboard</span>
-                <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">Full backup</span>
-              </button>
-            </div>
-          </div>
-        </Panel>
-
-        {/* ── Password ─────────────────────────────────────── */}
-        <Panel title="Password">
-          <div className="p-5">
-            {!cloudEnabled || !session ? (
-              <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
-                Password management requires cloud mode. Sign in with a cloud account to change your password.
+              <div>
+                <label className="mono-label mb-1.5 block">Monthly Extra Payment ({profile.baseCurrency})</label>
+                <input className="input w-full" type="number" min="0" value={extraPay}
+                  onChange={e => setExtraPay(e.target.value)} placeholder="0" />
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="text-[0.9rem] text-ink-mid">
-                  Update the password for <span className="font-mono text-ink">{userEmail}</span>. You stay signed in on this device.
+              <div className="sm:col-span-2 flex justify-end">
+                <button className="btn-primary" onClick={saveDebtPrefs}>Save Preferences</button>
+              </div>
+            </div>
+          </SettingRow>
+        </SettingsGroup>
+
+        {/* ── Data & security (board E · .set-group grouped list) ── */}
+        <SettingsGroup caption="Data & security">
+          <SettingRow icon="☁️" label="Sync & backup" value="JSON · CSV"
+            open={openRow === 'sync'} onToggle={() => toggleRow('sync')}>
+            <div className="px-3.5 pb-3 space-y-4">
+              {cloudEnabled && (
+                <div className="flex items-center gap-2.5 bg-sage/10 border border-sage/30 rounded-md px-4 py-3">
+                  <Cloud size={16} className="text-sage flex-shrink-0" />
+                  <span className="text-[0.84rem] text-ink">Cloud sync is active — data syncs automatically with Supabase.</span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="mono-label mb-1.5 block">New password</label>
-                    <input
-                      type={pwShow ? 'text' : 'password'}
-                      className="input w-full"
-                      value={pwNew}
-                      onChange={e => setPwNew(e.target.value)}
-                      autoComplete="new-password"
-                      placeholder="At least 8 characters"
-                    />
+              )}
+              <div className="flex items-start gap-2.5 rounded-md border border-honey/40 bg-honey/10 px-4 py-3 text-[0.82rem] leading-relaxed text-ink">
+                <ShieldAlert size={16} className="text-honey flex-shrink-0 mt-0.5" />
+                <span>Exported files can leave the app and any destructive data-reset workflow should be triggered only from Settings after an explicit review. Treat these actions as sensitive and verify the destination before continuing.</span>
+              </div>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto" onClick={downloadBackup}>
+                  <Download size={20} strokeWidth={1.6} />
+                  <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Download Backup</span>
+                  <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">JSON snapshot</span>
+                </button>
+                <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto" onClick={exportCSV}>
+                  <FileText size={20} strokeWidth={1.6} />
+                  <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Export CSV</span>
+                  <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">Transactions</span>
+                </button>
+                <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto"
+                  onClick={() => { navigator.clipboard.writeText(JSON.stringify({ profile, transactions, budgets, goals, debts, assets }, null, 2)); toast('Copied to clipboard', 'success'); }}>
+                  <Clipboard size={20} strokeWidth={1.6} />
+                  <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Copy to Clipboard</span>
+                  <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">Full backup</span>
+                </button>
+              </div>
+            </div>
+          </SettingRow>
+
+          <SettingRow icon="🔑" label="Password"
+            open={openRow === 'password'} onToggle={() => toggleRow('password')}>
+            <div className="px-3.5 pb-3">
+              {!cloudEnabled || !session ? (
+                <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
+                  Password management requires cloud mode. Sign in with a cloud account to change your password.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-[0.9rem] text-ink-mid">
+                    Update the password for <span className="font-mono text-ink">{userEmail}</span>. You stay signed in on this device.
                   </div>
-                  <div>
-                    <label className="mono-label mb-1.5 block">Confirm new password</label>
-                    <input
-                      type={pwShow ? 'text' : 'password'}
-                      className="input w-full"
-                      value={pwConfirm}
-                      onChange={e => setPwConfirm(e.target.value)}
-                      autoComplete="new-password"
-                      placeholder="Re-enter"
-                    />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="mono-label mb-1.5 block">New password</label>
+                      <input
+                        type={pwShow ? 'text' : 'password'}
+                        className="input w-full"
+                        value={pwNew}
+                        onChange={e => setPwNew(e.target.value)}
+                        autoComplete="new-password"
+                        placeholder="At least 8 characters"
+                      />
+                    </div>
+                    <div>
+                      <label className="mono-label mb-1.5 block">Confirm new password</label>
+                      <input
+                        type={pwShow ? 'text' : 'password'}
+                        className="input w-full"
+                        value={pwConfirm}
+                        onChange={e => setPwConfirm(e.target.value)}
+                        autoComplete="new-password"
+                        placeholder="Re-enter"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <label className="flex items-center gap-2 text-[0.85rem] text-ink-mid select-none cursor-pointer">
+                      <input type="checkbox" checked={pwShow} onChange={e => setPwShow(e.target.checked)} />
+                      Show passwords
+                    </label>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      disabled={pwSaving || !pwNew || !pwConfirm}
+                      onClick={savePassword}
+                    >
+                      {pwSaving ? 'Saving…' : 'Update password'}
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <label className="flex items-center gap-2 text-[0.85rem] text-ink-mid select-none cursor-pointer">
-                    <input type="checkbox" checked={pwShow} onChange={e => setPwShow(e.target.checked)} />
-                    Show passwords
-                  </label>
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    disabled={pwSaving || !pwNew || !pwConfirm}
-                    onClick={savePassword}
-                  >
-                    {pwSaving ? 'Saving…' : 'Update password'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </Panel>
+              )}
+            </div>
+          </SettingRow>
 
-        {/* ── Security ─────────────────────────────────────── */}
-        <Panel title="Security">
-          <div className="p-5 space-y-3">
-            {!cloudEnabled || !session ? (
-              <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
-                Two-factor authentication requires cloud mode (Supabase). Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to enable.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="text-[0.9rem] text-ink-mid">Two-factor authentication (TOTP) adds an extra layer of account protection.</div>
-                <div className="flex items-center gap-3">
-                  <button className="btn-primary" onClick={async () => {
-                    setMfaEnrolling(true);
-                    try {
-                      const enrolled = await enrollMfaTotp('Vyact TOTP');
-                      // Supabase TOTP enrol returns { id, type:'totp', totp:{ uri, qr_code, secret } }.
-                      const otpauth = enrolled?.type === 'totp' ? enrolled.totp.uri : null;
-                      if (otpauth) setMfaQr(`https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=${encodeURIComponent(otpauth)}`);
-                      setMfaFactorId(enrolled?.id ?? '');
-                      await fetchMfaFactors();
-                    } catch (e) {
-                      toast(`MFA enrolment failed: ${(e as Error).message}`, 'error');
-                    } finally { setMfaEnrolling(false); }
-                  }} disabled={mfaEnrolling}>
-                    {mfaEnrolling ? 'Working…' : 'Enable two-factor auth'}
-                  </button>
-                  {mfaQr && (
-                    <div className="flex items-center gap-3">
-                      <img src={mfaQr} alt="TOTP QR" className="w-24 h-24 border rounded-md" />
-                      <div className="flex flex-col">
-                        <input className="input w-40 mb-2" placeholder="Enter 6-digit code" value={mfaCode} onChange={e => setMfaCode(e.target.value)} />
-                        <div className="flex gap-2">
-                          <button className="btn-primary" onClick={async () => {
-                            if (!mfaFactorId || !mfaCode) return toast('Enter code', 'error');
-                            setMfaEnrolling(true);
-                            try {
-                              await verifyMfaEnrolment(mfaFactorId, mfaCode);
-                              toast('Two-factor authentication enabled', 'success');
-                              setMfaQr(''); setMfaCode(''); setMfaFactorId('');
-                              await fetchMfaFactors();
-                            } catch (e) { toast(`Verification failed: ${(e as Error).message}`, 'error'); }
-                            finally { setMfaEnrolling(false); }
-                          }}>{mfaEnrolling ? 'Verifying…' : 'Verify'}</button>
+          <SettingRow icon="🛡️" label="Security" value={mfaFactors.length > 0 ? '2FA on' : undefined}
+            open={openRow === 'security'} onToggle={() => toggleRow('security')}>
+            <div className="px-3.5 pb-3 space-y-3">
+              {!cloudEnabled || !session ? (
+                <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
+                  Two-factor authentication requires cloud mode (Supabase). Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to enable.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="text-[0.9rem] text-ink-mid">Two-factor authentication (TOTP) adds an extra layer of account protection.</div>
+                  <div className="flex items-center gap-3">
+                    <button className="btn-primary" onClick={async () => {
+                      setMfaEnrolling(true);
+                      try {
+                        const enrolled = await enrollMfaTotp('Vyact TOTP');
+                        // Supabase TOTP enrol returns { id, type:'totp', totp:{ uri, qr_code, secret } }.
+                        const otpauth = enrolled?.type === 'totp' ? enrolled.totp.uri : null;
+                        if (otpauth) setMfaQr(`https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=${encodeURIComponent(otpauth)}`);
+                        setMfaFactorId(enrolled?.id ?? '');
+                        await fetchMfaFactors();
+                      } catch (e) {
+                        toast(`MFA enrolment failed: ${(e as Error).message}`, 'error');
+                      } finally { setMfaEnrolling(false); }
+                    }} disabled={mfaEnrolling}>
+                      {mfaEnrolling ? 'Working…' : 'Enable two-factor auth'}
+                    </button>
+                    {mfaQr && (
+                      <div className="flex items-center gap-3">
+                        <img src={mfaQr} alt="TOTP QR" className="w-24 h-24 border rounded-md" />
+                        <div className="flex flex-col">
+                          <input className="input w-40 mb-2" placeholder="Enter 6-digit code" value={mfaCode} onChange={e => setMfaCode(e.target.value)} />
+                          <div className="flex gap-2">
+                            <button className="btn-primary" onClick={async () => {
+                              if (!mfaFactorId || !mfaCode) return toast('Enter code', 'error');
+                              setMfaEnrolling(true);
+                              try {
+                                await verifyMfaEnrolment(mfaFactorId, mfaCode);
+                                toast('Two-factor authentication enabled', 'success');
+                                setMfaQr(''); setMfaCode(''); setMfaFactorId('');
+                                await fetchMfaFactors();
+                              } catch (e) { toast(`Verification failed: ${(e as Error).message}`, 'error'); }
+                              finally { setMfaEnrolling(false); }
+                            }}>{mfaEnrolling ? 'Verifying…' : 'Verify'}</button>
+                          </div>
                         </div>
                       </div>
+                    )}
+
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-semibold mb-2">Enrolled factors</div>
+                    <div>
+                      {loadingFactors ? <div className="text-sm text-ink-mid">Loading…</div> : (
+                        mfaFactors.length === 0 ? <div className="text-sm text-ink-mid">No enrolled 2FA factors.</div> : (
+                          <ul className="space-y-2">
+                            {mfaFactors.map((f: any) => (
+                              <li key={f.id} className="flex items-center justify-between bg-bg3 border border-line rounded-md p-2">
+                                <div>
+                                  <div className="font-medium">{f.friendly_name || f.factor_type || 'Factor'}</div>
+                                  <div className="text-sm text-ink-mid">{f.status || 'unknown'}</div>
+                                </div>
+                                <div>
+                                  <button className="btn-ghost text-sm" onClick={async () => {
+                                    if (!confirm('Unenroll this factor?')) return;
+                                    try { await unenrollMfaFactor(f.id); toast('Factor removed', 'success'); await fetchMfaFactors(); }
+                                    catch (e) { toast(`Could not remove factor: ${(e as Error).message}`, 'error'); }
+                                  }}>Remove</button>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        )
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </SettingRow>
+
+          <SettingRow icon="📊" label="Account stats"
+            open={openRow === 'stats'} onToggle={() => toggleRow('stats')}>
+            <div className="px-3.5 pb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: 'Transactions', value: transactions.length },
+                { label: 'Budgets',      value: budgets.length },
+                { label: 'Goals',        value: goals.length },
+                { label: 'Debts',        value: debts.length },
+                { label: 'Assets',       value: assets.length },
+                { label: 'Members',      value: members.length },
+                { label: 'Income txns',  value: transactions.filter(t => t.type === 'income').length },
+                { label: 'Expense txns', value: transactions.filter(t => t.type === 'expense').length },
+              ].map(s => (
+                <div key={s.label} className="bg-bg3 border border-line rounded-md p-3 text-center">
+                  <div className="text-2xl font-semibold text-coral">{s.value}</div>
+                  <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim uppercase mt-0.5">{s.label}</div>
+                </div>
+              ))}
+            </div>
+          </SettingRow>
+        </SettingsGroup>
+
+        {/* ── About (board E · .set-group) ─────────────────── */}
+        <SettingsGroup caption="About">
+          <SettingRow icon="📄" label="Legal & policies"
+            open={openRow === 'legal'} onToggle={() => toggleRow('legal')}>
+            <div className="px-3.5 pb-3 grid sm:grid-cols-3 gap-3">
+              <Link to="/privacy" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
+                <div className="text-sm font-semibold text-ink mb-1">Privacy Policy</div>
+                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
+              </Link>
+              <Link to="/terms" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
+                <div className="text-sm font-semibold text-ink mb-1">Terms of Service</div>
+                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
+              </Link>
+              <Link to="/cookies" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
+                <div className="text-sm font-semibold text-ink mb-1">Cookie Policy</div>
+                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
+              </Link>
+            </div>
+          </SettingRow>
+        </SettingsGroup>
+
+        {/* ── Danger zone — quarantined (board E: sunken/inset, never merged
+            into the regular groups so it can't be mistaken for a normal row) ── */}
+        <SettingsGroup caption="Danger zone" danger>
+          <SettingRow icon={<span style={{ color: 'hsl(var(--terra))' }}>⚠</span>} label="Delete · reset"
+            open={openRow === 'danger'} onToggle={() => toggleRow('danger')}>
+            <div className="px-3.5 pb-3 space-y-4">
+              {!cloudEnabled || !session ? (
+                <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
+                  Data erasure and account controls require cloud mode. Sign in with a cloud account to manage them here.
+                </div>
+              ) : (
+                <>
+                  <p className="text-[0.76rem] text-ink-dim -mt-1">
+                    Every action below requires a verification code sent to your account email before it takes effect.
+                  </p>
+
+                  {deletePending && (
+                    <div className="flex items-start gap-2.5 rounded-md border border-terra/40 bg-terra/10 px-4 py-3 text-[0.82rem] leading-relaxed text-ink">
+                      <XOctagon size={16} className="text-terra flex-shrink-0 mt-0.5" />
+                      <span>Account deletion is scheduled for {new Date(deletePending).toLocaleDateString()}. Sign back in before then to cancel.</span>
                     </div>
                   )}
 
-                </div>
-
-                <div>
-                  <div className="text-sm font-semibold mb-2">Enrolled factors</div>
-                  <div>
-                    {loadingFactors ? <div className="text-sm text-ink-mid">Loading…</div> : (
-                      mfaFactors.length === 0 ? <div className="text-sm text-ink-mid">No enrolled 2FA factors.</div> : (
-                        <ul className="space-y-2">
-                          {mfaFactors.map((f: any) => (
-                            <li key={f.id} className="flex items-center justify-between bg-bg3 border border-line rounded-md p-2">
-                              <div>
-                                <div className="font-medium">{f.friendly_name || f.factor_type || 'Factor'}</div>
-                                <div className="text-sm text-ink-mid">{f.status || 'unknown'}</div>
-                              </div>
-                              <div>
-                                <button className="btn-ghost text-sm" onClick={async () => {
-                                  if (!confirm('Unenroll this factor?')) return;
-                                  try { await unenrollMfaFactor(f.id); toast('Factor removed', 'success'); await fetchMfaFactors(); }
-                                  catch (e) { toast(`Could not remove factor: ${(e as Error).message}`, 'error'); }
-                                }}>Remove</button>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      )
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </Panel>
-
-        {/* ── Account Stats ────────────────────────────────── */}
-        <Panel title="Account Stats">
-          <div className="p-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {[
-              { label: 'Transactions', value: transactions.length },
-              { label: 'Budgets',      value: budgets.length },
-              { label: 'Goals',        value: goals.length },
-              { label: 'Debts',        value: debts.length },
-              { label: 'Assets',       value: assets.length },
-              { label: 'Members',      value: members.length },
-              { label: 'Income txns',  value: transactions.filter(t => t.type === 'income').length },
-              { label: 'Expense txns', value: transactions.filter(t => t.type === 'expense').length },
-            ].map(s => (
-              <div key={s.label} className="bg-bg3 border border-line rounded-md p-3 text-center">
-                <div className="text-2xl font-semibold text-coral">{s.value}</div>
-                <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim uppercase mt-0.5">{s.label}</div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        {/* ── Danger Zone ──────────────────────────────────── */}
-        <Panel title="Danger Zone">
-          <div className="p-5 space-y-4">
-            {!cloudEnabled || !session ? (
-              <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
-                Data erasure and account controls require cloud mode. Sign in with a cloud account to manage them here.
-              </div>
-            ) : (
-              <>
-                <p className="text-[0.76rem] text-ink-dim -mt-1">
-                  Every action below requires a verification code sent to your account email before it takes effect.
-                </p>
-
-                {deletePending && (
-                  <div className="flex items-start gap-2.5 rounded-md border border-terra/40 bg-terra/10 px-4 py-3 text-[0.82rem] leading-relaxed text-ink">
-                    <XOctagon size={16} className="text-terra flex-shrink-0 mt-0.5" />
-                    <span>Account deletion is scheduled for {new Date(deletePending).toLocaleDateString()}. Sign back in before then to cancel.</span>
-                  </div>
-                )}
-
-                <div className="border border-line rounded-md p-4">
-                  <div className="flex items-start gap-3">
-                    <Trash2 size={18} className="text-honey flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <div className="text-sm font-semibold text-ink">Erase all household data</div>
-                      <div className="text-[0.82rem] text-ink-mid mt-0.5">Permanently deletes every transaction, budget, debt, asset, account, goal, and recurring schedule for this household. Your login and household stay intact — data is wiped, not archived. Export a backup first if you want a copy.</div>
-                    </div>
-                    <button className="btn-secondary text-xs whitespace-nowrap" onClick={onEraseHouseholdData} disabled={erasing}>
-                      {erasing ? 'Erasing…' : 'Erase data'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="border border-line rounded-md p-4">
-                  <div className="flex items-start gap-3">
-                    <PauseCircle size={18} className="text-ink-dim flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <div className="text-sm font-semibold text-ink">Deactivate account (temporary)</div>
-                      <div className="text-[0.82rem] text-ink-mid mt-0.5">Signs you out and places a hold on your account. Nothing is deleted — all data is kept exactly as-is and restored automatically the moment you sign back in.</div>
-                    </div>
-                    <button className="btn-secondary text-xs whitespace-nowrap" onClick={onDeactivate} disabled={deactivating}>
-                      {deactivating ? 'Deactivating…' : 'Deactivate'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="border border-terra/40 rounded-md p-4 bg-terra/5">
-                  <div className="flex items-start gap-3">
-                    <XOctagon size={18} className="text-terra flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <div className="text-sm font-semibold text-ink">Delete account (permanent)</div>
-                      <div className="text-[0.82rem] text-ink-mid mt-0.5">
-                        Schedules permanent deletion of your account and every household you own, with a <strong>30-day undo window</strong> — sign back in any time before then to cancel automatically. After 30 days, your profile, owned households, and login are erased for good and cannot be recovered.
+                  <div className="border border-line rounded-md p-4">
+                    <div className="flex items-start gap-3">
+                      <Trash2 size={18} className="text-honey flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="text-sm font-semibold text-ink">Erase all household data</div>
+                        <div className="text-[0.82rem] text-ink-mid mt-0.5">Permanently deletes every transaction, budget, debt, asset, account, goal, and recurring schedule for this household. Your login and household stay intact — data is wiped, not archived. Export a backup first if you want a copy.</div>
                       </div>
-                      <div className="flex flex-wrap items-center gap-3 mt-3">
-                        <button className="btn-secondary text-xs whitespace-nowrap" onClick={onRequestDeletion} disabled={deleting}>
-                          {deleting ? 'Working…' : 'Schedule deletion (30-day undo)'}
-                        </button>
-                        <button className="text-xs text-terra hover:underline whitespace-nowrap" onClick={onDeleteImmediately} disabled={deleting}>
-                          Delete immediately instead
-                        </button>
+                      <button className="btn-secondary text-xs whitespace-nowrap" onClick={onEraseHouseholdData} disabled={erasing}>
+                        {erasing ? 'Erasing…' : 'Erase data'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="border border-line rounded-md p-4">
+                    <div className="flex items-start gap-3">
+                      <PauseCircle size={18} className="text-ink-dim flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="text-sm font-semibold text-ink">Deactivate account (temporary)</div>
+                        <div className="text-[0.82rem] text-ink-mid mt-0.5">Signs you out and places a hold on your account. Nothing is deleted — all data is kept exactly as-is and restored automatically the moment you sign back in.</div>
+                      </div>
+                      <button className="btn-secondary text-xs whitespace-nowrap" onClick={onDeactivate} disabled={deactivating}>
+                        {deactivating ? 'Deactivating…' : 'Deactivate'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="border border-terra/40 rounded-md p-4 bg-terra/5">
+                    <div className="flex items-start gap-3">
+                      <XOctagon size={18} className="text-terra flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <div className="text-sm font-semibold text-ink">Delete account (permanent)</div>
+                        <div className="text-[0.82rem] text-ink-mid mt-0.5">
+                          Schedules permanent deletion of your account and every household you own, with a <strong>30-day undo window</strong> — sign back in any time before then to cancel automatically. After 30 days, your profile, owned households, and login are erased for good and cannot be recovered.
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3 mt-3">
+                          <button className="btn-secondary text-xs whitespace-nowrap" onClick={onRequestDeletion} disabled={deleting}>
+                            {deleting ? 'Working…' : 'Schedule deletion (30-day undo)'}
+                          </button>
+                          <button className="text-xs text-terra hover:underline whitespace-nowrap" onClick={onDeleteImmediately} disabled={deleting}>
+                            Delete immediately instead
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </>
-            )}
-          </div>
-        </Panel>
-
-        <Panel title="Legal & Policies">
-          <div className="p-5 grid sm:grid-cols-3 gap-3">
-            <Link to="/privacy" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
-              <div className="text-sm font-semibold text-ink mb-1">Privacy Policy</div>
-              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
-            </Link>
-            <Link to="/terms" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
-              <div className="text-sm font-semibold text-ink mb-1">Terms of Service</div>
-              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
-            </Link>
-            <Link to="/cookies" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
-              <div className="text-sm font-semibold text-ink mb-1">Cookie Policy</div>
-              <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
-            </Link>
-          </div>
-        </Panel>
+                </>
+              )}
+            </div>
+          </SettingRow>
+        </SettingsGroup>
 
       </div>
     </div>

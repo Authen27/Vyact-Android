@@ -8,14 +8,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Sparkles } from 'lucide-react';
-import Modal from '../ui/Modal';
-import Button from '../ui/Button';
-import { Input, Select, Field, FieldRow } from '../ui/Input';
+import HalfSheet from '../ui/HalfSheet';
+import { Input, Select } from '../ui/Input';
+import Chip from '../ui/Chip';
+import { AmountField } from '../ui/NumericKeypad';
 import { useStore } from '../../store';
 import { fmt } from '../../lib/format';
 import { resolveBudgetPeriod, recurringForecastByCategory } from '../../lib/calculations';
 import { suggestBudget } from '../../lib/budgetIntel';
-import { EXPENSE_CATEGORIES, getCat, deterministicColor } from '../../constants';
+import { EXPENSE_CATEGORIES, getCat, deterministicColor, CURRENCIES as CURRENCY_MAP } from '../../constants';
 import type { Budget, BudgetScope, BudgetAllocation } from '../../types';
 
 interface Props { open?: boolean; initial?: Budget | null; onClose?: () => void; }
@@ -30,7 +31,6 @@ interface FormState {
   allocs: AllocRow[];
 }
 
-const CURRENCIES = ['USD','EUR','GBP','INR','JPY','AUD','CAD','CHF','CNY','AED','SGD','BRL'];
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 const blank = (currency: string): FormState => {
@@ -200,82 +200,125 @@ export default function BudgetFormModal(props: Props) {
     catch (e) { toast(`Delete failed: ${(e as Error).message}`, 'error'); }
   }
 
-  const yearOpts = useMemo(() => {
-    const y = new Date().getFullYear();
-    return [y - 1, y, y + 1, y + 2];
-  }, []);
+  const currencySymbol = CURRENCY_MAP[form.currency]?.symbol ?? '$';
+
+  // Board M2 — period is a chip row: the next six months + two annual years.
+  // If the form is bound to a period outside that window (e.g. editing an
+  // older budget) we prepend its chip so the selection stays representable.
+  const periodChips = useMemo(() => {
+    const base = new Date();
+    const out: { scope: BudgetScope; year: number; month?: number; label: string }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
+      out.push({ scope: 'month', year: d.getFullYear(), month: d.getMonth() + 1, label: `${MONTHS[d.getMonth()]} ${d.getFullYear()}` });
+    }
+    out.push({ scope: 'annual', year: base.getFullYear(), label: `Annual ${base.getFullYear()}` });
+    out.push({ scope: 'annual', year: base.getFullYear() + 1, label: `Annual ${base.getFullYear() + 1}` });
+    const selMatch = out.some(o => o.scope === form.scope && o.year === Number(form.periodYear)
+      && (o.scope === 'annual' || o.month === Number(form.periodMonth)));
+    if (!selMatch) {
+      out.unshift(form.scope === 'annual'
+        ? { scope: 'annual', year: Number(form.periodYear), label: `Annual ${form.periodYear}` }
+        : { scope: 'month', year: Number(form.periodYear), month: Number(form.periodMonth), label: `${MONTHS[Number(form.periodMonth) - 1]} ${form.periodYear}` });
+    }
+    return out;
+  }, [form.scope, form.periodYear, form.periodMonth]);
+
+  // Board M2 footer — a single full-width primary that names the allocated
+  // total, with the "stays flexible" honesty note (create) or Delete (edit)
+  // as a quiet cap below.
+  const footer = (
+    <div>
+      <button type="button" onClick={save} disabled={saving}
+        className="btn-primary w-full h-[50px] text-[15.5px] rounded-[15px] disabled:opacity-60">
+        {saving ? 'Saving…' : initial ? 'Update budget' : `Create budget · ${fmt(allocSum, form.currency)} allocated`}
+      </button>
+      <div className="text-center mt-2">
+        {initial ? (
+          <button type="button" onClick={del}
+            className="font-mono text-[9px] tracking-[0.15em] uppercase text-terra hover:underline">
+            Delete
+          </button>
+        ) : (
+          <span className="font-mono text-[8.5px] tracking-[0.12em] uppercase text-ink-dim">
+            {remaining >= 0
+              ? `${fmt(remaining, form.currency)} stays flexible — allocate any time`
+              : `over by ${fmt(-remaining, form.currency)}`}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 
   return (
-    <Modal open={open} title={initial ? 'Edit Budget' : 'Add Budget'} onClose={onClose}>
-      {/* §4.2 — scope leads the form (monthly or annual) */}
-      <Field label="Scope">
-        <div className="flex gap-2">
-          {(['month','annual'] as BudgetScope[]).map(s => (
-            <button key={s} type="button" onClick={() => setForm(f => ({ ...f, scope: s }))}
-              className={`flex-1 py-2 rounded-md border text-sm capitalize transition-colors ${form.scope === s ? 'border-coral bg-coral/10 text-ink font-medium' : 'border-line text-ink-mid hover:bg-bg3'}`}>
-              {s}
-            </button>
-          ))}
+    <HalfSheet open={open} title={initial ? 'Edit Budget' : 'Add Budget'} onClose={onClose} footer={footer}>
+      {/* Board M2 — period chips (forms doctrine: chips, not scope buttons +
+          month/year dropdowns). */}
+      <div className="mb-4">
+        <div className="mono-label mb-1.5">Period</div>
+        <div className="flex gap-1.5 flex-wrap">
+          {periodChips.map(p => {
+            const on = form.scope === p.scope && Number(form.periodYear) === p.year
+              && (p.scope === 'annual' || Number(form.periodMonth) === p.month);
+            return (
+              <Chip key={`${p.scope}-${p.year}-${p.month ?? 'y'}`} on={on}
+                onClick={() => setForm(f => ({ ...f, scope: p.scope, periodYear: String(p.year), periodMonth: String(p.month ?? f.periodMonth) }))}>
+                {p.label}
+              </Chip>
+            );
+          })}
         </div>
-      </Field>
+      </div>
 
-      {form.scope === 'month' && (
-        <FieldRow>
-          <Field label="Month">
-            <Select value={form.periodMonth} onChange={e => setForm(f => ({ ...f, periodMonth: e.target.value }))}>
-              {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-            </Select>
-          </Field>
-          <Field label="Year">
-            <Select value={form.periodYear} onChange={e => setForm(f => ({ ...f, periodYear: e.target.value }))}>
-              {yearOpts.map(y => <option key={y} value={y}>{y}</option>)}
-            </Select>
-          </Field>
-        </FieldRow>
-      )}
-      {form.scope === 'annual' && (
-        <Field label="Year">
-          <Select value={form.periodYear} onChange={e => setForm(f => ({ ...f, periodYear: e.target.value }))}>
-            {yearOpts.map(y => <option key={y} value={y}>{y}</option>)}
-          </Select>
-        </Field>
-      )}
+      {/* Board M2 — one big total (amount hero). */}
+      <div className="mb-1">
+        <div className="mono-label mb-1.5">Total</div>
+        <div className="py-1">
+          <AmountField value={form.limit} currencySymbol={currencySymbol}
+            onChange={v => setForm(f => ({ ...f, limit: v }))} />
+        </div>
+        {form.currency !== profile.baseCurrency && (
+          <p className="text-center text-[0.72rem] text-ink-dim">Recorded in {form.currency}.</p>
+        )}
+      </div>
 
-      <FieldRow>
-        <Field label="Total">
-          <Input type="number" min="0" step="0.01" value={form.limit} placeholder="500"
-            onChange={e => setForm(f => ({ ...f, limit: e.target.value }))} />
-        </Field>
-        <Field label="Currency">
-          <Select value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
-            {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
-          </Select>
-        </Field>
-      </FieldRow>
-
-      {/* §4.1/§4.2 — per-category allocations */}
-      <div className="mt-1">
+      {/* Board M2 — allocations as tappable neu rows (pip suggests via Suggest). */}
+      <div className="mt-4">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">Category allocations</span>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={applySuggestions} title="Suggest from spending history"
-              className="flex items-center gap-1 text-coral text-xs hover:opacity-70">
-              <Sparkles size={12} /> Suggest
-            </button>
-            <button type="button" onClick={addAlloc} className="text-coral text-xs hover:underline">+ Add category</button>
-          </div>
+          <span className="mono-label">Allocations</span>
+          <button type="button" onClick={applySuggestions} title="Suggest from spending history"
+            className="flex items-center gap-1 text-coral text-[0.72rem] hover:opacity-70">
+            <Sparkles size={12} /> Suggest
+          </button>
         </div>
-        {form.allocs.map((r, i) => (
-          <div key={i} className="flex items-center gap-2 mb-1.5">
-            <Select value={r.category} onChange={e => setAlloc(i, { category: e.target.value })}>
-              {EXPENSE_CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
-            </Select>
-            <Input type="number" min="0" step="0.01" value={r.amount} placeholder="0"
-              onChange={e => setAlloc(i, { amount: e.target.value })} />
-            <button type="button" onClick={() => removeAlloc(i)} className="text-ink-dim hover:text-terra px-1">✕</button>
-          </div>
-        ))}
-        <div className={`text-[0.72rem] mt-1 ${remaining < -0.001 ? 'text-terra' : 'text-ink-mid'}`}>
+        <div className="space-y-2">
+          {form.allocs.map((r, i) => {
+            const c = getCat(r.category);
+            return (
+              <div key={i} className="flex items-center gap-2.5 px-3 py-2.5 rounded-r2" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+                <span className="text-base leading-none flex-shrink-0" aria-hidden>{c.icon}</span>
+                <Select value={r.category} onChange={e => setAlloc(i, { category: e.target.value })}
+                  className="flex-1 min-w-0 !h-[32px] !py-0 text-[12.5px]">
+                  {EXPENSE_CATEGORIES.map(cc => <option key={cc.id} value={cc.id}>{cc.icon} {cc.label}</option>)}
+                </Select>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <span className="text-ink-dim text-[12.5px]">{currencySymbol}</span>
+                  <Input type="number" min="0" step="0.01" value={r.amount} placeholder="0"
+                    onChange={e => setAlloc(i, { amount: e.target.value })}
+                    className="!h-[32px] !py-0 !w-[84px] text-right num text-[12.5px]" />
+                </div>
+                <button type="button" onClick={() => removeAlloc(i)} aria-label="Remove allocation"
+                  className="text-ink-dim hover:text-terra px-0.5 flex-shrink-0">✕</button>
+              </div>
+            );
+          })}
+          <button type="button" onClick={addAlloc}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-r2 text-coral font-display font-semibold text-[12.5px] border-none cursor-pointer"
+            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+            ＋ Add category
+          </button>
+        </div>
+        <div className={`text-[0.72rem] mt-2 ${remaining < -0.001 ? 'text-terra' : 'text-ink-dim'}`}>
           Allocated {fmt(allocSum, form.currency)} of {fmt(total, form.currency)}
           {remaining >= 0
             ? ` · ${fmt(remaining, form.currency)} unallocated`
@@ -302,15 +345,6 @@ export default function BudgetFormModal(props: Props) {
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2 mt-3">
-        {initial ? (
-          <button type="button" onClick={del} className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline">Delete</button>
-        ) : <span />}
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : initial ? 'Update' : 'Add'}</Button>
-        </div>
-      </div>
-    </Modal>
+    </HalfSheet>
   );
 }

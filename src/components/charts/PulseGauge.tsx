@@ -23,14 +23,14 @@ export default function PulseGauge({ score }: Props) {
 
   const deg = Math.round(animated / 100 * 360);
   const ringStyle: React.CSSProperties = {
-    background: `conic-gradient(${status.cssVar} ${deg}deg, hsl(var(--bg3)) ${deg}deg)`,
+    background: `conic-gradient(${status.cssVar} ${deg}deg, var(--sunken) ${deg}deg)`,
+    boxShadow: 'var(--neu-inset)',
     transition: reduce ? 'none' : 'background 0.9s ease',
   };
 
   return (
-    <div className="bg-bg2 border border-line rounded-md p-4 shadow-1 relative overflow-hidden text-center">
-      <div className="absolute top-0 left-0 right-0 h-0.5 bg-coral" />
-      <div className="font-mono text-[0.5rem] tracking-[0.2em] uppercase text-terra mb-3.5">
+    <div className="rounded-r4 p-4 relative overflow-hidden text-center" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
+      <div className="mono-label mb-3.5" style={{ color: 'var(--accent)' }}>
         Family Pulse Score™
       </div>
       <div className="flex justify-center mb-3">
@@ -38,7 +38,7 @@ export default function PulseGauge({ score }: Props) {
           className="w-[116px] h-[116px] rounded-full flex items-center justify-center relative"
           style={ringStyle}
         >
-          <div className="absolute inset-[11px] rounded-full bg-bg2" />
+          <div className="absolute inset-[11px] rounded-full" style={{ background: 'var(--elevated)' }} />
           <div className="relative z-10 flex flex-col items-center">
             <div
               className="display-italic text-[2.5rem] leading-none"

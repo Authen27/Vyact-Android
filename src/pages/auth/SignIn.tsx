@@ -6,6 +6,7 @@ import { Input, Field } from '../../components/ui/Input';
 import { signIn, signInMagicLink } from '../../lib/auth';
 import GoogleButton from '../../components/auth/GoogleButton';
 import { useStore } from '../../store';
+import { Pip } from '../../components/layout/Brand';
 
 function getPostAuthPath(next: string | null): string {
   const pendingInvite = sessionStorage.getItem('pending_invite_token');
@@ -109,15 +110,20 @@ export default function SignIn() {
   );
 }
 
+// Board E — auth-card: a single glass card on the aurora ambient background,
+// pip up top, whisper inputs. Shared by every auth screen.
 export function AuthShell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md">
-        <Link to="/" className="block text-center mb-8">
-          <div className="display-italic text-4xl text-coral leading-none">Vyact</div>
-          <div className="font-mono text-[0.6rem] tracking-[0.2em] uppercase text-ink-dim mt-1.5">Family Finance OS</div>
+      <div className="w-full max-w-[380px]">
+        <Link to="/" className="flex flex-col items-center gap-2 text-center mb-7">
+          <Pip size={40} />
+          <div>
+            <div className="display-italic text-2xl text-ink leading-none">Vy<span style={{ color: 'var(--accent)' }}>act</span></div>
+            <div className="font-mono text-[0.58rem] tracking-[0.2em] uppercase text-ink-dim mt-1.5">Family Finance OS</div>
+          </div>
         </Link>
-        <div className="panel p-7">
+        <div className="rounded-r4 p-7" style={{ background: 'var(--glass-strong)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)', border: '1px solid var(--glass-line)', boxShadow: 'var(--cast-3)' }}>
           <h1 className="display-italic text-2xl text-ink mb-5 text-center">{title}</h1>
           {children}
         </div>

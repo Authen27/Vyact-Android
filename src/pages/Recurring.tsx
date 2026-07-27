@@ -1,21 +1,31 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Repeat, Trash2, Pencil } from 'lucide-react';
 import { useStore } from '../store';
 import { Panel } from '../components/ui/Card';
 import EmptyState from '../components/ui/EmptyState';
-import Button from '../components/ui/Button';
 import Money from '../components/ui/Money';
-import { Input, Select, Field, FieldRow } from '../components/ui/Input';
-import Modal from '../components/ui/Modal';
-import { formatDate } from '../lib/format';
-import { getCat, EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '../constants';
+import Chip, { CategoryChip } from '../components/ui/Chip';
+import { AmountField } from '../components/ui/NumericKeypad';
+import HalfSheet from '../components/ui/HalfSheet';
+import { formatDate, today } from '../lib/format';
+import { getCat, EXPENSE_CATEGORIES, INCOME_CATEGORIES, CURRENCIES } from '../constants';
 import type { RecurrenceFreq, RecurringSchedule } from '../types';
 import { computeNextDueDate } from '../lib/recurring';
-import { formatRRule, parseRRule } from '../lib/rrule';
+import { formatRRule, parseRRule, describeRRule } from '../lib/rrule';
+
+/* Board M4 member chips are initials ("MR"), matching Add Transaction. */
+const memberInitials = (name: string) =>
+  name.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 
 type SchedType = 'expense' | 'income' | 'investment';
 type MonthlyMode = 'dom' | 'nth';
 type EndsKind = 'never' | 'count';
+
+const TYPE_META: Record<SchedType, { label: string; emoji: string }> = {
+  expense:    { label: 'Expense',    emoji: '💸' },
+  income:     { label: 'Income',     emoji: '💰' },
+  investment: { label: 'Investment', emoji: '📈' },
+};
 
 const WEEKDAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const NTH_LABELS = ['1st', '2nd', '3rd', '4th', 'Last'];
@@ -25,6 +35,9 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 function todayWeekday(): number { return new Date().getDay(); }
 function todayDom(): number { return new Date().getDate(); }
 function todayMonth(): number { return new Date().getMonth() + 1; }
+const daysUntil = (d: string): number =>
+  Math.round((Date.parse(`${d}T00:00:00`) - Date.parse(`${today()}T00:00:00`)) / 86_400_000);
+const countdownLabel = (d: number): string => (d <= 0 ? 'Due today' : d === 1 ? 'Tomorrow' : `in ${d} days`);
 
 export default function Recurring() {
   const schedules = useStore(s => s.recurringSchedules);
@@ -34,6 +47,14 @@ export default function Recurring() {
   const baseCur = useStore(s => s.profile.baseCurrency);
   const dateFormat = useStore(s => s.profile.dateFormat);
   const toast = useStore(s => s.toast);
+
+  // Board M5 — schedules due within the next 7 days, for the upcoming strip.
+  const upcoming = useMemo(() => {
+    const t0 = today();
+    return schedules
+      .filter(s => s.active !== false && s.nextDueDate >= t0 && daysUntil(s.nextDueDate) <= 7)
+      .sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
+  }, [schedules]);
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<RecurringSchedule | null>(null);
@@ -177,6 +198,34 @@ export default function Recurring() {
         <button className="btn-primary flex-shrink-0" onClick={() => { resetForm(); setEditing(null); setOpen(true); }}>+ Add Schedule</button>
       </div>
 
+      {/* Board M5 — upcoming-7-day strip: what's about to post, with a countdown. */}
+      {upcoming.length > 0 && (
+        <div className="mb-5">
+          <div className="mono-label mb-2">Next 7 days</div>
+          <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1 [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+            {upcoming.map(s => {
+              const d = daysUntil(s.nextDueDate);
+              const cat = getCat(s.transactionTemplate.category);
+              const isIncome = s.transactionTemplate.type === 'income';
+              return (
+                <div key={s.id} className="min-w-[152px] flex-shrink-0 rounded-r3 p-3.5" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-lg leading-none">{cat.icon}</span>
+                    <span className="num text-[10px] font-bold tracking-wide px-2 py-0.5 rounded-md"
+                      style={{ background: d <= 1 ? 'color-mix(in srgb, hsl(var(--honey)) 18%, transparent)' : 'var(--sunken)', color: d <= 1 ? 'hsl(var(--honey))' : 'var(--ff-ink-3)' }}>
+                      {countdownLabel(d)}
+                    </span>
+                  </div>
+                  <div className="font-display font-semibold text-[13.5px] text-ink truncate">{s.transactionTemplate.description}</div>
+                  <Money amount={s.transactionTemplate.amount} currency={s.transactionTemplate.currency}
+                    className={`num text-[15px] font-bold ${isIncome ? 'text-sage' : 'text-ink'}`} signed={isIncome} />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <Panel title="Active Schedules">
         {schedules.length === 0
           ? <EmptyState icon={<Repeat size={36} />} message="No recurring schedules yet — set up rent, salary, subscriptions" />
@@ -189,8 +238,14 @@ export default function Recurring() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-ink truncate">{s.transactionTemplate.description}</div>
-                    <div className="font-mono text-[0.62rem] text-ink-dim mt-px">
-                      {s.frequency.toUpperCase()} · next {formatDate(s.nextDueDate, dateFormat)} · {s.autoConfirm ? 'auto' : 'pending confirm'}
+                    {/* Board B — schedules read as human sentences ("Monthly on
+                        the 16th"), not raw frequency codes. Legacy rows without
+                        an rrule fall back to the frequency word. */}
+                    <div className="font-mono text-[0.62rem] text-ink-dim mt-px truncate">
+                      {(() => {
+                        try { return s.rrule ? describeRRule(parseRRule(s.rrule)) : s.frequency; }
+                        catch { return s.frequency; }
+                      })()} · next {formatDate(s.nextDueDate, dateFormat)} · {s.autoConfirm ? 'auto' : 'pending confirm'}
                     </div>
                   </div>
                   <div className={`text-[0.86rem] font-medium ${s.transactionTemplate.type === 'income' ? 'text-sage' : 'text-terra'}`}>
@@ -208,160 +263,193 @@ export default function Recurring() {
         }
       </Panel>
 
-      <Modal open={open} onClose={() => { setOpen(false); setEditing(null); }} title={editing ? 'Edit Recurring Schedule' : 'Add Recurring Schedule'}>
-        <div>
-          {/* Type */}
-          <Field label="Type">
-            <div className="grid grid-cols-3 gap-1 bg-bg3 p-1 rounded-md">
-              {(['expense','income','investment'] as const).map(t => (
-                <button key={t} type="button" onClick={() => setType(t)}
-                  className={`py-2 font-mono text-[0.62rem] tracking-wider uppercase rounded transition ${type === t ? (t === 'expense' ? 'bg-terra/15 text-terra' : t === 'income' ? 'bg-sage/15 text-olive' : 'bg-denim/15 text-denim') : 'text-ink-mid'}`}>
-                  {t}
-                </button>
+      <HalfSheet open={open} onClose={() => { setOpen(false); setEditing(null); }} title={editing ? 'Edit Recurring Schedule' : 'Add Recurring Schedule'}
+        footer={
+          <div>
+            <button type="button" onClick={save}
+              className="btn-primary w-full h-[50px] text-[15.5px] rounded-[15px]">
+              {editing ? 'Update schedule' : 'Save schedule'}
+            </button>
+            <div className="text-center mt-2">
+              <button type="button" onClick={() => { setOpen(false); setEditing(null); }}
+                className="font-mono text-[9px] tracking-[0.15em] uppercase text-ink-dim hover:text-ink">
+                Cancel
+              </button>
+            </div>
+          </div>
+        }
+      >
+        {/* Track chips — centered, matches Add Transaction's board M4 row. */}
+        <div className="flex gap-1.5 flex-wrap justify-center mb-3">
+          {(['expense', 'income', 'investment'] as const).map(t => (
+            <Chip key={t} on={type === t} onClick={() => setType(t)}>
+              <span aria-hidden>{TYPE_META[t].emoji}</span>{TYPE_META[t].label}
+            </Chip>
+          ))}
+        </div>
+
+        {/* Amount hero — bare, same as Add Transaction. */}
+        <div className="py-1 mb-1">
+          <AmountField value={amount} currencySymbol={CURRENCIES[baseCur]?.symbol ?? '$'} onChange={setAmount} />
+        </div>
+
+        <div className="mt-4">
+          <div className="mono-label mb-1.5">Description</div>
+          <input className="input w-full" value={name} onChange={e => setName(e.target.value)}
+            placeholder="e.g. Rent · Salary · SIP" aria-label="Description" />
+        </div>
+
+        {/* Category tiles — expense/income only (investment carries no category). */}
+        {type !== 'investment' && (
+          <div className="mt-4">
+            <div className="mono-label mb-1.5">Category</div>
+            <div className="flex gap-1.5 flex-wrap">
+              {(type === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES).map(c => (
+                <CategoryChip key={c.id} emoji={c.icon} label={c.label}
+                  on={c.id === category} onClick={() => setCategory(c.id)} />
               ))}
             </div>
-          </Field>
-          <Field label="Description"><Input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Rent · Salary · SIP" /></Field>
-          <FieldRow>
-            <Field label="Amount"><Input type="number" step="0.01" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" /></Field>
-            {type === 'investment' ? (
-              <Field label="Owner" hint="attributed to">
-                <Select value={ownerMemberId} onChange={e => setOwnerMemberId(e.target.value)}>
-                  <option value="">— Household —</option>
-                  {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </Select>
-              </Field>
-            ) : (
-              <Field label="Category">
-                <Select value={category} onChange={e => setCategory(e.target.value)}>
-                  {(type === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES).map(c =>
-                    <option key={c.id} value={c.id}>{c.icon} {c.label}</option>
-                  )}
-                </Select>
-              </Field>
-            )}
-          </FieldRow>
-          {type !== 'investment' && (
-            <Field label="Owner" hint="generated transactions are attributed to">
-              <Select value={ownerMemberId} onChange={e => setOwnerMemberId(e.target.value)}>
-                <option value="">— Household —</option>
-                {members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </Select>
-            </Field>
-          )}
+          </div>
+        )}
 
-          {/* Recurrence frequency tabs */}
-          <Field label="Recurrence">
-            <div className="flex gap-1 bg-bg3 p-1 rounded-md">
-              {FREQ_TABS.map(({ key, label }) => (
-                <button key={key} type="button" onClick={() => setFreq(key)}
-                  className={`flex-1 py-2 font-mono text-[0.62rem] tracking-wider uppercase rounded transition ${freq === key ? 'bg-bg border border-line text-ink font-semibold shadow-sm' : 'text-ink-mid hover:text-ink'}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-          </Field>
-
-          {/* Daily — no sub-options, just ends */}
-
-          {/* Weekly — day-of-week chips */}
-          {freq === 'weekly' && (
-            <Field label="Repeat on">
-              <div className="flex gap-1.5 flex-wrap">
-                {WEEKDAYS.map((d, i) => (
-                  <button key={i} type="button" onClick={() => toggleWeekday(i)}
-                    className={`w-9 h-9 rounded-full font-mono text-[0.68rem] border transition ${weekDays.includes(i) ? 'bg-coral text-white border-coral' : 'border-line text-ink-mid hover:border-coral/50'}`}>
-                    {d}
-                  </button>
-                ))}
-              </div>
-            </Field>
-          )}
-
-          {/* Monthly — DOM or Nth weekday */}
-          {(freq === 'monthly' || freq === 'custom_day') && (
-            <Field label="Repeat on">
-              <div className="flex gap-2 mb-2">
-                {(['dom', 'nth'] as MonthlyMode[]).map(m => (
-                  <label key={m} className="flex items-center gap-1.5 text-[0.84rem] text-ink cursor-pointer">
-                    <input type="radio" name="monthlyMode" checked={monthlyMode === m} onChange={() => setMonthlyMode(m)} className="accent-coral" />
-                    {m === 'dom' ? 'Day of month' : 'Nth weekday'}
-                  </label>
-                ))}
-              </div>
-              {monthlyMode === 'dom' ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-[0.84rem] text-ink-mid">Day</span>
-                  <Input type="number" min={1} max={31} value={dayOfMonth}
-                    onChange={e => setDayOfMonth(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
-                    className="w-20" />
-                  <span className="text-[0.84rem] text-ink-mid">of each month</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Select value={nthWeek} onChange={e => setNthWeek(Number(e.target.value))} className="w-auto">
-                    {NTH_VALUES.map((v, i) => <option key={v} value={v}>{NTH_LABELS[i]}</option>)}
-                  </Select>
-                  <Select value={nthWeekday} onChange={e => setNthWeekday(Number(e.target.value))} className="w-auto">
-                    {WEEKDAYS.map((d, i) => <option key={i} value={i}>{d}</option>)}
-                  </Select>
-                  <span className="text-[0.84rem] text-ink-mid">of each month</span>
-                </div>
-              )}
-            </Field>
-          )}
-
-          {/* Annual — month + day */}
-          {freq === 'yearly' && (
-            <Field label="Repeat on">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Select value={annualMonth} onChange={e => setAnnualMonth(Number(e.target.value))} className="w-auto">
-                  {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-                </Select>
-                <Input type="number" min={1} max={31} value={annualDay}
-                  onChange={e => setAnnualDay(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
-                  className="w-20" />
-              </div>
-            </Field>
-          )}
-
-          {/* Ends */}
-          <FieldRow>
-            <Field label="Ends">
-              <Select value={endsKind} onChange={e => setEndsKind(e.target.value as EndsKind)}>
-                <option value="never">Never</option>
-                <option value="count">After N occurrences</option>
-              </Select>
-            </Field>
-            {endsKind === 'count' && (
-              <Field label="Occurrences">
-                <Input type="number" min={1} value={endsCount} onChange={e => setEndsCount(e.target.value)} placeholder="12" />
-              </Field>
-            )}
-          </FieldRow>
-
-          <FieldRow>
-            <Field label="Reminder lead time">
-              <Select value={reminderLead} onChange={e => setReminderLead(parseInt(e.target.value) as 1|3|7)}>
-                <option value="1">1 day before</option>
-                <option value="3">3 days before</option>
-                <option value="7">7 days before</option>
-              </Select>
-            </Field>
-            <Field label="Confirmation">
-              <label className="flex items-center gap-2 mt-2.5 text-[0.84rem] text-ink cursor-pointer">
-                <input type="checkbox" checked={autoConfirm} onChange={e => setAutoConfirm(e.target.checked)} className="accent-coral" />
-                Auto-approve (uncheck to review manually)
-              </label>
-            </Field>
-          </FieldRow>
-
-          <div className="flex gap-2 mt-5 pt-4 border-t border-line">
-            <Button variant="ghost" onClick={() => { setOpen(false); setEditing(null); }} full>Cancel</Button>
-            <Button onClick={save} full>{editing ? 'Update Schedule' : 'Save Schedule'}</Button>
+        {/* Owner — member initial chips, matches Add Transaction's member row. */}
+        <div className="mt-4">
+          <div className="mono-label mb-1.5">
+            Owner {type === 'investment' ? <span className="text-ink-dim">·attributed to</span> : null}
+          </div>
+          <div className="flex gap-1.5 flex-wrap">
+            <Chip on={!ownerMemberId} onClick={() => setOwnerMemberId('')}>Household</Chip>
+            {members.map(m => (
+              <Chip key={m.id} on={m.id === ownerMemberId} onClick={() => setOwnerMemberId(m.id)}>
+                {memberInitials(m.name)}
+              </Chip>
+            ))}
           </div>
         </div>
-      </Modal>
+
+        {/* Recurrence frequency */}
+        <div className="mt-4">
+          <div className="mono-label mb-1.5">Recurrence</div>
+          <div className="flex gap-1.5 flex-wrap">
+            {FREQ_TABS.map(({ key, label }) => (
+              <Chip key={key} on={freq === key} onClick={() => setFreq(key)}>{label}</Chip>
+            ))}
+          </div>
+        </div>
+
+        {/* Weekly — day-of-week chips */}
+        {freq === 'weekly' && (
+          <div className="mt-4">
+            <div className="mono-label mb-1.5">Repeat on</div>
+            <div className="flex gap-1.5 flex-wrap">
+              {WEEKDAYS.map((d, i) => (
+                <Chip key={i} on={weekDays.includes(i)} onClick={() => toggleWeekday(i)}>{d}</Chip>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Monthly — DOM or Nth weekday */}
+        {(freq === 'monthly' || freq === 'custom_day') && (
+          <div className="mt-4">
+            <div className="mono-label mb-1.5">Repeat on</div>
+            <div className="flex gap-1.5 mb-2">
+              <Chip on={monthlyMode === 'dom'} onClick={() => setMonthlyMode('dom')}>Day of month</Chip>
+              <Chip on={monthlyMode === 'nth'} onClick={() => setMonthlyMode('nth')}>Nth weekday</Chip>
+            </div>
+            {monthlyMode === 'dom' ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[0.84rem] text-ink-mid">Day</span>
+                <input type="number" min={1} max={31} value={dayOfMonth}
+                  onChange={e => setDayOfMonth(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
+                  className="input h-[34px] py-0 px-2.5 text-[12.5px] w-20" aria-label="Day of month" />
+                <span className="text-[0.84rem] text-ink-mid">of each month</span>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex gap-1.5 flex-wrap">
+                  {NTH_LABELS.map((lab, i) => (
+                    <Chip key={lab} on={nthWeek === NTH_VALUES[i]} onClick={() => setNthWeek(NTH_VALUES[i])}>{lab}</Chip>
+                  ))}
+                </div>
+                <div className="flex gap-1.5 flex-wrap">
+                  {WEEKDAYS.map((d, i) => (
+                    <Chip key={i} on={nthWeekday === i} onClick={() => setNthWeekday(i)}>{d}</Chip>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Annual — month + day */}
+        {freq === 'yearly' && (
+          <div className="mt-4">
+            <div className="mono-label mb-1.5">Repeat on</div>
+            <div className="flex gap-1.5 flex-wrap mb-2">
+              {MONTH_NAMES.map((m, i) => (
+                <Chip key={i} on={annualMonth === i + 1} onClick={() => setAnnualMonth(i + 1)}>{m}</Chip>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[0.84rem] text-ink-mid">Day</span>
+              <input type="number" min={1} max={31} value={annualDay}
+                onChange={e => setAnnualDay(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
+                className="input h-[34px] py-0 px-2.5 text-[12.5px] w-20" aria-label="Day of month" />
+            </div>
+          </div>
+        )}
+
+        {/* Ends */}
+        <div className="mt-4">
+          <div className="mono-label mb-1.5">Ends</div>
+          <div className="flex gap-1.5 flex-wrap items-center">
+            <Chip on={endsKind === 'never'} onClick={() => setEndsKind('never')}>Never</Chip>
+            <Chip on={endsKind === 'count'} onClick={() => setEndsKind('count')}>After N times</Chip>
+            {endsKind === 'count' && (
+              <input type="number" min={1} value={endsCount} onChange={e => setEndsCount(e.target.value)}
+                placeholder="12" aria-label="Number of occurrences"
+                className="input h-[34px] py-0 px-2.5 text-[12.5px] w-20" />
+            )}
+          </div>
+        </div>
+
+        {/* Reminder lead time */}
+        <div className="mt-4">
+          <div className="mono-label mb-1.5">Remind me</div>
+          <div className="flex gap-1.5 flex-wrap">
+            {([1, 3, 7] as const).map(n => (
+              <Chip key={n} on={reminderLead === n} onClick={() => setReminderLead(n)}>{n} day{n > 1 ? 's' : ''} before</Chip>
+            ))}
+          </div>
+        </div>
+
+        {/* Auto-approve — same inline switch as Add Transaction's split toggle. */}
+        <div className="mt-3">
+          <div className="flex items-center gap-2.5 py-2.5">
+            <span className="font-display font-semibold text-[13px] text-ink">Auto-approve</span>
+            <span className="text-[10.5px] text-ink-dim">
+              {autoConfirm ? 'posts automatically' : 'you confirm each time'}
+            </span>
+            <button
+              type="button" role="switch" aria-checked={autoConfirm} aria-label="Auto-approve this schedule"
+              onClick={() => setAutoConfirm(a => !a)}
+              className="ml-auto relative w-[44px] h-[26px] rounded-pill border-none cursor-pointer flex-shrink-0"
+              style={{
+                background: autoConfirm ? 'color-mix(in srgb, hsl(var(--sage)) 40%, var(--sunken))' : 'var(--sunken)',
+                boxShadow: 'var(--neu-inset)',
+              }}
+            >
+              <i aria-hidden className="absolute top-[3px] w-5 h-5 rounded-full transition-[left] duration-150"
+                style={{
+                  left: autoConfirm ? 21 : 3,
+                  background: autoConfirm ? 'hsl(var(--sage))' : 'var(--ff-ink-3)',
+                  boxShadow: '0 1px 3px rgba(0,0,0,.3)',
+                }} />
+            </button>
+          </div>
+        </div>
+      </HalfSheet>
     </div>
   );
 }

@@ -177,18 +177,19 @@ export default function Help() {
         {filtered.map((s, i) => {
           const isOpen = open === i;
           return (
-            <div key={i} className="bg-bg border border-line rounded-xl overflow-hidden">
+            // Board E — .faq: neu accordion, deeper shadow while open.
+            <div key={i} className="rounded-r2 overflow-hidden transition-shadow" style={{ background: 'var(--canvas)', boxShadow: isOpen ? 'var(--neu)' : 'var(--neu-sm)' }}>
               <button
-                className="w-full text-left px-5 py-4 flex items-center justify-between gap-4 hover:bg-bg3 transition-colors"
+                className="w-full text-left px-4 py-3.5 flex items-center justify-between gap-4 border-none bg-transparent cursor-pointer"
                 onClick={() => setOpen(isOpen ? null : i)}
               >
                 <span className="font-semibold text-ink text-[0.9rem] leading-snug">{s.q}</span>
-                <span className="text-ink-dim text-lg flex-shrink-0 transition-transform" style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-                  ▾
+                <span className="text-ink-dim flex-shrink-0 transition-transform" style={{ transform: isOpen ? 'rotate(45deg)' : 'rotate(0deg)' }} aria-hidden>
+                  +
                 </span>
               </button>
               {isOpen && (
-                <div className="border-t border-line px-5 py-4 text-[0.84rem] text-ink-mid leading-relaxed">
+                <div className="px-4 pb-4 text-[0.84rem] text-ink-mid leading-relaxed">
                   <div>{s.a}</div>
                   {s.media && (
                     <figure className="mt-4">
@@ -196,7 +197,7 @@ export default function Help() {
                         src={s.media.src}
                         alt={s.media.alt}
                         loading="lazy"
-                        className="w-full rounded-lg border border-line shadow-sm bg-bg2"
+                        className="w-full rounded-lg shadow-sm bg-bg2"
                         onError={e => { (e.currentTarget.closest('figure') as HTMLElement)?.style.setProperty('display', 'none'); }}
                       />
                       <figcaption className="mt-1.5 font-mono text-[0.58rem] tracking-wider uppercase text-ink-dim">

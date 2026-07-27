@@ -207,6 +207,10 @@ registerBacklogSuite('§16 HH-FC · Household backlog', [
   'HH-FC-004 · changing a member role updates the badge',
   'HH-FC-005 · invite-by-email shows pending until accepted @cloud',
   'HH-FC-006 · viewer role enforces read-only access',
+  'HH-FC-007 · create household from the /households page @cloud',
+  'HH-FC-008 · owner deletes a household from Danger Zone @cloud',
+  'HH-REG-001 · deleting a household with existing activity never hits the activity_log FK violation @cloud',
+  'HH-REG-002 · a failed household creation surfaces an error toast instead of silently doing nothing @cloud',
 ]);
 
 registerBacklogSuite('§17 SYNC-FC · Sync backlog', [

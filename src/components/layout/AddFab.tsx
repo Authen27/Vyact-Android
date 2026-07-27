@@ -45,9 +45,11 @@ export default function AddFab() {
     };
   }, [dialOpen]);
 
-  // Hide on auth routes — no household, no modal target. (After the hooks so they
-  // run unconditionally — rules-of-hooks; the effect is a no-op while closed.)
-  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding')) return null;
+  // Hide on auth routes — no household, no modal target. Also hidden on /insights
+  // (v9.9.2) — a focused content-reading surface, floating chrome is distracting.
+  // (After the hooks so they run unconditionally — rules-of-hooks; the effect is
+  // a no-op while closed.)
+  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/insights')) return null;
 
   function startLongPress() {
     longPressFired.current = false;
@@ -86,7 +88,9 @@ export default function AddFab() {
   return (
     <div
       id="add-fab-root"
-      className="fixed right-4 z-50 flex flex-col items-end gap-2.5 transition-all duration-300"
+      /* Desktop-only: on phones the primary "+" is the dead-center tab-bar slot
+         (Batch A board M1). Desktop keeps the FAB for the add + speed-dial. */
+      className="fixed right-4 z-50 hidden sm:flex flex-col items-end gap-2.5 transition-all duration-300"
       style={{
         bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)',
       }}
