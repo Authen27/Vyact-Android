@@ -28,6 +28,12 @@ export interface CrudSlice {
   /** Budget-sync fix — write a budget AND its allocations atomically online (one
    *  RPC), so children can't silently dead-letter. The save path the form uses. */
   saveBudgetWithAllocations: (budget: Partial<Budget>, allocations: Partial<BudgetAllocation>[]) => Promise<{ budget: Budget; allocations: BudgetAllocation[] }>;
+  /** Onboarding-only: create the join-month budget while the household is being
+   *  set up. Skips the owner/admin role guard because the onboarding user is,
+   *  by definition, the owner setting up their OWN household — and in
+   *  local-only mode `myRole` is never populated. Best-effort; identical write
+   *  path as `saveBudgetWithAllocations` otherwise. */
+  saveOnboardingBudget: (budget: Partial<Budget>, allocations: Partial<BudgetAllocation>[]) => Promise<void>;
   upsertGoal: (g: Partial<Goal>) => Promise<Goal>;
   removeGoal: (id: string) => Promise<void>;
   upsertMember: (m: Partial<Member>) => Promise<Member>;
@@ -38,6 +44,9 @@ export interface CrudSlice {
   removeAsset: (id: string) => Promise<void>;
   upsertAccount: (a: Partial<Account>) => Promise<Account>;
   removeAccount: (id: string) => Promise<void>;
+  /** Idempotent — creates the household's one default Cash account (at $0) if
+   *  it doesn't already have one. Safe to call on every load. */
+  ensureDefaultCashAccount: () => Promise<void>;
   upsertSavedView: (v: Partial<SavedView>) => Promise<SavedView>;
   removeSavedView: (id: string) => Promise<void>;
 }
@@ -94,6 +103,21 @@ export const createCrudSlice: StateCreator<Store, [], [], CrudSlice> = (set, get
       budgetAllocations: [...others, ...allocations],
     });
     return { budget: merged, allocations };
+  },
+  saveOnboardingBudget: async (budget, allocs) => {
+    // No role assert (see interface). Same atomic write path + state merge as
+    // saveBudgetWithAllocations, but always a create.
+    const { adapter, currentHouseholdId, budgets, budgetAllocations } = get();
+    const { budget: saved, allocations } = await adapter.upsertBudgetWithAllocations(
+      currentHouseholdId, budget, allocs, 'create',
+    );
+    const merged: Budget = { ...saved, period: saved.period || budget.period || 'monthly' };
+    const idx = budgets.findIndex(x => x.id === saved.id);
+    const others = budgetAllocations.filter(a => a.budgetId !== saved.id);
+    set({
+      budgets: idx >= 0 ? budgets.map(x => x.id === saved.id ? merged : x) : [...budgets, merged],
+      budgetAllocations: [...others, ...allocations],
+    });
   },
   // v9.1 §4 — replace the full per-category allocation set for one budget.
   setBudgetAllocations: async (budgetId, rows) => {
@@ -178,20 +202,15 @@ export const createCrudSlice: StateCreator<Store, [], [], CrudSlice> = (set, get
     const { adapter, currentHouseholdId, accounts } = get();
     const isNew = !a.id || !accounts.find(x => x.id === a.id);
 
-    // v9.4.2 — when creating a NEW investment account with no backing asset,
-    // auto-create a corresponding Asset so the investment appears on Net Worth.
-    // The `assetId` FK chain (accountValueOf → 'asset:<assetId>') feeds balances
-    // into the Net Worth calculation automatically.
-    if (isNew && a.kind === 'investment' && !a.assetId) {
-      const backingAsset = await get().upsertAsset({
-        id: uid(),
-        type: 'investment',
-        name: a.name || 'Investment',
-        value: (a as any).openingBalance || 0,
-        currency: a.currency || get().profile.baseCurrency,
-        liquidity: 'short',
-      });
-      a = { ...a, assetId: backingAsset.id };
+    // Exactly one Cash account per household. accountValueOf() encodes EVERY
+    // cash-kind account to the same literal 'cash' key, so a second one would
+    // double-count every cash transaction into both balances (and Net Worth)
+    // rather than just being an odd duplicate — this is a correctness guard,
+    // not a cosmetic one. (Net Worth no longer needs a backing Asset per
+    // account — it reads each account's live balance directly; see
+    // lib/accountBalance.ts `liveAssetRows`.)
+    if (isNew && a.kind === 'cash' && accounts.some(x => x.kind === 'cash' && x.id !== a.id)) {
+      throw new Error('This household already has a Cash account — edit it instead of adding another.');
     }
 
     const saved = await adapter.upsert('accounts', currentHouseholdId, a, a.id && a.updated_at ? a.updated_at : undefined);
@@ -203,6 +222,23 @@ export const createCrudSlice: StateCreator<Store, [], [], CrudSlice> = (set, get
     const { adapter, currentHouseholdId, accounts } = get();
     await adapter.remove('accounts', currentHouseholdId, id);
     set({ accounts: accounts.filter(x => x.id !== id) });
+  },
+  // Every household gets exactly one default Cash account, even at $0 — cash
+  // spend/income needs somewhere to post to from day one, and Net Worth's
+  // asset side folds it in like any other account. Idempotent: a no-op once
+  // one exists (archived or not — recreating a duplicate would double-count,
+  // see upsertAccount above), so it's safe to call on every app/household load.
+  ensureDefaultCashAccount: async () => {
+    const { accounts, profile } = get();
+    if (accounts.some(x => x.kind === 'cash')) return;
+    await get().upsertAccount({
+      id: uid(),
+      kind: 'cash',
+      name: 'Cash in Hand',
+      currency: profile.baseCurrency,
+      isDefault: true,
+      openingBalance: 0,
+    });
   },
   upsertSavedView: async (v) => {
     const { adapter, currentHouseholdId, savedViews } = get();

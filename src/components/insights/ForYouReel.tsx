@@ -5,6 +5,7 @@
 // a progress rail, and an always-present Cancel (✕) to exit. Finite by design
 // (3–5 cards, then an end panel) — anti-doomscroll, per the strategy brief.
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { X, ArrowRight, BookOpen, ChevronUp, Share2 } from 'lucide-react';
 import type { FeedCard } from '../../lib/insightsFeed';
@@ -67,7 +68,10 @@ export default function ForYouReel({ cards, startIndex = 0, onClose, onOpenLearn
 
   const total = cards.length + 1; // +1 for the end panel
 
-  return (
+  // Portalled to <body> — see EvergreenReel.tsx for why: <main> (Layout.tsx)
+  // establishes its own stacking context via z-index, trapping any descendant
+  // z-index (however high) below true siblings of <main> like MobileTabBar.
+  return createPortal(
     <div className="fixed inset-0 z-[200] bg-bg" role="dialog" aria-label="Your insights" aria-modal="true">
       {/* Cancel — always reachable */}
       <button
@@ -134,6 +138,7 @@ export default function ForYouReel({ cards, startIndex = 0, onClose, onOpenLearn
           <button onClick={onClose} className="btn-secondary">Done</button>
         </section>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -5,6 +5,7 @@ import {
 } from '../calculations';
 import { buildSafeSummary } from '../aiSummary';
 import { deterministicColor } from '../../constants';
+import { nowMonthKey } from '../format';
 import type {
   Transaction, Budget, Goal, Debt, Asset, Profile, ExchangeRates,
 } from '../../types';
@@ -15,7 +16,12 @@ import type {
 // money model. Every Epic-1 PR must diff against these; only EXPECTED changes
 // allowed. This file is the baseline at v8.1.2 (pre-money-model).
 
-const MK = '2026-06';
+// `buildSafeSummary`'s "thisMonth" bucket is computed from the real wall clock
+// (`nowMonthKey()`), not a parameter — so the fixture's transactions must land
+// in the ACTUAL current month, not a month hardcoded at whatever date this
+// file was authored. A literal month here is a time-bomb: once wall-clock time
+// moves past it, `thisMonth` no longer matches and the golden values go to 0.
+const MK = nowMonthKey();
 const RATES: ExchangeRates = { USD: 1, GBP: 1, INR: 1, EUR: 1 };
 const PROFILE = { baseCurrency: 'USD', household: 'household', language: 'en' } as unknown as Profile;
 

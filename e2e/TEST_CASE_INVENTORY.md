@@ -41,12 +41,12 @@
 
 | Metric | Count | % of Total |
 |---|---:|---:|
-| ✅ **Developed (green in CI)** | **80** | **45.2 %** |
-| 🟡 Designed (awaiting build) | 87 | 49.2 % |
-| 🟠 Blocked (app gap — Auto-Linking Phase A/B/C/D) | 10 | 5.7 % |
+| ✅ **Developed (green in CI)** | **80** | **44.2 %** |
+| 🟡 Designed (awaiting build) | 91 | 50.3 % |
+| 🟠 Blocked (app gap — Auto-Linking Phase A/B/C/D) | 10 | 5.5 % |
 | 🔴 Failing / quarantined | 0 | 0.0 % |
 | ⛔ Deprecated | 0 | — |
-| **Total in scope** | **177** | 100 % |
+| **Total in scope** | **181** | 100 % |
 
 **Developed (80):** foundation CON-E2E-001..008/010/011; §1 TXN-FC-001/002/003/004/005/007/008/009/010/011/012/013;
 §2 TXN-EDIT-FC-003; §3 TXN-DEL-FC-001/002; §4 NWRT-FC-003/004; §5 BDGT-FC-001/002/004/005/006/007;
@@ -176,7 +176,7 @@ hold rows that still describe roadmap-era behaviour.
 | 13 | Family Pulse Score™ | PULSE-FC | 2 | 4 | 6 |
 | 14 | Login, Registration & Session | AUTH-FC | 2 | 10 | 12 |
 | 15 | Account Details & Profile | PROFILE-FC | 8 | 0 | 8 |
-| 16 | Multi-Household & Members | HH-FC | 0 | 6 | 6 |
+| 16 | Multi-Household & Members | HH-FC | 0 | 10 | 10 |
 | 17 | Cloud Sync & Conflict Resolution | SYNC-FC | 0 | 6 | 6 |
 | 18 | Backup & Data Portability | BACKUP-FC | 5 | 0 | 5 |
 | 19 | Search & Filter | SEARCH-FC | 4 | 0 | 4 |
@@ -188,7 +188,7 @@ hold rows that still describe roadmap-era behaviour.
 | 25 | Responsive & Mobile Layout | RESP-FC | 4 | 1 | 5 |
 | 26 | Performance & Large Datasets | PERF-FC | 0 | 4 | 4 |
 | 27 | Error Resilience & Edge Cases | ERR-FC | 1 | 5 | 6 |
-|   | **TOTAL** | | **80** | **97** | **177** |
+|   | **TOTAL** | | **80** | **101** | **181** |
 
 > CON-E2E-005 (error boundary) is listed under §27 (Error Resilience) but
 > retains its original ID. Foundation §0 therefore excludes that recovery test
@@ -724,6 +724,83 @@ amount unchanged.
 ### 🟡 HH-FC-004 — Change member role (primary/partner/child/elder); role badge updates
 ### 🟡 HH-FC-005 — Invite member by email (`@cloud`); pending state shown until accept
 ### 🟡 HH-FC-006 — Viewer role cannot edit or delete (read-only enforcement)
+
+### 🟡 HH-FC-007 — Create household from the `/households` page `@cloud`
+- **File**: `e2e/pages/HouseholdsPage.ts` (`create()`), spec TBD.
+- **Steps**: `households.goto()` → `households.create('Test household')`.
+- **Expected**: A "Created Test household" success toast appears; the new
+  household's card is visible in the grid; it becomes selectable via the
+  household switcher.
+
+### 🟡 HH-FC-008 — Owner deletes a household from Danger Zone `@cloud`
+- **Steps**: `households.switchTo(name)` → `households.deleteActiveHousehold()`
+  (accepts the native `confirm()`).
+- **Expected**: A "Deleted {name}" toast appears; the household's card no
+  longer renders in the grid; the account switches to a remaining household.
+- **Precondition to cover explicitly**: the household under test must have at
+  least one `memberships` row (every real household does — its owner) so
+  this test actually exercises the cascade path fixed by HH-REG-001, not just
+  the trivial empty-household case.
+
+### 🟡 HH-REG-001 — Deleting a household never fails with an `activity_log` FK violation *(2026-07-24)*
+- **DB fix already shipped and verified live** (see below); status is 🟡
+  only because the Playwright-level assertion is blocked on the Lane B
+  cloud harness, same as every other `@cloud` row in this section.
+- **Regression for**: production incident — every household delete failed
+  with `insert or update on table "activity_log" violates foreign key
+  constraint "activity_log_household_id_fkey"`, reported by a real user
+  (3 real households, all undeletable).
+- **Root cause**: `activity_log.household_id references households(id) on
+  delete cascade`. Deleting a household cascades to delete every row
+  referencing it (`memberships`, `transactions`, `budgets`, `goals`, `debts`,
+  `assets`); each of those cascaded deletes fires its own
+  `log_domain_activity()` `AFTER DELETE` trigger (TD-08), which tries to
+  `INSERT` a fresh `'deleted'` row into `activity_log` for that household. By
+  the time those child-table cascades fire, `households(id)` has *already*
+  been removed within the same transaction (that removal is what triggered
+  the cascade), so the new `activity_log` insert's own FK check fails and the
+  entire `DELETE` rolls back. This reproduces for **any** household with at
+  least one row in a logged child table — in practice every real household,
+  since every household has its owner's membership row from creation.
+- **Fix**: `supabase/migrations/20260724120000_fix_household_delete_activity_log_fk.sql`
+  — `log_domain_activity()` now swallows `foreign_key_violation` specifically
+  on its own `activity_log` insert (a log entry for a household disappearing
+  in the same transaction has no reader — `activity_log`'s own FK is also
+  `on delete cascade`, so any rows that already existed for that household
+  are removed automatically once the delete completes anyway).
+- **DB-level regression check**:
+  `supabase/tests/household_delete_activity_log_regression.sql` — a
+  self-rolling-back `DO` block (zero-cost pattern, `CLAUDE.md`) safe to run
+  against any environment including prod. Verified passing live against the
+  `vyact` project (`dmxqkvploojokffuhxnz`) on 2026-07-24, right after the fix
+  migration was applied: `memberships_before=1 household_gone=t
+  orphan_activity_log_rows=0`.
+- **UI-level regression** (once Lane B lands): HH-FC-008 above, run against a
+  household that has at least one transaction/budget/member — the exact
+  precondition that always triggered this bug.
+
+### 🟡 HH-REG-002 — Create-household failures surface a visible error instead of silently doing nothing *(2026-07-24)*
+- **Client fix already shipped** (see below); status is 🟡 only because the
+  Playwright-level assertion needs a cloud-authenticated session, same as
+  every other `@cloud` row in this section.
+- **Regression for**: user reports of "sometimes I can't create a new
+  household" — intermittent, no repro pattern from the report alone.
+- **Root cause**: `CreateHouseholdModal`'s submit handler
+  (`react/src/pages/Households.tsx`) had no `catch` around
+  `await onCreated(...)`. Any failure — an expired/refreshing session making
+  `supabase.auth.getUser()` momentarily return no user (client throws `Not
+  signed in`), an RLS denial, a network blip, any future DB error — became
+  an unhandled promise rejection: no toast, no inline message, nothing. The
+  "Creating…" button just reverted to "Create" with zero feedback, which is
+  indistinguishable from "the button doesn't work."
+- **Fix**: the parent's `onCreated` callback now wraps
+  `createHousehold(...)` in `try/catch`, toasts `(e as Error).message` on
+  failure (matching the rename/leave/delete handlers on the same page), and
+  re-throws so the modal knows to keep the typed name instead of clearing it
+  like a successful submit.
+- **Test**: force `createHousehold` to reject (e.g. mock the adapter, or
+  drive with an intentionally-expired session) → assert an error toast is
+  visible AND the modal stays open with the typed name still in the field.
 
 ---
 

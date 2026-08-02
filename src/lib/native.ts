@@ -18,11 +18,24 @@ export const isNative = (): boolean => Capacitor.isNativePlatform();
 export const OAUTH_CALLBACK_URL = 'vyact://auth-callback';
 
 // Notification type → the in-app route to open when the user taps it.
+// Aurora v10.1's 13-type model (notifications-spec.md) — see NOTIF_META in
+// lib/notifications.ts for the authoritative type list.
 const ROUTE_BY_NOTIF_TYPE: Record<string, string> = {
-  upcoming_bill: '/recurring',
-  missed_payment: '/recurring',
+  recurring_due_confirm: '/recurring',
+  recurring_reminder: '/recurring',
+  recurring_posted: '/recurring',
   budget_threshold: '/budgets',
-  goal_milestone: '/dashboard',
+  income_landed: '/transactions',
+  insight_fresh: '/insights',
+  trend_alert: '/insights',
+  debt_payment_due: '/debts',
+  stale_balance: '/accounts',
+  invite_received: '/households',
+  member_activity: '/households',
+  sync_conflict: '/dashboard',
+  milestone: '/dashboard',
+  split_settled: '/splits',
+  split_closed: '/splits',
 };
 
 // LocalNotifications ids must be numeric — derive a stable 31-bit int from the

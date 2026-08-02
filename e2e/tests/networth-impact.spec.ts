@@ -54,7 +54,7 @@ test.describe('§4 NWRT-FC · NetWorth Module Impact', () => {
       description: 'NWRT-FC-002 Freelance',
       category:    'salary',
     });
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
+    await txnModal.selectAccount('E2E Checking');
     await txnModal.submit();
 
     // ── ASSERT — total assets reflect the deposit (Phase-A behaviour)

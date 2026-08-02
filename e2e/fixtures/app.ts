@@ -25,6 +25,7 @@ import { BudgetsPage } from '../pages/BudgetsPage';
 import { GoalsPage } from '../pages/GoalsPage';
 import { DebtsPage } from '../pages/DebtsPage';
 import { AssetsPage } from '../pages/AssetsPage';
+import { HouseholdsPage } from '../pages/HouseholdsPage';
 
 type AdvanceClock = (to: number | string) => Promise<void>;
 
@@ -40,6 +41,7 @@ type AppFixtures = {
   goals: GoalsPage;
   debts: DebtsPage;
   assets: AssetsPage;
+  households: HouseholdsPage;
   /**
    * Move the frozen clock forward. Accepts either an epoch-ms number or an
    * ISO-ish date string parseable by Date.parse. Re-applies the freeze with
@@ -82,6 +84,7 @@ export const test = base.extend<AppFixtures>({
   goals:        async ({ page }, use) => { await use(new GoalsPage(page)); },
   debts:        async ({ page }, use) => { await use(new DebtsPage(page)); },
   assets:       async ({ page }, use) => { await use(new AssetsPage(page)); },
+  households:   async ({ page }, use) => { await use(new HouseholdsPage(page)); },
 });
 
 export { expect, type Page };

@@ -6,7 +6,7 @@
 // pages/Debts.tsx.
 
 import { useEffect, useState } from 'react';
-import Modal from '../ui/Modal';
+import HalfSheet from '../ui/HalfSheet';
 import Button from '../ui/Button';
 import { Input, Select, Field, FieldRow } from '../ui/Input';
 import { useStore } from '../../store';
@@ -142,8 +142,28 @@ export default function DebtFormModal(props: Props) {
 
   const isReceivable = form.direction === 'owed_to_me';
 
+  const footer = (
+    <div className="flex items-center justify-between gap-2">
+      {initial ? (
+        <button
+          type="button"
+          onClick={del}
+          className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline"
+        >
+          Delete
+        </button>
+      ) : <span />}
+      <div className="flex gap-2">
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} disabled={saving}>
+          {saving ? 'Saving…' : initial ? 'Update' : 'Add'}
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
-    <Modal open={open} title={initial ? (isReceivable ? 'Edit Receivable' : 'Edit Debt') : (isReceivable ? 'Add Receivable' : 'Add Debt')} onClose={onClose}>
+    <HalfSheet open={open} title={initial ? (isReceivable ? 'Edit Receivable' : 'Edit Debt') : (isReceivable ? 'Add Receivable' : 'Add Debt')} onClose={onClose} footer={footer}>
       {/* §6 — direction selector: I owe (liability) vs Owed to me (receivable/asset). */}
       <Field label="Direction">
         <div className="grid grid-cols-2 gap-2">
@@ -274,23 +294,6 @@ export default function DebtFormModal(props: Props) {
         </>
       )}
 
-      <div className="flex items-center justify-between gap-2">
-        {initial ? (
-          <button
-            type="button"
-            onClick={del}
-            className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline"
-          >
-            Delete
-          </button>
-        ) : <span />}
-        <div className="flex gap-2">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : initial ? 'Update' : 'Add'}
-          </Button>
-        </div>
-      </div>
-    </Modal>
+    </HalfSheet>
   );
 }

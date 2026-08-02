@@ -6,6 +6,8 @@ import {
   Tooltip,
 } from 'recharts';
 import { Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { staggerContainer, staggerItem } from '../../lib/motion';
 import { fmtShort, fmt } from '../../lib/format';
 import { getCat } from '../../constants';
 
@@ -47,6 +49,8 @@ export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
               startAngle={90}
               endAngle={-270}
               isAnimationActive
+              animationDuration={900}
+              animationEasing="ease-out"
             >
               {enriched.map((entry, index) => (
                 <Cell key={index} fill={entry.color} stroke="hsl(var(--bg2))" strokeWidth={2} />
@@ -60,7 +64,7 @@ export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
           <div className="font-mono text-[0.55rem] tracking-[0.14em] uppercase text-ink-dim mt-0.5">Total</div>
         </div>
       </div>
-      <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto">
+      <motion.div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto" variants={staggerContainer} initial="hidden" animate="visible">
         {enriched.slice(0, 8).map(entry => {
           const pct = Math.round(entry.amount / total * 100);
           const row = (
@@ -71,16 +75,18 @@ export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
               <div className="font-mono text-[0.6rem] text-ink-dim w-8 text-right">{pct}%</div>
             </div>
           );
-          return monthKey ? (
-            <Link key={entry.catId} to={`/transactions?type=expense&cat=${entry.catId}&month=${monthKey}`}
-              className="block rounded-md hover:bg-bg3 transition-colors -mx-1 px-1">
-              {row}
-            </Link>
-          ) : (
-            <div key={entry.catId}>{row}</div>
+          return (
+            <motion.div key={entry.catId} variants={staggerItem}>
+              {monthKey ? (
+                <Link to={`/transactions?type=expense&cat=${entry.catId}&month=${monthKey}`}
+                  className="block rounded-md hover:bg-bg3 transition-colors -mx-1 px-1">
+                  {row}
+                </Link>
+              ) : row}
+            </motion.div>
           );
         })}
-      </div>
+      </motion.div>
     </div>
   );
 }

@@ -15,8 +15,9 @@
 // toAccountId; pre-migration local caches may still hold the encoded
 // paymentMethod scheme ('cash' / 'asset:<id>' / 'debt:<id>') — both match.
 
-import type { Transaction, Account, ReconciliationEntry } from '../types';
+import type { Transaction, Account, ReconciliationEntry, Asset, Liquidity } from '../types';
 import { effectiveAmount } from './calculations';
+import { convert } from './format';
 import type { ExchangeRates } from '../types';
 
 /** The encoded legacy account key for an Account (paymentMethod scheme). */
@@ -64,6 +65,73 @@ export function computeAccountBalance(
     }
   }
   return Math.round(bal * 100) / 100;
+}
+
+// ── Net Worth — live first-class-account balances, not a frozen linked asset ──
+//
+// Net Worth historically summed the static `assets` array. An `Account` with
+// `assetId` set (the Phase-1 backfill, or the old "auto-create a backing
+// asset" path removed in this change) represents the SAME real-world money as
+// that asset — so once a live account exists for it, ITS computed balance
+// (opening + ledger folds + reconciliation offset) is the accurate figure.
+// Folding both would double-count; an asset with no linked account (illiquid
+// legacy rows never wrapped as a spendable account — real estate, retirement)
+// keeps contributing its own stated value, since nothing else tracks it.
+export interface LiveAssetRow {
+  id: string;
+  name: string;
+  /** Converted to the household's base currency. */
+  value: number;
+  currency: string;
+  liquidity: Liquidity;
+  source: 'account' | 'asset';
+  account?: Account;
+  asset?: Asset;
+}
+
+const ACCOUNT_LIQUIDITY: Partial<Record<Account['kind'], Liquidity>> = {
+  cash: 'liquid', bank: 'liquid', investment: 'short',
+};
+
+/** The de-duped asset-side rows Net Worth renders/sums: live balances for
+ *  every spendable account (cash/bank/investment; credit_card/loan are
+ *  liabilities and excluded), plus any legacy asset NOT already represented
+ *  by one of those accounts. */
+export function liveAssetRows(
+  assets: Asset[],
+  accounts: Account[],
+  txns: Transaction[],
+  baseCurrency: string,
+  rates: ExchangeRates,
+): LiveAssetRow[] {
+  const linkedAssetIds = new Set(accounts.map(a => a.assetId).filter((id): id is string => !!id));
+  const accountRows: LiveAssetRow[] = accounts
+    .filter(a => !a.isArchived && (a.kind === 'cash' || a.kind === 'bank' || a.kind === 'investment'))
+    .map(a => ({
+      id: a.id,
+      name: a.name,
+      value: computeAccountBalance(a, txns, baseCurrency, rates),
+      currency: baseCurrency,
+      liquidity: ACCOUNT_LIQUIDITY[a.kind] ?? 'liquid',
+      source: 'account',
+      account: a,
+    }));
+  const assetRows: LiveAssetRow[] = assets
+    .filter(a => !linkedAssetIds.has(a.id))
+    .map(a => ({
+      id: a.id,
+      name: a.name,
+      value: convert(a.value, a.currency, baseCurrency, rates),
+      currency: a.currency,
+      liquidity: a.liquidity,
+      source: 'asset',
+      asset: a,
+    }));
+  return [...accountRows, ...assetRows];
+}
+
+export function liveTotalAssets(rows: LiveAssetRow[]): number {
+  return Math.round(rows.reduce((s, r) => s + r.value, 0) * 100) / 100;
 }
 
 export interface ReconcileResult {

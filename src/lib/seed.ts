@@ -3,7 +3,7 @@ import type {
   Transaction, Budget, Goal, Member, Debt, Asset, Profile, ExchangeRates,
 } from '../types';
 import { DEFAULT_RATES } from '../constants';
-import { uid, today, nowMonthKey } from './format';
+import { uid, nowMonthKey } from './format';
 
 export interface SeedBundle {
   members: Member[];
@@ -49,7 +49,10 @@ export function buildSeed(): SeedBundle {
   const assets: Asset[] = [
     { id: uid(), type:'checking',    name:'Chase Checking',     value:6800,   currency:'USD', liquidity:'liquid', note:'Primary' },
     { id: uid(), type:'savings',     name:'Marcus High-Yield',  value:9200,   currency:'USD', liquidity:'liquid', note:'Emergency fund' },
-    { id: uid(), type:'cash',        name:'Cash on Hand',       value:450,    currency:'USD', liquidity:'liquid' },
+    // No legacy "Cash on Hand" asset — every household's default Cash account
+    // (crudSlice `ensureDefaultCashAccount`) is now the one canonical, LIVE
+    // representation of cash, folding this demo's own cash-tagged
+    // transactions. A second static asset would just duplicate/contradict it.
     { id: uid(), type:'investment',  name:'Vanguard Brokerage', value:48200,  currency:'USD', liquidity:'short' },
     { id: uid(), type:'retirement',  name:'401(k) — Alex',      value:124500, currency:'USD', liquidity:'long' },
     { id: uid(), type:'retirement',  name:'Roth IRA — Sam',     value:62300,  currency:'USD', liquidity:'long' },

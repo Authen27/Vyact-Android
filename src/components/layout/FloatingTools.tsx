@@ -1,93 +1,57 @@
-// Vyact v6.4 — FloatingTools
+// Vyact — Ask Vyact drawer host (v10.1.1)
 //
-// Ask Vyact lives here as a floating action button that opens a right-side
-// drawer, available on every authenticated screen.
+// Ask Vyact is a right-side drawer. Per the Batch A board the LAUNCHER moved
+// into the shell chrome — the desktop header "✦ Ask" chip and the mobile
+// tab-bar "✦ Ask" slot (both call `openAsk`) — so this component no longer
+// renders a floating action button. It only HOSTS the drawer, driven by the
+// store `askOpen` flag, and is mounted once in Layout.
 //
-// v9.5.3 (Insights Hub §6/§8): the Planner FAB was REMOVED — the Planner now
-// lives inside the Insights hub as the "Plan" tab. Its Sparkles icon is freed up
-// and adopted by Ask Vyact (was MessageCircle). The /planner and /chat routes
-// remain for deep links.
+// The /planner and /chat routes remain for deep links.
 
-import React, { Suspense, useState, useEffect, type ReactNode } from 'react';
+import React, { Suspense, useEffect, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Sparkles, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { App } from '@capacitor/app';
-import { useScrollDirection } from '../../hooks';
 import { isNative } from '../../lib/native';
+import { useStore } from '../../store';
 
 const Chat = React.lazy(() => import('../../pages/Chat'));
 
-type Tool = 'chat' | null;
-
-import ls from '../../lib/localStorageCompat';
-const KEY = 'floating_last';
-
 export default function FloatingTools() {
-  const [tool, setTool] = useState<Tool>(null);
   const location = useLocation();
-
-  // Mirror AddFab: fade out on scroll-down so the FAB stops covering the
-  // right-aligned transaction amounts / chart edges; reappear on scroll-up.
-  const dir = useScrollDirection();
-  const hidden = dir === 'down' && !tool;
+  const askOpen = useStore(s => s.askOpen);
+  const closeAsk = useStore(s => s.closeAsk);
 
   // Close the drawer via Esc (web keyboard) and the Android hardware Back button
   // (native). The Back listener is only registered while the drawer is open, so
   // it doesn't interfere with normal back navigation otherwise.
   useEffect(() => {
-    if (!tool) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setTool(null); };
+    if (!askOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeAsk(); };
     window.addEventListener('keydown', onKey);
 
     const backHandle = isNative()
-      ? App.addListener('backButton', () => setTool(null))
+      ? App.addListener('backButton', () => closeAsk())
       : null;
 
     return () => {
       window.removeEventListener('keydown', onKey);
       void backHandle?.then(h => h.remove());
     };
-  }, [tool]);
+  }, [askOpen, closeAsk]);
 
-  function open(t: Tool) {
-    setTool(t);
-    try { if (t) ls.setString(KEY, t); } catch { /* noop */ }
-  }
-
-  // Hide on the onboarding flow + auth routes — these are full-screen overlays
-  // with no household context, so Ask Vyact / the Add-Transaction FAB don't apply.
-  // (After the hooks so they always run — rules-of-hooks.)
-  if (location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/auth/')) return null;
+  // Never surface on the onboarding / auth full-screen overlays (no household
+  // context). Closing defensively keeps a stale open-flag from leaking across
+  // a route change into those surfaces.
+  const suppressed = location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/auth/');
+  if (suppressed || !askOpen) return null;
 
   return (
-    <>
-      {/* Stacked FABs in the bottom-right. Sit a fixed gap ABOVE the primary
-          AddFab so the Add-Transaction button stays the most prominent action.
-          Must share AddFab's safe-area-inset baseline (AddFab bottom = inset+80,
-          height 56) so the two never collide on devices with a nav-bar inset:
-          inset + 80 + 56 + 16(gap) = inset + 152. */}
-      <div
-        className={`fixed right-4 z-40 flex flex-col gap-2.5 transition-all duration-300 ${hidden ? 'opacity-0 translate-y-3 pointer-events-none' : 'opacity-100 translate-y-0'}`}
-        style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 152px)' }}
-      >
-        <Fab
-          label="Ask Vyact"
-          tone="denim"
-          onClick={() => open('chat')}
-          active={tool === 'chat'}
-        >
-          <Sparkles size={18} />
-        </Fab>
-      </div>
-
-      {tool && (
-        <Drawer onClose={() => setTool(null)} title="Ask Vyact">
-          <Suspense fallback={<DrawerLoadingState />}>
-            <Chat />
-          </Suspense>
-        </Drawer>
-      )}
-    </>
+    <Drawer onClose={closeAsk} title="Ask Vyact">
+      <Suspense fallback={<DrawerLoadingState />}>
+        <Chat embedded />
+      </Suspense>
+    </Drawer>
   );
 }
 
@@ -95,38 +59,14 @@ function DrawerLoadingState() {
   return <div className="mono-label">Loading…</div>;
 }
 
-interface FabProps {
-  label: string;
-  tone: 'coral' | 'denim';
-  active?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}
-function Fab({ label, tone, active, onClick, children }: FabProps) {
-  const bg = tone === 'coral' ? 'bg-coral hover:bg-coral/90' : 'bg-denim hover:bg-denim/90';
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
-      className={`group flex items-center gap-2 ${bg} text-white rounded-full shadow-2 transition-all
-                  px-3.5 h-11 hover:pr-4 hover:scale-[1.03] ${active ? 'ring-2 ring-white/50' : ''}`}
-    >
-      {children}
-      <span className="font-mono text-[0.6rem] tracking-[0.14em] uppercase font-semibold hidden sm:inline">
-        {label}
-      </span>
-    </button>
-  );
-}
-
 interface DrawerProps {
   title: string;
   onClose: () => void;
   children: ReactNode;
 }
+/** Board D3 — a right GLASS drawer over the dimmed app, so you keep your
+ *  context while you ask. Header carries the ✦ tile, the name and the
+ *  on-device promise; the footer states how to leave. */
 function Drawer({ title, onClose, children }: DrawerProps) {
   return (
     <div
@@ -135,19 +75,39 @@ function Drawer({ title, onClose, children }: DrawerProps) {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="bg-bg2 border-l border-line2 h-full w-full sm:w-[min(28rem,100vw)] flex flex-col shadow-3 animate-slideInRight"
-        // Inset so the close button clears the Android status bar (was untappable
-        // under it on a full-width mobile drawer) and content clears the nav bar.
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
+        className="h-full w-full sm:w-[min(27.5rem,100vw)] flex flex-col animate-slideInRight"
+        style={{
+          background: 'var(--glass-strong)',
+          backdropFilter: 'var(--blur)',
+          WebkitBackdropFilter: 'var(--blur)',
+          borderLeft: '1px solid var(--glass-line)',
+          boxShadow: 'var(--cast-3)',
+          // Inset so the header/close button clear the Android status bar (were
+          // untappable under it on a full-width mobile drawer) and content clears
+          // the nav bar.
+          paddingTop: 'env(safe-area-inset-top, 0px)',
+          paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+        }}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
-          <h3 className="display-italic text-[1.2rem] leading-none text-ink">{title}</h3>
-          <button onClick={onClose} className="text-ink-dim hover:text-ink transition-colors p-2 -mr-1" aria-label="Close">
+        <div className="flex items-center gap-2.5 px-4 py-3.5 border-b border-line">
+          <span
+            className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-[17px] flex-shrink-0"
+            style={{ background: 'color-mix(in srgb, hsl(var(--denim)) 16%, transparent)', color: 'hsl(var(--denim))' }}
+            aria-hidden
+          >✦</span>
+          <div className="flex-1 min-w-0">
+            <div className="font-display font-bold text-[16px] leading-tight text-ink truncate">{title}</div>
+            <div className="mono-label text-ink-dim">On-device · private</div>
+          </div>
+          <button onClick={onClose} className="text-ink-dim hover:text-ink transition-colors p-2 -mr-1 flex-shrink-0" aria-label="Close">
             <X size={20} />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4">
           {children}
+        </div>
+        <div className="px-4 py-2 border-t border-line">
+          <span className="mono-label text-ink-dim">Esc or click outside to close</span>
         </div>
       </div>
     </div>

@@ -10,11 +10,12 @@ import { useStore } from '../store';
 import { can } from '../lib/permissions';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
-import { convert } from '../lib/format';
-import { spendByCategoryInRange } from '../lib/calculations';
+import { convert, fmt, fmtShort, today } from '../lib/format';
+import { spendByCategoryInRange, cumulativeSpendSeries } from '../lib/calculations';
 
 import { getCat } from '../constants';
 import Money from '../components/ui/Money';
+import BudgetPaceChart from '../components/budgets/BudgetPaceChart';
 import type { Budget } from '../types';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -65,6 +66,9 @@ export default function Budgets() {
   const now = new Date();
   const hasCurrentMonth = budgets.some(b => b.scope === 'month'
     && b.periodYear === now.getFullYear() && b.periodMonth === now.getMonth() + 1);
+  // Board C — the current-month budget drives the pace hero.
+  const currentMonthRow = rows.find(r => r.b.scope === 'month'
+    && r.b.periodYear === now.getFullYear() && r.b.periodMonth === now.getMonth() + 1);
 
   async function del(id: string) {
     if (!confirm('Delete this budget?')) return;
@@ -97,6 +101,71 @@ export default function Budgets() {
         </div>
       )}
 
+      {/* Board C M1/D1 — current-month pace hero: a cumulative-spend-vs-limit
+          chart (dashed limit line · today dot · dotted run-rate projection)
+          over a left accent spine, with a plain-language daily allowance and
+          the overall-usage trough beneath. */}
+      {currentMonthRow && (() => {
+        const { b, allocs, totalBase, spent } = currentMonthRow;
+        const overall = pct(spent, totalBase);
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const daysLeft = Math.max(1, daysInMonth - now.getDate() + 1);
+        const remaining = totalBase - spent;
+        const perDay = remaining / daysLeft;
+        // Cumulative series across the budget's allocated categories, day 1 → today.
+        const catSet = new Set(allocs.map(a => a.category));
+        const todayStr = today();
+        const upto = b.periodEnd && todayStr > b.periodEnd ? b.periodEnd : todayStr;
+        const series = (b.periodStart && catSet.size)
+          ? cumulativeSpendSeries(transactions, catSet, b.periodStart, upto, cur, rates)
+          : [];
+        const dayNum = series.length || now.getDate();
+        const lastCum = series.length ? series[series.length - 1].cumulative : spent;
+        const projectedEnd = dayNum ? (lastCum / dayNum) * daysInMonth : 0;
+        const projUnder = totalBase - projectedEnd;
+        const status = overall >= 100 ? { label: 'over', tone: 'terra' }
+          : overall >= 80 ? { label: 'watch', tone: 'honey' }
+          : { label: 'on pace', tone: 'sage' };
+        return (
+          <div className="relative rounded-r3 p-5 mb-4 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+            <span className="absolute left-0 top-3.5 bottom-3.5 w-[3px] rounded-full" style={{ background: 'var(--accent)' }} />
+            <div className="flex justify-between items-start gap-3">
+              <div className="min-w-0">
+                <div className="mono-label mb-1.5">{budgetTitle(b)} · month budget</div>
+                <div className="num font-bold text-[30px] leading-tight tracking-tight text-ink">{fmt(Math.max(remaining, 0), cur)}</div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <span className={`inline-flex items-center px-2.5 py-1 rounded-pill text-[11.5px] font-display font-semibold text-${status.tone}`}
+                  style={{ background: `color-mix(in srgb, hsl(var(--${status.tone})) 16%, transparent)` }}>
+                  {status.label}
+                </span>
+                {canManage && (
+                  <button onClick={() => openEditBudget(b)} className="block ml-auto mt-2 font-mono text-[8.5px] tracking-wider uppercase text-ink-dim hover:text-coral">edit ▸</button>
+                )}
+              </div>
+            </div>
+            <div className="text-[12.5px] text-ink-dim mt-1 mb-2">
+              left of <b className="num text-ink-mid">{fmt(totalBase, cur)}</b> ·{' '}
+              {remaining <= 0
+                ? <b className="text-terra">{fmt(Math.abs(remaining), cur)} over</b>
+                : <b className="text-sage">{fmt(perDay, cur)}/day keeps you green</b>}
+              {' '}· {daysLeft} day{daysLeft === 1 ? '' : 's'} to go
+            </div>
+            <BudgetPaceChart series={series} limit={totalBase} daysInMonth={daysInMonth} currency={cur} />
+            <div className="flex justify-between font-mono text-[8px] tracking-[0.08em] uppercase text-ink-dim mt-1 mb-2">
+              <span>{MONTHS[now.getMonth()]} 1</span>
+              <span className={projUnder >= 0 ? 'text-sage' : 'text-terra'}>
+                projected · lands {fmtShort(Math.abs(projUnder), cur)} {projUnder >= 0 ? 'under' : 'over'}
+              </span>
+              <span>{MONTHS[now.getMonth()]} {daysInMonth}</span>
+            </div>
+            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+              <div className={`h-full rounded-full chart-grow ${barCls(overall)}`} style={{ width: `${overall}%` }} />
+            </div>
+          </div>
+        );
+      })()}
+
       {rows.length === 0 ? (
         <Panel>
           <div className="px-6 py-14 text-center">
@@ -110,7 +179,7 @@ export default function Budgets() {
           {rows.map(({ b, allocs, totalBase, spent }) => {
             const overall = pct(spent, totalBase);
             return (
-              <div key={b.id} className="bg-bg border border-line rounded-xl p-4 min-w-0">
+              <div key={b.id} className="rounded-r3 p-4 min-w-0" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
                 <div className="flex items-start justify-between mb-2 gap-2">
                   <button onClick={() => navigate(`/transactions?budgetId=${b.id}`)}
                     className="font-semibold text-ink text-[0.95rem] truncate hover:text-coral text-left" title="View transactions">
@@ -133,14 +202,14 @@ export default function Budgets() {
                   <span className={overall >= 100 ? 'text-terra font-medium' : 'text-ink-dim'}>{Math.round(overall)}%</span>
                 </div>
                 <div className="h-2 bg-bg3 rounded-full mb-3 overflow-hidden">
-                  <div className={`h-full rounded-full transition-all ${barCls(overall)}`} style={{ width: `${overall}%` }} />
+                  <div className={`h-full rounded-full chart-grow transition-all ${barCls(overall)}`} style={{ width: `${overall}%` }} />
                 </div>
                 {/* allocations */}
                 {allocs.length === 0 ? (
                   <p className="text-[0.74rem] text-ink-dim">No category allocations — edit to add some.</p>
                 ) : (
                   <div className="space-y-1.5">
-                    {allocs.map(a => {
+                    {allocs.map((a, ai) => {
                       const ap = pct(a.spent, a.limitBase);
                       const c = getCat(a.category);
                       return (
@@ -153,7 +222,7 @@ export default function Budgets() {
                             </span>
                           </div>
                           <div className="h-1.5 bg-bg3 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${barCls(ap)}`} style={{ width: `${ap}%` }} />
+                            <div className={`h-full rounded-full chart-grow ${barCls(ap)}`} style={{ width: `${ap}%`, animationDelay: `${ai * 60}ms` }} />
                           </div>
                         </button>
                       );

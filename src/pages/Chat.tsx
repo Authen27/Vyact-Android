@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, MessageCircle, ShieldCheck, Trash2, ChevronLeft, Mic } from 'lucide-react';
+import { Send, MessageCircle, Trash2, ChevronLeft, Mic } from 'lucide-react';
 import { useStore } from '../store';
 import { Panel } from '../components/ui/Card';
 import Button from '../components/ui/Button';
@@ -36,7 +36,10 @@ const BUCKETS: Bucket[] = ['capture', 'inquire', 'plan', 'manage'];
 const backend = selectChatBackend();
 const assistantBackend = selectAssistantBackend();
 
-export default function Chat() {
+/** `embedded` — rendered inside the Ask Vyact drawer, which supplies its own
+ *  board-spec header, so the page title block is suppressed to avoid showing
+ *  two headings. The /chat route renders it standalone (embedded=false). */
+export default function Chat({ embedded = false }: { embedded?: boolean } = {}) {
   const navigate = useNavigate();
   const txns    = useStore(s => s.transactions);
   const budgets = useStore(s => s.budgets);
@@ -268,29 +271,42 @@ export default function Chat() {
 
   return (
     <div>
-      <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
-        <div>
-          <h1 className="display-italic text-4xl text-ink mb-1.5 flex items-center gap-2.5">
-            <MessageCircle className="text-coral" /> Chat
-          </h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            Ask Vyact · Two taps to capture, inquire, plan, or navigate
-          </p>
+      {!embedded && (
+        <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
+          <div>
+            <h1 className="display-italic text-4xl text-ink mb-1.5 flex items-center gap-2.5">
+              <MessageCircle className="text-coral" /> Ask Vyact
+            </h1>
+            <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
+              On-device · private · two taps to capture, inquire, plan, or navigate
+            </p>
+          </div>
+          {history.length > 0 && (
+            <Button variant="ghost" onClick={clearHistory}>
+              <Trash2 size={14} /> Clear history
+            </Button>
+          )}
         </div>
-        {history.length > 0 && (
-          <Button variant="ghost" onClick={clearHistory}>
-            <Trash2 size={14} /> Clear history
-          </Button>
-        )}
-      </div>
+      )}
+      {embedded && history.length > 0 && (
+        <div className="flex justify-end mb-2.5">
+          <button onClick={clearHistory}
+            className="font-mono text-[0.62rem] tracking-wider uppercase text-ink-dim hover:text-ink">
+            Clear
+          </button>
+        </div>
+      )}
 
-      {/* Privacy notice */}
-      <div className="bg-coral-tint border border-coral/30 rounded-md p-4 mb-3.5 flex items-start gap-3">
-        <ShieldCheck size={20} className="text-terra flex-shrink-0 mt-0.5" />
-        <div className="text-[0.84rem] text-ink-mid leading-relaxed">
-          <strong className="text-ink">Private by design.</strong> Ask Vyact runs entirely on your device — your
-          questions and financial details never leave it.
-        </div>
+      {/* Board D M6 — the privacy line is a REASSURANCE, so it reads in sage
+          (good), not coral/terra. Crit is reserved for genuine failures; a
+          promise that nothing leaves the device is not an alarm. */}
+      <div className="flex items-start gap-2.5 rounded-r2 px-3 py-2.5 mb-3.5"
+        style={{ background: 'color-mix(in srgb, hsl(var(--sage)) 14%, transparent)' }}>
+        <span className="text-[13px] leading-5 flex-shrink-0" aria-hidden>🔒</span>
+        <p className="text-[11.5px] text-ink-mid leading-[1.4]">
+          <strong className="text-ink">Private by design.</strong> Your questions are answered on this device —
+          nothing leaves it.
+        </p>
       </div>
 
       <Panel>
@@ -320,23 +336,31 @@ export default function Chat() {
                   <div className="font-mono text-[0.66rem] tracking-wider uppercase text-ink-dim mb-3 text-center">
                     Pick one — type a question, or tap to act
                   </div>
+                  {/* Board D M6 §.intent — the empty state IS the hero: intent
+                      rows in the four production buckets, each an inset icon
+                      tile beside its label. */}
                   <div className="space-y-3">
                     {BUCKETS.map(b => {
                       const items = intentsByBucket(b);
                       if (!items.length) return null;
                       return (
                         <div key={b}>
-                          <div className="font-mono text-[0.58rem] tracking-[0.16em] uppercase text-ink-dim mb-1.5 px-1">
+                          <div className="font-mono text-[0.58rem] tracking-[0.16em] uppercase text-ink-dim mb-2 px-1">
                             {BUCKET_LABEL[b]}
                           </div>
-                          <div className="flex flex-wrap gap-1.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {items.map(intent => (
                               <button
                                 key={intent.id}
                                 onClick={() => pickIntent(intent)}
-                                className="text-[0.78rem] px-3 py-1.5 bg-bg3 border border-line rounded-full hover:border-coral hover:bg-coral-tint hover:text-ink transition text-ink-mid"
+                                className="flex items-center gap-2.5 px-3 py-2.5 rounded-r2 border-none cursor-pointer text-left text-[12.5px] font-medium text-ink transition-[box-shadow,transform] hover:-translate-y-0.5"
+                                style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
                               >
-                                {intent.label}
+                                <span className="w-[30px] h-[30px] rounded-r2 flex items-center justify-center text-[15px] flex-shrink-0"
+                                  style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>
+                                  {intent.icon}
+                                </span>
+                                <span className="min-w-0">{intent.label}</span>
                               </button>
                             ))}
                           </div>
@@ -377,22 +401,22 @@ export default function Chat() {
           )}
           {history.map((m, i) => (
             <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[85%] px-4 py-2.5 rounded-lg ${
-                m.role === 'user'
-                  ? 'bg-coral text-white rounded-br-sm'
-                  : 'bg-bg3 text-ink border border-line rounded-bl-sm'
-              }`}>
-                <div className="text-[0.86rem] leading-relaxed whitespace-pre-wrap">{m.content}</div>
+              {/* Board D — .bub: user coral + accent-ink, AI neu canvas. */}
+              <div className="max-w-[85%] px-4 py-2.5 text-[0.86rem] leading-relaxed"
+                style={m.role === 'user'
+                  ? { background: 'var(--accent)', color: 'var(--accent-ink)', borderRadius: '18px 18px 6px 18px', boxShadow: 'var(--neu-sm)' }
+                  : { background: 'var(--canvas)', color: 'var(--ff-ink)', borderRadius: '18px 18px 18px 6px', boxShadow: 'var(--neu-sm)' }}>
+                <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
             </div>
           ))}
           {thinking && (
             <div className="flex justify-start">
-              <div className="max-w-[85%] px-4 py-2.5 rounded-lg bg-bg3 text-ink-dim border border-line">
+              <div className="max-w-[85%] px-4 py-2.5" style={{ background: 'var(--canvas)', color: 'var(--ff-ink-3)', borderRadius: '18px 18px 18px 6px', boxShadow: 'var(--neu-sm)' }}>
                 <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-ink-dim rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-ink-dim rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-ink-dim rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: 'var(--ff-ink-3)', animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: 'var(--ff-ink-3)', animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-bounce" style={{ background: 'var(--ff-ink-3)', animationDelay: '300ms' }} />
                 </div>
               </div>
             </div>

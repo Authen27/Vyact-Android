@@ -6,7 +6,7 @@
 // fails first.
 
 import { describe, it, expect } from 'vitest';
-import { computeAccountBalance, reconcileAccount } from '../accountBalance';
+import { computeAccountBalance, reconcileAccount, liveAssetRows, liveTotalAssets } from '../accountBalance';
 import { monthlyData, reportableTxns, spendByCategory, splitEmiPortions, totalAssets, totalLiabilities } from '../calculations';
 import { CATEGORIES_BY_TYPE } from '../../constants';
 import type { Transaction, Account, Asset, Debt, ExchangeRates } from '../../types';
@@ -110,6 +110,44 @@ describe('§7 INV-7 — net worth = assets − liabilities (liability kinds nega
     expect(totalAssets(assets, 'USD', R)).toBe(15000);
     expect(totalLiabilities(debts, 'USD', R)).toBe(9500);   // receivable excluded
     expect(netWorth).toBe(5500);
+  });
+});
+
+describe('§7 INV-7b — Net Worth asset side reads live account balances, de-duped against linked legacy assets', () => {
+  it('INV-7b · a linked account replaces its asset (no double-count) and folds live transactions', () => {
+    // `bank1` was Phase-1-backfilled from `asset1` (assetId links them) — its
+    // live balance must be used INSTEAD of asset1's frozen static value.
+    const bank1: Account = { id: 'acc-1', kind: 'bank', name: 'Chase', currency: 'USD', assetId: 'asset-1', openingBalance: 1000 };
+    // `inv1` is a fresh investment account created directly (no backing asset
+    // at all — the old auto-create-a-shadow-asset path is gone).
+    const inv1: Account = { id: 'acc-2', kind: 'investment', name: 'Brokerage', currency: 'USD', openingBalance: 5000 };
+    const assets: Asset[] = [
+      { id: 'asset-1', type: 'checking', name: 'Chase (legacy)', value: 999999, currency: 'USD', liquidity: 'liquid' },
+      // A genuine illiquid asset with no first-class account — keeps
+      // contributing its own stated value.
+      { id: 'asset-2', type: 'real_estate', name: 'House', value: 300000, currency: 'USD', liquidity: 'long' },
+    ];
+    const txns: Transaction[] = [
+      { id: 'x1', type: 'income', amount: 200, currency: 'USD', date: d('05'), description: '', category: 'salary', toAccountId: 'acc-1' },
+    ];
+    const rows = liveAssetRows(assets, [bank1, inv1], txns, 'USD', R);
+
+    // asset-1 must NOT appear — acc-1 (its linked account) represents it instead.
+    expect(rows.find(r => r.id === 'asset-1')).toBeUndefined();
+    const bankRow = rows.find(r => r.id === 'acc-1')!;
+    expect(bankRow.source).toBe('account');
+    expect(bankRow.value).toBe(1000 + 200); // opening + the live credit, NOT the frozen 999999
+
+    const invRow = rows.find(r => r.id === 'acc-2')!;
+    expect(invRow.source).toBe('account');
+    expect(invRow.value).toBe(5000);
+    expect(invRow.liquidity).toBe('short');
+
+    const houseRow = rows.find(r => r.id === 'asset-2')!;
+    expect(houseRow.source).toBe('asset');
+    expect(houseRow.value).toBe(300000);
+
+    expect(liveTotalAssets(rows)).toBe(1200 + 5000 + 300000);
   });
 });
 

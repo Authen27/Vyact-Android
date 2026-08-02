@@ -1,13 +1,18 @@
 import { useStore } from '../store';
-import { useEffect } from 'react';
+import { useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, convert, nowMonthKey } from '../lib/format';
 import Money from '../components/ui/Money';
-import { totalAssets, totalLiabilities, totalReceivables, liquidAssets, totalMonthlyDebtPayment, monthlyData } from '../lib/calculations';
+import { totalLiabilities, totalReceivables, monthlyData } from '../lib/calculations';
+import { liveAssetRows, liveTotalAssets, type LiveAssetRow } from '../lib/accountBalance';
 import { ASSET_TYPES, DEBT_TYPES } from '../constants';
-import type { Asset } from '../types';
+import type { Asset, AccountKind } from '../types';
+
+const KIND_ICON: Record<AccountKind, string> = {
+  bank: '🏦', cash: '💵', credit_card: '💳', investment: '📈', loan: '🏛️',
+};
 
 const LIQUIDITIES = [
   { key: 'liquid', label: 'Liquid',     desc: 'Cash, checking, savings' },
@@ -18,6 +23,7 @@ const LIQUIDITIES = [
 export default function NetWorth() {
   const { t } = useTranslation();
   const assets       = useStore(s => s.assets);
+  const accountsState = useStore(s => s.accounts);
   const debts        = useStore(s => s.debts);
   const transactions = useStore(s => s.transactions);
   const profile      = useStore(s => s.profile);
@@ -27,10 +33,24 @@ export default function NetWorth() {
   const openAddAsset  = useStore(s => s.openAddAsset);
   const openEditAsset = useStore(s => s.openEditAsset);
 
-  // Remind once per mount if any liquid (bank/cash) balance is stale (>30 days).
+  const c = profile.baseCurrency;
+
+  // Money-Model — Net Worth's asset side is LIVE: every spendable account
+  // (cash/bank/investment) contributes its computed balance (opening + ledger
+  // folds + reconciliation offset), not a frozen linked-asset snapshot. See
+  // lib/accountBalance.ts `liveAssetRows` for the de-dup rule.
+  const liveRows = useMemo(
+    () => liveAssetRows(assets, accountsState, transactions, c, rates),
+    [assets, accountsState, transactions, c, rates],
+  );
+
+  // Remind once per mount if any legacy (account-less) asset is stale (>30
+  // days). Account-sourced rows are computed live from the ledger on every
+  // render, so they can't go stale the way a hand-typed asset value can.
   useEffect(() => {
     const now = Date.now();
     const stale = assets.some(a => {
+      if (liveRows.find(r => r.id === a.id)?.source !== 'asset') return false;
       const kind = ASSET_TYPES[a.type]?.liquidity;
       if (kind !== 'liquid' && kind !== 'short') return false;
       if (!a.lastUpdated) return true;
@@ -44,8 +64,7 @@ export default function NetWorth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const c   = profile.baseCurrency;
-  const ta  = totalAssets(assets, c, rates);
+  const ta  = liveTotalAssets(liveRows);
   const tl  = totalLiabilities(debts, c, rates);
   // v7.1 Money Map — receivables (`direction === 'owed_to_me'`) are
   // money owed back to the household. They count toward Net Worth but
@@ -53,8 +72,7 @@ export default function NetWorth() {
   // Assets, per the spec's privacy / clarity requirement (U-3).
   const tr  = totalReceivables(debts, c, rates);
   const nw  = ta + tr - tl;
-  const la  = liquidAssets(assets, c, rates);
-  const tdp = totalMonthlyDebtPayment(debts, c, rates);
+  const la  = liveRows.filter(r => r.liquidity === 'liquid').reduce((s, r) => s + r.value, 0);
   const { income, expense } = monthlyData(transactions, nowMonthKey(), c, rates);
   const monthlyIncome = income || 1;
 
@@ -63,6 +81,16 @@ export default function NetWorth() {
   const debtToAsset      = ta > 0 ? tl / ta * 100 : 0;
   const emergencyCover   = expense > 0 ? la / expense : 0;
   const savingsRatio     = monthlyIncome > 0 ? ((monthlyIncome - expense) / monthlyIncome) * 100 : 0;
+
+  // Board C — liquidity stacked bar totals (presentation of existing values).
+  const liqMix = { liquid: 0, short: 0, long: 0 };
+  for (const r of liveRows) {
+    if (r.liquidity === 'liquid') liqMix.liquid += r.value;
+    else if (r.liquidity === 'short') liqMix.short += r.value;
+    else if (r.liquidity === 'long') liqMix.long += r.value;
+  }
+  const liqTot = liqMix.liquid + liqMix.short + liqMix.long || 1;
+  const pct = (n: number) => `${(n / liqTot) * 100}%`;
 
   function openAdd() { openAddAsset(); }
   function openEdit(a: Asset) { openEditAsset(a); }
@@ -73,8 +101,20 @@ export default function NetWorth() {
     toast('Asset removed', 'info');
   }
 
-  const byLiquidity = (liq: Asset['liquidity']) =>
-    assets.filter(a => a.liquidity === liq);
+  const byLiquidity = (liq: LiveAssetRow['liquidity']) =>
+    liveRows.filter(r => r.liquidity === liq);
+
+  // Board M4 — a liquid/short LEGACY asset (no live account behind it) not
+  // touched in 30+ days rides an inline dashed-honey "update?" chip (same
+  // rule as the mount-time stale toast). Account-sourced rows never qualify.
+  const isStale = (row: LiveAssetRow) => {
+    if (row.source !== 'asset' || !row.asset) return false;
+    const a = row.asset;
+    const kind = ASSET_TYPES[a.type]?.liquidity;
+    if (kind !== 'liquid' && kind !== 'short') return false;
+    if (!a.lastUpdated) return true;
+    return (Date.now() - new Date(a.lastUpdated).getTime()) / (1000 * 60 * 60 * 24) > 30;
+  };
 
   return (
     <div>
@@ -88,36 +128,67 @@ export default function NetWorth() {
         <button className="btn-primary" onClick={openAdd}>+ Add Asset</button>
       </div>
 
-      {/* Net Worth hero */}
-      <div className={`rounded-2xl p-7 mb-4 text-center border ${nw >= 0 ? 'bg-sage/8 border-sage/20' : 'bg-terra/8 border-terra/20'}`}>
-        <div className="font-mono text-[0.65rem] tracking-[0.2em] uppercase text-ink-dim mb-2">Net Worth</div>
-        <div className={`text-5xl font-bold mb-1 ${nw >= 0 ? 'text-sage' : 'text-terra'}`}>
-          <Money amount={nw} currency={c} maxChars={11} />
-        </div>
-        <div className="flex justify-center gap-6 mt-4 text-sm flex-wrap">
-          <div className="text-center">
-            <div className="font-semibold text-sage"><Money amount={ta} currency={c} maxChars={11} /></div>
-            <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase">Assets</div>
-          </div>
-          {tr > 0 && (
-            <>
-              <div className="text-ink-dim self-center text-lg">+</div>
-              <div className="text-center">
-                <div className="font-semibold text-denim"><Money amount={tr} currency={c} maxChars={11} /></div>
-                <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase">Owed to me</div>
-              </div>
-            </>
-          )}
-          <div className="text-ink-dim self-center text-lg">−</div>
-          <div className="text-center">
-            <div className="font-semibold text-terra"><Money amount={tl} currency={c} maxChars={11} /></div>
-            <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase">Liabilities</div>
-          </div>
-        </div>
-      </div>
+      {/* Board D3 desktop — the waterfall hero and the four ratios sit side by
+          side (1fr · 340px); the balance sheet follows below. Mobile stacks. */}
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-4 lg:items-start">
+      <div className="min-w-0">
 
-      {/* Financial ratios */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+      {/* Board M4 — the equation is a WATERFALL you read at a glance: the full
+          assets(+owed) bar, the slice liabilities take from it, and the net-worth
+          remainder. Denim spine, net worth in neutral ink. */}
+      {(() => {
+        const gross = ta + tr;                                  // assets + owed
+        const libPct = gross > 0 ? Math.min(100, (tl / gross) * 100) : 0;
+        const nwPct  = gross > 0 ? Math.max(0, Math.min(100, (nw / gross) * 100)) : 0;
+        const barRow = (barWidth: string, barStyle: CSSProperties, alignEnd: boolean, label: ReactNode) => (
+          <div className="flex items-center gap-2">
+            <div className={`flex-[0_0_56%] flex ${alignEnd ? 'justify-end' : ''}`}>
+              <div className="h-[15px] rounded-[5px] chart-grow" style={{ width: barWidth, ...barStyle }} />
+            </div>
+            <span className="text-[10.5px] text-ink-mid whitespace-nowrap">{label}</span>
+          </div>
+        );
+        return (
+          <div className="relative rounded-r3 p-5 mb-4 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+            <span className="absolute left-0 top-3.5 bottom-3.5 w-[3px] rounded-full" style={{ background: 'hsl(var(--denim))' }} />
+            <div className="mono-label mb-1">Net worth · today</div>
+            <Money amount={nw} currency={c} maxChars={12}
+              className={`num text-[30px] font-bold leading-tight ${nw >= 0 ? 'text-ink' : 'text-terra'}`} />
+            <div className="flex flex-col gap-1.5 mt-3">
+              {barRow('100%', { background: 'hsl(var(--sage))', boxShadow: 'var(--neu-sm)' }, false,
+                <>Assets {tr > 0 ? '＋ owed ' : ''}<b className="num text-ink-mid">{fmt(gross, c)}</b></>)}
+              {barRow(`${libPct}%`, { background: 'var(--sunken)', boxShadow: 'var(--neu-inset), inset 0 0 0 1px hsl(var(--line2))' }, true,
+                <>− Liabilities <b className="num text-ink-mid">{fmt(tl, c)}</b></>)}
+              {barRow(`${nwPct}%`, { background: 'hsl(var(--denim))', boxShadow: 'var(--neu-sm)' }, false,
+                <>= Net worth <b className="num text-ink-mid">{fmt(nw, c)}</b></>)}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Board C — liquidity stacked bar. */}
+      {ta > 0 && (
+        <div className="rounded-r3 p-4 mb-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+          <div className="mono-label mb-2">Liquidity mix</div>
+          <div className="flex h-3.5 rounded-lg overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>
+            <div className="chart-grow" style={{ width: pct(liqMix.liquid), background: 'hsl(var(--sage))' }} />
+            <div className="chart-grow" style={{ width: pct(liqMix.short), background: 'hsl(var(--denim))', animationDelay: '60ms' }} />
+            <div className="chart-grow" style={{ width: pct(liqMix.long), background: 'var(--fore)', animationDelay: '120ms' }} />
+          </div>
+          <div className="flex gap-4 flex-wrap mt-2.5">
+            {([['Liquid', liqMix.liquid, 'hsl(var(--sage))'], ['Short-term', liqMix.short, 'hsl(var(--denim))'], ['Long-term', liqMix.long, 'var(--fore)']] as [string, number, string][])
+              .filter(([, v]) => v > 0).map(([lbl, v, col]) => (
+                <span key={lbl} className="mono-label flex items-center gap-1.5">
+                  <i className="inline-block w-[7px] h-[7px] rounded-full" style={{ background: col }} />{lbl} {fmt(v, c)}
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
+      </div>{/* /left column (hero + liquidity) */}
+
+      {/* Financial ratios — 2×2 in the desktop right column (board D3). */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-3 mb-4 lg:mb-0">
         {[
           {
             label: 'Liquidity Ratio',
@@ -148,8 +219,8 @@ export default function NetWorth() {
             warn: savingsRatio >= 10,
           },
         ].map(r => (
-          <div key={r.label} className="bg-bg border border-line rounded-xl p-4">
-            <div className={`text-xl font-semibold mb-0.5 ${r.good ? 'text-sage' : r.warn ? 'text-honey' : 'text-terra'}`}>
+          <div key={r.label} className="rounded-r3 p-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+            <div className={`num text-xl font-semibold mb-0.5 ${r.good ? 'text-sage' : r.warn ? 'text-honey' : 'text-terra'}`}>
               {r.value}
             </div>
             <div className="text-[0.78rem] font-semibold text-ink mb-0.5">{r.label}</div>
@@ -157,15 +228,22 @@ export default function NetWorth() {
           </div>
         ))}
       </div>
+      </div>{/* /hero + ratios desktop grid */}
 
       {/* Add/Edit form lives in <AssetFormModal /> mounted at App root */}
 
-      {/* Balance sheet split */}
-      <div className="grid sm:grid-cols-2 gap-4">
+      {/* Balance sheet split — board D3: Assets (1fr) | Liabilities + Owed (1fr),
+          each a neu card.
+          `grid-cols-1` is load-bearing: without an explicit track the implicit
+          column sizes to max-content, and an asset row's right group (the
+          `update?` badge is flex-shrink-0, plus the edit/delete buttons) can't
+          shrink — so the column outgrows the viewport and the page scrolls
+          sideways on phones. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
         {/* Assets column */}
         <div>
           <h2 className="display-italic text-2xl text-ink mb-3">Assets</h2>
-          {assets.length === 0 ? (
+          {liveRows.length === 0 ? (
             <Panel>
               <div className="px-6 py-10 text-center">
                 <p className="text-ink-mid text-sm mb-3">No assets added yet.</p>
@@ -175,17 +253,35 @@ export default function NetWorth() {
           ) : (
             <div className="space-y-2">
               {LIQUIDITIES.map(liq => {
-                const group = byLiquidity(liq.key as Asset['liquidity']);
+                const group = byLiquidity(liq.key);
                 if (!group.length) return null;
-                const groupTotal = group.reduce((s, a) => s + convert(a.value, a.currency, c, rates), 0);
+                const groupTotal = group.reduce((s, r) => s + r.value, 0);
                 return (
                   <div key={liq.key}>
                     <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase px-1 mb-1.5">
                       {liq.label} · {fmt(groupTotal, c)}
                     </div>
-                    {group.map(a => {
+                    {group.map(row => {
+                      // Board D3 — live account rows are display-only here (no
+                      // edit/delete): they're managed on the Accounts page, and
+                      // can't go stale since they're computed fresh every render.
+                      if (row.source === 'account' && row.account) {
+                        const acc = row.account;
+                        return (
+                          <div key={row.id} className="bg-bg border border-line rounded-lg px-4 py-3 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <span>{KIND_ICON[acc.kind] ?? '💵'}</span>
+                              <div className="min-w-0">
+                                <div className="text-[0.84rem] font-semibold text-ink truncate">{acc.name}</div>
+                                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{liq.label.toLowerCase()}</div>
+                              </div>
+                            </div>
+                            <Money amount={row.value} currency={c} maxChars={11} className="font-semibold text-sage text-[0.9rem] flex-shrink-0" />
+                          </div>
+                        );
+                      }
+                      const a = row.asset!;
                       const meta = ASSET_TYPES[a.type] || ASSET_TYPES.cash;
-                      const valBase = convert(a.value, a.currency, c, rates);
                       return (
                         <div key={a.id} className="bg-bg border border-line rounded-lg px-4 py-3 flex items-center justify-between">
                           <div className="flex items-center gap-2.5">
@@ -195,9 +291,16 @@ export default function NetWorth() {
                               {a.note && <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{a.note}</div>}
                             </div>
                           </div>
-                          <div className="flex items-center gap-3 min-w-0">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            {isStale(row) && (
+                              <button type="button" onClick={() => openEdit(a)} title="This balance is over 30 days old — update it"
+                                className="font-mono text-[8.5px] tracking-[0.1em] uppercase px-1.5 py-0.5 rounded-md flex-shrink-0"
+                                style={{ border: '1px dashed color-mix(in srgb, hsl(var(--honey)) 55%, transparent)', color: 'hsl(var(--honey))' }}>
+                                update?
+                              </button>
+                            )}
                             <div className="text-right min-w-0">
-                              <Money amount={valBase} currency={c} maxChars={11} className="font-semibold text-sage text-[0.9rem]" />
+                              <Money amount={row.value} currency={c} maxChars={11} className="font-semibold text-sage text-[0.9rem]" />
                               {a.currency !== c && <div className="font-mono text-[0.58rem] text-ink-dim">{fmt(a.value, a.currency)}</div>}
                             </div>
                             <div className="flex gap-1">

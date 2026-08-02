@@ -13,6 +13,12 @@ import './index.css';
 // class for safe-area CSS and registers the OAuth deep-link callback. No-op on web.
 initNativeShell();
 
+// Feedback widget is best-effort and must NEVER block the app: a top-level
+// await here meant any Userback failure (adblocker, corporate proxy,
+// unauthorized domain, vendor outage) left users on a permanently blank
+// screen because createRoot().render() was never reached.
+void Userback('A-7Q0Mz7gfB3ECVu6ZsOIUew97E').catch(() => { /* widget unavailable — app works without it */ });
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
@@ -23,14 +29,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </React.StrictMode>,
 );
-
-// Feedback widget — best-effort, must NEVER block or break app boot. In the
-// Capacitor WebView the origin is https://localhost, which Userback can reject
-// ("Invalid server response"); the previous top-level `await Userback(...)` then
-// halted module evaluation and left the app a blank screen. Fire-and-forget.
-Userback('A-7Q0Mz7gfB3ECVu6ZsOIUew97E').catch((e) => {
-  console.warn('Userback init failed (non-fatal):', e);
-});
 
 // PWA: register the service worker and capture install lifecycle events.
 // No-op in dev unless devOptions.enabled is flipped in vite.config.
