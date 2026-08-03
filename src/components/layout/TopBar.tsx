@@ -72,12 +72,7 @@ export default function TopBar({ onOpenPalette }: { onOpenPalette: () => void })
        the mobile chrome, so this whole bar is ≥sm only. */
     <header
       className="hidden sm:block sticky top-0 z-50 border-b border-line"
-      // paddingTop (not just relying on `sticky top-0`) clears the Android status
-      // bar in landscape / on a tablet, where this bar (not MobileHeader) renders.
-      style={{
-        background: 'var(--glass)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)',
-        paddingTop: 'env(safe-area-inset-top, 0px)',
-      }}
+      style={{ background: 'var(--glass)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)' }}
     >
       <div aria-hidden className="h-[3px] opacity-85" style={{ background: 'var(--rail)' }} />
       <div className="max-w-[1320px] mx-auto px-4 lg:px-7 py-2.5 flex items-center gap-3 lg:gap-4 flex-wrap">

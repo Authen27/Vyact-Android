@@ -250,7 +250,7 @@ export default function Splits() {
               <div key={sp.id} className="rounded-r3 px-5 py-4 flex items-center justify-between gap-4"
                 style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
                 <div>
-                  <div className="font-semibold text-ink">{sp.description}</div>
+                  <div className="font-semibold text-ink">{sp.description || 'Shared split'}</div>
                   <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim">
                     {sp.date} · shared with you{sp.closedAt ? ' · closed' : ''}
                   </div>
@@ -276,7 +276,7 @@ export default function Splits() {
             <div key={sp.id} className="rounded-r3 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
               <div className="px-5 py-4 flex items-center justify-between gap-4">
                 <div>
-                  <div className="font-semibold text-ink">{sp.description}</div>
+                  <div className="font-semibold text-ink">{sp.description || 'Shared split'}</div>
                   <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim">
                     {sp.date} · you shared this{sp.closedAt ? ' · closed' : ''}
                   </div>
@@ -289,9 +289,12 @@ export default function Splits() {
               </div>
               <div className="border-t border-line px-5 py-4 space-y-1.5">
                 {sp.shares.map(sh => (
-                  <div key={sh.id} className={`flex items-center justify-between rounded-md px-3 py-2.5 border ${sh.paid ? 'bg-sage/5 border-sage/20' : 'bg-bg3 border-line'}`}>
-                    <span className="text-[0.84rem] font-semibold text-ink">{sh.email}</span>
-                    <div className="flex items-center gap-3">
+                  <div key={sh.id} className={`flex items-center justify-between gap-3 rounded-md px-3 py-2.5 border ${sh.paid ? 'bg-sage/5 border-sage/20' : 'bg-bg3 border-line'}`}>
+                    <div className="min-w-0">
+                      {sh.name && <div className="text-[0.84rem] font-semibold text-ink truncate">{sh.name}</div>}
+                      <div className={`font-mono text-[0.62rem] tracking-wider truncate ${sh.name ? 'text-ink-dim' : 'text-ink font-semibold'}`}>{sh.email}</div>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
                       <Money amount={sh.share} currency={sp.currency} maxChars={9}
                         className={`font-semibold text-[0.9rem] ${sh.paid ? 'text-sage' : 'text-ink'}`} />
                       {!sh.paid && !sp.closedAt && (

@@ -9,8 +9,11 @@ import type { SharedSplit } from '../../types';
 import {
   createSharedSplit, fetchOwnedSharedSplits, fetchSharedWithMe,
   settleSharedSplitShare, markShareRowPaid, closeSharedSplit,
+  resolveParticipantNames,
   type NewSharedSplitParticipant,
 } from '../../lib/sharedSplits';
+import { sendSplitEmail } from '../../lib/splitEmail';
+import type { SharedSplitShare } from '../../types';
 
 export interface SharedSplitsSlice {
   sharedSplitsOwned: SharedSplit[];
@@ -34,7 +37,17 @@ export const createSharedSplitsSlice: StateCreator<Store, [], [], SharedSplitsSl
     if (!cloudEnabled || currentHouseholdId === 'local' || !session) return;
     try {
       const [owned, withMe] = await Promise.all([fetchOwnedSharedSplits(), fetchSharedWithMe()]);
-      set({ sharedSplitsOwned: owned, sharedSplitsWithMe: withMe });
+      // Enrich each share with the participant's display name (one RPC for all
+      // emails across both lists) so the UI can show "Manu · email", not a bare
+      // address (feedback item 1).
+      const emails = [...owned, ...withMe].flatMap(sp => sp.shares.map(s => s.email));
+      let nameMap: Record<string, string> = {};
+      try { nameMap = await resolveParticipantNames(emails); } catch { /* names are best-effort */ }
+      const withNames = (list: typeof owned) => list.map(sp => ({
+        ...sp,
+        shares: sp.shares.map((s: SharedSplitShare) => ({ ...s, name: nameMap[s.email.toLowerCase()] })),
+      }));
+      set({ sharedSplitsOwned: withNames(owned), sharedSplitsWithMe: withNames(withMe) });
     } catch {
       // Offline / RLS hiccup — keep whatever we already have; next refresh retries.
     }
@@ -45,12 +58,16 @@ export const createSharedSplitsSlice: StateCreator<Store, [], [], SharedSplitsSl
     if (!cloudEnabled || currentHouseholdId === 'local' || !session) return null;
     const created = await createSharedSplit({ ownerHouseholdId: currentHouseholdId, ...input });
     set({ sharedSplitsOwned: [created, ...get().sharedSplitsOwned] });
+    // v10.15 — email each participant that a split was shared with them.
+    void sendSplitEmail({ splitId: created.id, event: 'shared' });
     return created;
   },
 
   settleMySplitShare: async (shareId) => {
     await settleSharedSplitShare(shareId);
     await get().refreshSharedSplits();
+    // v10.15 — tell the owner (server resolves their address) that I settled.
+    void sendSplitEmail({ shareId, event: 'settled' });
     get().toast('Marked your share as settled', 'success');
   },
 
@@ -63,6 +80,8 @@ export const createSharedSplitsSlice: StateCreator<Store, [], [], SharedSplitsSl
   closeMySplit: async (splitId) => {
     await closeSharedSplit(splitId);
     await get().refreshSharedSplits();
+    // v10.15 — email participants that the split was closed.
+    void sendSplitEmail({ splitId, event: 'closed' });
     get().toast('Split closed', 'success');
   },
 });

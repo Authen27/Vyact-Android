@@ -36,14 +36,7 @@ export default function MobileHeader() {
   const firstName = (profile.name || '').trim().split(/\s+/)[0];
 
   return (
-    // This header scrolls with the page (board M1 — no fixed bar on phones), but
-    // it's still the FIRST element on screen at initial scroll position, so on
-    // Android (edge-to-edge, viewport-fit=cover) it launches directly under the
-    // status bar without this inset — pip/greeting/bell/avatar half-hidden.
-    <div
-      className="sm:hidden max-w-[1320px] mx-auto px-4 pb-3.5 flex items-center gap-2"
-      style={{ paddingTop: 'max(10px, env(safe-area-inset-top, 0px))' }}
-    >
+    <div className="sm:hidden max-w-[1320px] mx-auto px-4 pt-2.5 pb-3.5 flex items-center gap-2">
       <Link to="/dashboard" aria-label="Home" className="flex-shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-coral/40">
         <Pip size={30} />
       </Link>

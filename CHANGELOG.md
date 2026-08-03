@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v10.14.0`** (consumer)
+> **Current production version: `v10.15.0`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -22,6 +22,80 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v4.1 | Two distinct meanings | (a) Internal adapter refactor on the vanilla shell; (b) the cloud / auth / multi-household ship that bound the React app to Supabase. Both kept under v4.1 because the second built directly on the first and nothing was deployed between them. |
 | v6.1 | **Never shipped** | Reserved for the 7-page port-out from v5 vanilla → React. The port-out actually landed split across v6.2 (the Friction-free signup release) and v6.3 (Content + module port-out completion). |
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
+
+---
+
+## v10.15.0 — Real email delivery for split sharing *(2026-08-02)*
+
+Feedback item 3, completed: participants (and the owner) are now emailed for
+real, not just alerted in-app.
+
+- **New `send-split-email` edge function** (`supabase/functions/send-split-email/`)
+  sends transactional email via **MailerSend** (MailerLite's transactional API),
+  **SMTP** (any provider — e.g. MailerSend's SMTP or the one you'd set as Supabase
+  Auth Custom SMTP), **or Resend** (checked in that order). Supabase's own email
+  is auth-only with no general send API, and an MCP server is a chat-time tool
+  (not a runtime sender), so an HTTP/SMTP transport is required.
+  - `shared` → each participant is emailed when a split is shared with them.
+  - `settled` → the owner is emailed when a participant settles their share.
+  - `closed` → participants are emailed when the owner closes the split.
+- **Recipients are resolved server-side** from the split id using the service
+  role — the client never passes an address, so this can't be turned into a
+  spam relay. The caller's JWT is verified and **authorised per event** (owner
+  for shared/closed; the settling participant for settled).
+- **Client wiring** (`lib/splitEmail.ts` + `sharedSplitsSlice`): create/settle/
+  close each fire the matching email, best-effort — a mail failure never blocks
+  the action, and the in-app notification remains the always-on baseline.
+- **Inert until configured:** with none of `MAILERSEND_API_KEY` / `SMTP_HOST` /
+  `RESEND_API_KEY` set the function returns `email_not_configured` and the app is
+  unaffected. Setup (pick a transport, verify a sender domain, set secrets,
+  deploy) is documented in
+  [`docs/split-email-setup.md`](../docs/split-email-setup.md). No secrets or keys
+  are committed.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 170/170, `vite build` 0. The edge function
+is Deno (outside the client build); it deploys separately via
+`deploy_edge_function` once the Resend secrets are set.
+
+---
+
+## v10.14.1 — Split-sharing feedback fixes *(2026-08-02)*
+
+Round of fixes on v10.14.0's split sharing, from live testing:
+
+- **Participant is identified by EMAIL only** (feedback 2). The Add-Transaction
+  split section no longer has a separate name field — you type the email, and
+  the participant's Vyact **display name is resolved from it** (new
+  `resolve_participant_names` RPC) and shown **non-editable** beneath the input
+  (✓ Manu), or "Not on Vyact yet — they'll see it when they join" if the email
+  has no account. Local-only mode (no cloud) keeps the plain name input.
+- **Splits view shows name · email** (feedback 1) — each shared participant row
+  now leads with the resolved display name and shows the email beneath it,
+  instead of a bare address. Names are resolved in one batched RPC call when the
+  shared splits load.
+- **"Someone else paid" removed** (feedback 4) — a shared split always means you
+  paid (the spec's model), so the who-paid toggle is gone; every new split is
+  "you paid / you received it".
+- **Removed the long helper paragraph** under the split section (feedback 5).
+- **New in-app "split shared with you" notification** (`split_received`, P1) so a
+  participant is alerted in the bell when a split is shared with their email —
+  previously they'd only find it by opening the Splits page.
+- **Verification of feedback 3 (did it reach the other accounts?):** the shared
+  rows were created correctly. `u.reddy@vidaxl.com` (an existing account) **does**
+  see the split via RLS on their Splits page once signed in; `uday.iitkgp@gmail.com`
+  has no account yet, so it's pending their signup (by design). **No emails were
+  sent because the app has no email-sending capability at all** — all split
+  notifications are in-app. Real email/push delivery is a separate,
+  external-provider decision, not yet built.
+- **Security:** the new `resolve_participant_names` is `SECURITY DEFINER` with no
+  `auth.uid()` gate (a directory lookup), so the default PUBLIC grant would have
+  let an **unauthenticated** caller enumerate email → name. Revoked
+  anon/PUBLIC EXECUTE; authenticated-only. Verified via `has_function_privilege`.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 170/170, `vite build` 0. `get_advisors`
+(security) shows the new RPC no longer anon-executable. A true two-account
+click-through still isn't possible in the single-user local preview; that layer
+rests on the RLS proof + this review.
 
 ---
 

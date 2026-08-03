@@ -38,6 +38,21 @@ function fromShareRow(r: ShareRow): SharedSplitShare {
   };
 }
 
+/** Resolve participant emails → display names for any that have an active Vyact
+ *  account (via the resolve_participant_names RPC). Returns a lowercase-email →
+ *  name map; emails with no account are simply absent. */
+export async function resolveParticipantNames(emails: string[]): Promise<Record<string, string>> {
+  const uniq = [...new Set(emails.map(e => e.toLowerCase().trim()).filter(Boolean))];
+  if (!uniq.length) return {};
+  const { data, error } = await sb().rpc('resolve_participant_names', { p_emails: uniq });
+  if (error) throw error;
+  const map: Record<string, string> = {};
+  for (const row of (data as { email: string; display_name: string | null }[])) {
+    if (row.display_name) map[row.email.toLowerCase()] = row.display_name;
+  }
+  return map;
+}
+
 function fromSplitRow(r: SplitRow, shares: ShareRow[]): SharedSplit {
   return {
     id: r.id, ownerUserId: r.owner_user_id, ownerHouseholdId: r.owner_household_id,

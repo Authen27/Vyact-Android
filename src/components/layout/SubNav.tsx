@@ -48,11 +48,8 @@ export default function SubNav() {
 
       {/* ── Desktop: sticky chip bar (board D1) ── */}
       <div
-        className="hidden sm:block sticky z-40 border-b border-line"
-        // top offset must track TopBar's real height: 64px base + whatever
-        // safe-area-inset-top TopBar added itself (landscape phone / tablet),
-        // or this bar would sit under the status bar / overlap TopBar.
-        style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', top: 'calc(env(safe-area-inset-top, 0px) + 64px)' }}
+        className="hidden sm:block sticky top-[64px] z-40 border-b border-line"
+        style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
       >
         <div className="max-w-[1320px] mx-auto px-4 lg:px-7 py-2.5 flex gap-2 items-center overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
           <span className="font-mono text-[9px] tracking-[0.15em] uppercase text-ink-dim mr-1 flex-shrink-0">{label}</span>
