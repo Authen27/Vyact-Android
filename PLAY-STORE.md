@@ -37,8 +37,9 @@ artifact, copy its contents into a new secret **`KEYSTORE_BASE64`**.
 (leave `versionCode` blank to use the run number). Download the
 `vyact-release-aab` artifact → `app-release.aab`. That's your upload file.
 
-> Versioning: `versionName` comes from `package.json` (currently **9.7.1**);
-> `versionCode` must strictly increase each upload (CI uses the run number).
+> Versioning: `versionName` comes from `android-version.json` (currently **0.4**
+> — the Android app has its own version line, independent of the React web
+> app's 9.x/10.x); `versionCode` is the CI run number and always increases.
 
 ---
 
@@ -50,24 +51,34 @@ artifact, copy its contents into a new secret **`KEYSTORE_BASE64`**.
 
 ---
 
-## 3. Store listing copy (ready to paste)
+## 3. Store listing copy (ready to paste) — v0.4
 
 **App name (≤30):** `Vyact — Family Finance OS`
 
 **Short description (≤80):**
-`Household finance, planned together: track spending, budgets, debt & net worth.`
+`Split bills with anyone, track spending & net worth — household finance, together.`
 
 **Full description (≤4000):**
 ```
 Vyact is the family finance OS — one calm place to see where the household's
-money goes and plan what comes next.
+money goes, split what's shared, and plan what comes next.
+
+NEW: SPLIT BILLS ACROSS HOUSEHOLDS
+Split a dinner, a trip, or a bill with anyone — just enter their email. They're
+notified, emailed, and can settle up right from the app, even if you don't share
+a household. Only your share ever touches your budget; the rest is tracked as a
+clean IOU until it's settled.
 
 WHAT YOU CAN DO
-• Cash flow at a glance — income vs spending, by month and category.
+• Splits — share any expense or payout by email, see who owes what at a glance,
+  and settle with one tap. Real email notifications, not just in-app alerts.
+• Cash flow at a glance — income vs spending, by month and category, with a
+  Family Pulse Score that tells you how you're really doing.
 • Budgets that fit real life — monthly, annual and custom plans with per-category
   limits and progress.
+• Net worth — assets minus liabilities, with a liquidity mix and savings ratios,
+  updated live as your accounts change.
 • Debt payoff — track loans and credit, see interest vs principal, and a payoff plan.
-• Net worth — assets minus liabilities, with liquidity and savings ratios.
 • Transactions — fast add, multi-currency, transfers and investments kept neutral
   so your spend/income numbers stay honest.
 • Reports & insights — trends over day/week/month/quarter/year, plus a plain-English
@@ -83,23 +94,80 @@ Vyact — household finance, planned together.
 ```
 
 - **App category:** Finance
-- **Tags:** budgeting, personal finance, money manager
+- **Tags:** budgeting, split bills, personal finance, money manager, net worth
 - **Contact email:** <your support email>
 - **Website:** https://vyact-twentyx.vercel.app
 - **Privacy policy:** https://vyact-twentyx.vercel.app/privacy
 
 ---
 
-## 4. Graphic assets (from the `vyact-play-assets` artifact)
-Run Actions → **Play store assets**, download `vyact-play-assets`.
+## 3b. "What's New" release notes (paste into the v0.4 release)
+
+**Short version (release notes field, ≤500 chars):**
+```
+Split bills with anyone by email — across households, with real email
+notifications and one-tap settling. Net Worth and Debts got a cleanup (no more
+"owed to me" clutter — just what you own vs what you owe). Dozens of small
+fit-and-finish fixes throughout. As always, only your share of a split ever
+touches your budget.
+```
+
+**Longer version (blog / social / changelog post):**
+```
+Vyact 0.4 — Splits, done right
+
+The headline: you can now split any bill or shared payout with ANYONE by
+email — no shared household required. Add a split, enter who owes what, and
+they're notified by email and in-app. They settle their share with one tap,
+right from their own Vyact account (or a simple sign-up link if they're new).
+Only your share ever counts toward your budget — the rest is tracked as a
+clean, visible IOU until it's settled.
+
+Also in this release:
+- Net Worth and Debts are simpler — we removed "money owed to me" clutter, so
+  your balance sheet reads as assets vs. what you actually owe.
+- Investment accounts stay in their lane — they no longer show up where they
+  don't belong, like your everyday spending or transfer pickers.
+- A cleaner circular time picker, a fixed "Add Schedule" sheet, and a batch of
+  fit-and-finish fixes across the app.
+```
+
+---
+
+## 4. Graphic assets (curated for v0.4)
+
+Ready-to-upload folder: **`Downloads/vyact-v0.4-launch/`** —
+`app-release.aab`, `feature-graphic.png`, `icon-512.png`, `screenshots/1-4`.
+
+| # | Screen | Why it's here |
+|---|---|---|
+| 1 | Dashboard | Pulse Score + cash-flow chart — the "at a glance" hook. |
+| 2 | Transactions | Real categorized activity — shows the app has substance. |
+| 3 | Splits | **The v0.4 headline feature.** Empty state shown; its own on-screen copy explains the feature clearly. See note below. |
+| 4 | Net Worth | Clean assets-vs-liabilities waterfall — the "grown-up" payoff screen. |
+
+**Note on the Splits screenshot:** the automated capture ran on a fresh demo
+profile with no splits created yet, so it shows the empty state (which reads
+well — it explains the feature in-frame) rather than a populated "Sam owes you
+$40" view. For a stronger hero shot, open the app, create one real split (e.g.
+"Dinner — $120 / 3 ways"), and re-screenshot the Splits page — 30 seconds, and
+it'll show real names/amounts. Swap it in via Play Console any time; it does
+not require a new app release.
+
+To regenerate all of these fresh (e.g. after creating real data): Actions →
+**Play store assets** → download `vyact-play-assets`. It now also captures
+`/splits` (`store-shot-3-splits.png`).
 
 | Asset | Spec | File |
 |---|---|---|
-| App icon | 512×512 PNG, 32-bit | `play-assets/icon-512.png` |
-| Feature graphic | 1024×500 PNG | `play-assets/feature-graphic.png` |
-| Phone screenshots | 2–8, portrait | `store-shot-1..5-*.png` (Dashboard, Transactions, Budgets, Net Worth, Reports) |
+| App icon | 512×512 PNG, 32-bit | `icon-512.png` |
+| Feature graphic | 1024×500 PNG | `feature-graphic.png` |
+| Phone screenshots | 2–8, portrait | `screenshots/1-4` above |
 
-(Optional but recommended: 7" and 10" tablet screenshots.)
+(Optional but recommended: 7" and 10" tablet screenshots; also consider adding
+a 5th shot of Budgets or Reports once you have richer demo data — the
+first-run demo profile has budgets with no category allocations yet, so that
+screen currently reads as "0% used" rather than showing real progress.)
 
 ---
 
