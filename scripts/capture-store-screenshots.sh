@@ -11,7 +11,7 @@ adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 sleep 30
 
 i=1
-for route in dashboard transactions budgets networth reports; do
+for route in dashboard transactions splits budgets networth reports; do
   adb shell am start -W -a android.intent.action.VIEW -d "vyact://open/${route}" "$PKG"
   sleep 5
   adb exec-out screencap -p > "store-shot-${i}-${route}.png"
