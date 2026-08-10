@@ -50,6 +50,9 @@ jobs:
           node scripts/inject-android-native.mjs
           node scripts/patch-android-manifest.mjs
 
+      - name: Enable R8 (code shrinking + obfuscation) for release
+        run: node scripts/patch-build-gradle.mjs
+
       - name: Generate launcher icon + splash
         run: |
           npm i -D @capacitor/assets@latest sharp@latest
@@ -72,11 +75,26 @@ jobs:
             echo "::warning::No KEYSTORE_BASE64 secret — building an UNSIGNED AAB (not uploadable to Play)."
           fi
 
-      - name: Build SIGNED release AAB
+      - name: Build SIGNED release AAB (R8-minified)
         if: steps.ks.outputs.signed == 'true'
         working-directory: android
         run: |
           ./gradlew bundleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/upload.keystore" \
+            -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+            -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+            -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}" \
+            | tee "$RUNNER_TEMP/r8-build.log"
+
+      # Also assemble a signed release APK (not uploaded to Play — the AAB above
+      # is the upload artifact) purely so the R8-minified build can be installed
+      # and smoke-tested on a real emulator in the next job. Reuses R8's cached
+      # output from bundleRelease, so this is fast.
+      - name: Build SIGNED release APK (for R8 smoke-test)
+        if: steps.ks.outputs.signed == 'true'
+        working-directory: android
+        run: |
+          ./gradlew assembleRelease --no-daemon \
             -Pandroid.injected.signing.store.file="$RUNNER_TEMP/upload.keystore" \
             -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
             -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
@@ -85,7 +103,28 @@ jobs:
       - name: Build UNSIGNED release AAB
         if: steps.ks.outputs.signed == 'false'
         working-directory: android
-        run: ./gradlew bundleRelease --no-daemon
+        run: ./gradlew bundleRelease --no-daemon | tee "$RUNNER_TEMP/r8-build.log"
+
+      - name: R8 report — size + warnings
+        if: always()
+        run: |
+          echo "## R8 report" >> "$GITHUB_STEP_SUMMARY"
+          AAB=$(ls android/app/build/outputs/bundle/release/*.aab 2>/dev/null | head -1)
+          if [ -n "$AAB" ]; then
+            SIZE=$(du -h "$AAB" | cut -f1)
+            echo "- Release AAB: **$SIZE** ($AAB)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          MAP=android/app/build/outputs/mapping/release/mapping.txt
+          if [ -f "$MAP" ]; then
+            LINES=$(wc -l < "$MAP")
+            echo "- R8 ran and produced a mapping file: $LINES lines (kept for de-obfuscating future crash stack traces)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- No mapping.txt found — R8 minification may not have run (check the 'Enable R8' step)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "### R8/Gradle warnings" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -iE "warning|missing class|note:" "$RUNNER_TEMP/r8-build.log" | sort -u | head -50 >> "$GITHUB_STEP_SUMMARY" || echo "(none)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload AAB
         uses: actions/upload-artifact@v4
@@ -93,4 +132,95 @@ jobs:
           name: vyact-release-aab
           path: android/app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload R8 mapping (for de-obfuscating future crash reports)
+        if: steps.ks.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyact-r8-mapping
+          path: android/app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload R8-minified release APK (for the smoke-test job)
+        if: steps.ks.outputs.signed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyact-release-apk-r8
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  r8-smoke-test:
+    needs: release
+    if: needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download R8-minified release APK
+        uses: actions/download-artifact@v4
+        continue-on-error: true # no-op if the AAB was unsigned (no APK artifact)
+        with:
+          name: vyact-release-apk-r8
+          path: .
+
+      - name: Skip if no APK (unsigned build — nothing to smoke-test)
+        id: check
+        run: |
+          APK=$(ls *.apk 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "No signed R8 APK artifact — signing secrets aren't set yet. Skipping R8 runtime validation."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enable KVM
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Proves R8 didn't just compile but actually RUNS: boots the minified/
+      # obfuscated APK and specifically checks the reflection-based Capacitor
+      # plugin bridge (WidgetBridgePlugin.refresh(), called from
+      # src/lib/widgets.ts) still works post-shrinking — the exact class of
+      # bug an R8 config can introduce with a clean build log and a broken app.
+      - name: Boot emulator, install R8 build, verify it runs
+        if: steps.check.outputs.skip == 'false'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            adb install -r "${{ steps.check.outputs.apk }}"
+            adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
+            adb logcat -c
+            adb shell monkey -p com.vyact.app -c android.intent.category.LAUNCHER 1
+            sleep 30
+            adb exec-out screencap -p > r8-smoke-screenshot.png
+            adb logcat -d > r8-logcat.txt
+            adb shell pidof com.vyact.app || { echo "FAIL: R8 build crashed/didn't start"; tail -n 150 r8-logcat.txt; exit 1; }
+            if grep -Eq "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" r8-logcat.txt; then echo "FAIL: fatal native crash in R8 build"; tail -n 150 r8-logcat.txt; exit 1; fi
+            if grep -Eq "Unable to open asset URL: https://localhost/assets/" r8-logcat.txt; then echo "FAIL: app bundle assets failed to load"; exit 1; fi
+            if grep -Eq "js\.error|Uncaught Error" r8-logcat.txt; then echo "FAIL: uncaught JS error in R8 build"; grep -E "Uncaught|js\.error" r8-logcat.txt | tail -n 30; exit 1; fi
+            if grep -q "widget sync failed" r8-logcat.txt; then echo "FAIL: WidgetBridgePlugin reflection call broke under R8 — add/verify keep rules in native/android/app/proguard-rules.pro"; exit 1; fi
+            echo "R8 SMOKE OK: minified build launched, process alive, no crash, no JS error, native plugin bridge intact."
+
+      - name: Upload R8 smoke evidence
+        if: always() && steps.check.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vyact-r8-smoke-evidence
+          path: |
+            r8-logcat.txt
+            r8-smoke-screenshot.png
+          if-no-files-found: warn
           retention-days: 14

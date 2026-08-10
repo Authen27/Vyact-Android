@@ -6,6 +6,6 @@
 /blob-report/
 /test-results/
 .cache/
-android/
-ios/
+/android/
+/ios/
 /assets/
