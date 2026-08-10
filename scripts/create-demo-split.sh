@@ -46,10 +46,20 @@ adb shell am start -W -a android.intent.action.VIEW -d "vyact://open/splits" "$P
 sleep 4
 
 echo "=== diagnostic: can uiautomator see WebView content at all? ==="
-dump
-node scripts/ui-find.mjs "$DUMP" "Splits" >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-  echo "ABORT: uiautomator cannot see the WebView's accessibility tree (expected page text 'Splits' not found). Skipping demo-split creation — the empty-state screenshot will be used instead."
+# Observed flaky: the WebView's accessibility bridge isn't always initialized
+# by the time uiautomator first queries it. Retry a few times before giving up.
+a11y_ok=false
+for attempt in 1 2 3; do
+  dump
+  if node scripts/ui-find.mjs "$DUMP" "Splits" >/dev/null 2>&1; then
+    a11y_ok=true
+    break
+  fi
+  echo "attempt $attempt: WebView a11y tree not visible yet, retrying..."
+  sleep 3
+done
+if [ "$a11y_ok" != "true" ]; then
+  echo "ABORT: uiautomator cannot see the WebView's accessibility tree after 3 attempts. Skipping demo-split creation — the empty-state screenshot will be used instead."
   exit 0
 fi
 echo "OK: WebView accessibility tree is visible."
