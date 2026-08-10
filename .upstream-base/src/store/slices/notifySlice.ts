@@ -14,7 +14,7 @@ import type { Store } from '../../store';
 import {
   recurringDueNotifs, recurringReminderNotifs, budgetThresholdNotifs,
   debtDueNotifs, incomeLandedNotifs, staleBalanceNotifs,
-  splitSettledNotifs, splitClosedNotifs,
+  splitReceivedNotifs, splitSettledNotifs, splitClosedNotifs,
   DEFAULT_PREFS, isInQuietHours, showWebPush,
 } from '../../lib/notifications';
 import {
@@ -53,8 +53,9 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     const {
       cloudEnabled, currentHouseholdId, recurringSchedules, budgets, transactions,
       debts, accounts, profile, rates, notificationPrefs,
-      sharedSplitsOwned, sharedSplitsWithMe,
+      sharedSplitsOwned, sharedSplitsWithMe, session,
     } = get();
+    const myEmail = session?.user?.email;
     const hid = currentHouseholdId || 'local';
     const cloud = cloudEnabled && hid !== 'local';
 
@@ -73,6 +74,7 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
       ...debtDueNotifs(debts, notificationPrefs, existing, ctx),
       ...incomeLandedNotifs(transactions, notificationPrefs, existing, ctx),
       ...staleBalanceNotifs(accounts, notificationPrefs, existing, ctx),
+      ...splitReceivedNotifs(sharedSplitsWithMe, myEmail, notificationPrefs, existing, ctx),
       ...splitSettledNotifs(sharedSplitsOwned, notificationPrefs, existing, ctx),
       ...splitClosedNotifs(sharedSplitsWithMe, notificationPrefs, existing, ctx),
     ];

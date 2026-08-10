@@ -541,11 +541,15 @@ export function splitEmiPortions(currentBalance: number, annualRate: number, pay
 }
 
 // ── SPLITS ─────────────────────────────────────────────────────
+// v10.17 — `email` is surfaced so the Splits page can aggregate the outstanding
+// details into a per-person (email-keyed) breakdown. The value already carries
+// it at runtime (the whole participant is pushed); the type just now admits it.
+type SplitDetailParticipant = { name: string; share: number; paid: boolean; isYou?: boolean; email?: string };
 export interface SplitOutstanding {
   owedToYou: number;
   youOwe: number;
-  owedDetails: Array<{ txn: Transaction; participant: { name: string; share: number; paid: boolean; isYou?: boolean } }>;
-  youOweDetails: Array<{ txn: Transaction; participant: { name: string; share: number; paid: boolean; isYou?: boolean } }>;
+  owedDetails: Array<{ txn: Transaction; participant: SplitDetailParticipant }>;
+  youOweDetails: Array<{ txn: Transaction; participant: SplitDetailParticipant }>;
 }
 
 export function splitsOutstanding(transactions: Transaction[], baseCurrency: string, rates: ExchangeRates): SplitOutstanding {

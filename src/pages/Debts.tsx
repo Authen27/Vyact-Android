@@ -6,12 +6,9 @@ import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, convert, today } from '../lib/format';
 import Money from '../components/ui/Money';
-import { computeEmi, splitEmiPortions, totalLiabilities, totalReceivables, totalMonthlyDebtPayment, simulatePayoffInterest } from '../lib/calculations';
+import { computeEmi, splitEmiPortions, totalLiabilities, totalMonthlyDebtPayment, simulatePayoffInterest } from '../lib/calculations';
 import { DEBT_TYPES } from '../constants';
-import { getMoneyMapMode } from '../lib/featureFlags';
 import type { Debt } from '../types';
-
-type DebtTab = 'all' | 'owed_by_me' | 'owed_to_me';
 
 export default function Debts() {
   const { t } = useTranslation();
@@ -32,14 +29,9 @@ export default function Debts() {
   // Board D2 desktop — which debt the right-hand detail panel shows (defaults
   // to the priority debt at the top of the payoff order).
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // v7.2 — direction tabs are flag-gated. Off-mode households see the
-  // legacy single-list UI; Money Map exposes Owed-by-me / Owed-to-me.
-  const showDirectionTabs = getMoneyMapMode() !== 'off';
-  const [tab, setTab] = useState<DebtTab>('all');
 
   const c    = profile.baseCurrency;
   const totalDebt    = totalLiabilities(debts, c, rates);
-  const totalOwedToMe = totalReceivables(debts, c, rates);
   const totalMinPay  = totalMonthlyDebtPayment(debts, c, rates);
   const income       = transactions.filter(tx => tx.type === 'income')
     .reduce((s, tx) => s + convert(tx.amount, tx.currency, c, rates), 0) || 1;
@@ -60,11 +52,9 @@ export default function Debts() {
     return { delta, sel, oth };
   }, [debts, profile.extraPayment, profile.payoffStrategy, c, rates]);
 
-  const filtered = showDirectionTabs && tab !== 'all'
-    ? debts.filter(d => (d.direction || 'owed_by_me') === tab)
-    : debts;
-
-  const activeCount = debts.filter(d => d.currentBalance > 0).length;
+  // v10.17 — "Owed to me" (receivables) is deprecated from the UI; Debts shows
+  // liabilities only. The rows are retained in the data model (reversible).
+  const filtered = debts.filter(d => (d.direction || 'owed_by_me') !== 'owed_to_me');
 
   const sorted = [...filtered].sort((a, b) => {
     if (profile.payoffStrategy === 'snowball')
@@ -168,31 +158,6 @@ export default function Debts() {
         </div>
       )}
 
-      {/* v7.2 Money Map — direction tabs. Hidden when the flag is off
-          to preserve the legacy single-list UX for un-migrated households. */}
-      {showDirectionTabs && debts.length > 0 && (
-        <div className="flex items-center bg-bg3 border border-line rounded-md p-0.5 gap-px mb-4">
-          {([
-            { k: 'all',         label: 'All' },
-            { k: 'owed_by_me',  label: 'Owe' },
-            { k: 'owed_to_me',  label: `Owed to me${totalOwedToMe > 0 ? ` · ${fmt(totalOwedToMe, c)}` : ''}` },
-          ] as { k: DebtTab; label: string }[]).map(opt => (
-            <button
-              key={opt.k}
-              onClick={() => setTab(opt.k)}
-              className={`font-mono text-[0.62rem] tracking-[0.1em] uppercase font-medium px-3.5 py-1.5 rounded transition-all ${
-                tab === opt.k ? 'bg-coral text-white shadow-1' : 'text-ink-mid hover:text-ink hover:bg-bg4'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-          <span className="font-mono text-[0.58rem] tracking-wider uppercase text-ink-dim ml-auto px-3">
-            {activeCount} active {activeCount === 1 ? 'debt' : 'debts'}
-          </span>
-        </div>
-      )}
-
       {/* Add/Edit form lives in <DebtFormModal /> mounted at App root */}
 
       {/* Debt list */}
@@ -207,11 +172,7 @@ export default function Debts() {
       ) : sorted.length === 0 ? (
         <Panel>
           <div className="px-6 py-10 text-center">
-            <p className="text-ink-mid text-sm">
-              {tab === 'owed_to_me'
-                ? 'No one owes you money right now.'
-                : 'No debts in this view.'}
-            </p>
+            <p className="text-ink-mid text-sm">No debts to show.</p>
           </div>
         </Panel>
       ) : (
@@ -357,11 +318,6 @@ export default function Debts() {
                 </button>
               );
             })}
-            {totalOwedToMe > 0 && (
-              <div className="text-[11px] text-ink-dim px-1 pt-1">
-                Owed to me · <b className="num text-denim">{fmt(totalOwedToMe, c)}</b> — receivables, linked from Splits.
-              </div>
-            )}
           </div>
 
           {detailDebt && (() => {

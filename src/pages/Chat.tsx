@@ -31,7 +31,7 @@ interface SpeechRecognitionLike {
   start: () => void; stop: () => void;
 }
 
-const BUCKETS: Bucket[] = ['capture', 'inquire', 'plan', 'manage'];
+const BUCKETS: Bucket[] = ['capture', 'inquire', 'plan'];
 
 const backend = selectChatBackend();
 const assistantBackend = selectAssistantBackend();
@@ -67,6 +67,10 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
   // empty-state grid swaps to the tap-2 row.
   const [expanded, setExpanded] = useState<Intent | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Skip the very first history-effect run (mount/hydration) so opening Ask
+  // Vyact stays scrolled to the TOP showing the intent options, instead of
+  // auto-jumping to the bottom of the list.
+  const didMountScroll = useRef(false);
 
   // Proactive "what to know" card (spec §5) — at most one per session, dismissible,
   // only when the flag + bucket + proactiveInsight are on.
@@ -81,6 +85,8 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
 
   useEffect(() => {
     ls.setJson('chat_history', history);
+    // Only auto-scroll to the newest message on a real turn — never on open.
+    if (!didMountScroll.current) { didMountScroll.current = true; return; }
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [history]);
 
@@ -270,7 +276,7 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
   }
 
   return (
-    <div>
+    <div className={embedded ? 'flex flex-col flex-1 min-h-0' : undefined}>
       {!embedded && (
         <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
           <div>
@@ -278,7 +284,7 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
               <MessageCircle className="text-coral" /> Ask Vyact
             </h1>
             <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-              On-device · private · two taps to capture, inquire, plan, or navigate
+              On-device · private · two taps to capture, inquire, or plan
             </p>
           </div>
           {history.length > 0 && (
@@ -309,8 +315,8 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
         </p>
       </div>
 
-      <Panel>
-        <div ref={scrollRef} className="px-4 py-4 space-y-3 max-h-[28rem] min-h-[20rem] overflow-y-auto">
+      <Panel className={embedded ? 'flex-1 min-h-0 flex flex-col' : ''}>
+        <div ref={scrollRef} className={`px-4 py-4 space-y-3 overflow-y-auto ${embedded ? 'flex-1 min-h-0' : 'max-h-[28rem] min-h-[20rem]'}`}>
           {history.length === 0 && proactive && (
             <div className="mb-4 bg-coral-tint border border-coral/30 rounded-md p-3 flex items-start gap-3">
               <div className="flex-1 text-[0.84rem] text-ink leading-snug">{proactive.text}</div>
@@ -423,7 +429,7 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
           )}
         </div>
 
-        <div className="border-t border-line p-3 flex gap-2">
+        <div className="border-t border-line p-3 flex gap-2 flex-shrink-0">
           <input
             value={input}
             onChange={e => setInput(e.target.value)}

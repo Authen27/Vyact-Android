@@ -21,6 +21,7 @@ const BudgetFormModal = React.lazy(() => import('./components/budgets/BudgetForm
 const DebtFormModal = React.lazy(() => import('./components/debts/DebtFormModal'));
 const AssetFormModal = React.lazy(() => import('./components/assets/AssetFormModal'));
 const AccountFormModal = React.lazy(() => import('./components/accounts/AccountFormModal'));
+const SplitFormModal = React.lazy(() => import('./components/splits/SplitFormModal'));
 const Dashboard    = React.lazy(() => import('./pages/Dashboard'));
 const Transactions = React.lazy(() => import('./pages/Transactions'));
 const Reports      = React.lazy(() => import('./pages/Reports'));
@@ -91,6 +92,7 @@ function RootModals() {
   const debtModalOpen = useStore(s => s.debtModalOpen);
   const assetModalOpen = useStore(s => s.assetModalOpen);
   const accountModalOpen = useStore(s => s.accountModalOpen);
+  const splitModalOpen = useStore(s => s.splitModalOpen);
 
   return (
     <>
@@ -99,6 +101,7 @@ function RootModals() {
       {debtModalOpen ? <DebtFormModal /> : null}
       {assetModalOpen ? <AssetFormModal /> : null}
       {accountModalOpen ? <AccountFormModal /> : null}
+      {splitModalOpen ? <SplitFormModal /> : null}
     </>
   );
 }
@@ -215,6 +218,17 @@ function AppShell() {
     return <Navigate to="/onboarding" replace />;
   }
 
+  // Onboarding is a focused, full-bleed flow — render it WITHOUT the Layout
+  // chrome (no top bar / sub-nav / mobile tab bar / FAB), mirroring how the
+  // auth and legal routes render Layout-less above. Applies to desktop + mobile.
+  if (onOnboardingRoute) {
+    return (
+      <Suspense fallback={<LoadingFallback />}>
+        <Onboarding />
+      </Suspense>
+    );
+  }
+
   return (
     <Layout>
       <Suspense fallback={<LoadingFallback />}>
@@ -239,7 +253,6 @@ function AppShell() {
           <Route path="/terms"        element={<Terms />} />
           <Route path="/cookies"      element={<Cookies />} />
           <Route path="/__e2e_error"  element={<E2EErrorTest />} />
-          <Route path="/onboarding"   element={<Onboarding />} />
           <Route path="*"             element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Suspense>

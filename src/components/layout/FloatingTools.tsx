@@ -75,7 +75,7 @@ function Drawer({ title, onClose, children }: DrawerProps) {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="h-full w-full sm:w-[min(27.5rem,100vw)] flex flex-col animate-slideInRight"
+        className="h-full w-full flex flex-col animate-slideInRight"
         style={{
           background: 'var(--glass-strong)',
           backdropFilter: 'var(--blur)',
@@ -103,7 +103,7 @@ function Drawer({ title, onClose, children }: DrawerProps) {
             <X size={20} />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 min-h-0 flex flex-col p-4">
           {children}
         </div>
         <div className="px-4 py-2 border-t border-line">

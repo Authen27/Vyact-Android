@@ -16,7 +16,9 @@
 import type { Asset, Debt, Account } from '../types';
 import { PAYMENT_METHODS } from '../constants';
 
-export type AccountKind = 'cash' | 'bank' | 'card';
+// v10.17 — `investment` is distinguished so callers can wall investment
+// accounts out of non-investment pickers (expense/income/transfer/split/debt).
+export type AccountKind = 'cash' | 'bank' | 'card' | 'investment';
 
 export interface AccountOption {
   value: string;          // paymentMethod string stored on the transaction
@@ -32,6 +34,7 @@ export const BANK_ASSET_TYPES = ['cash', 'checking', 'savings'] as const;
 const BANK_COLOR = '#4A6FA5'; // denim
 const CASH_COLOR = '#85A88A'; // sage
 const CARD_COLOR = '#6E4555'; // plum
+const INVEST_COLOR = '#8A9A5B'; // olive
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -130,8 +133,12 @@ export const ACCOUNT_REQUIRED_TYPES = ['expense', 'income', 'transfer'] as const
 function kindToOption(kind: Account['kind']): { color: string; abbr: string; kind: AccountKind } {
   if (kind === 'credit_card') return { color: CARD_COLOR, abbr: 'CC', kind: 'card' };
   if (kind === 'cash')        return { color: CASH_COLOR, abbr: '$',  kind: 'cash' };
+  if (kind === 'investment')  return { color: INVEST_COLOR, abbr: '📈', kind: 'investment' };
   return { color: BANK_COLOR, abbr: '••', kind: 'bank' };
 }
+
+/** v10.17 — predicate for pickers that must NOT offer investment accounts. */
+export const notInvestment = (a: AccountOption) => a.kind !== 'investment';
 
 /** Build the picker options from first-class `accounts`. The encoded `value`
  *  matches the legacy paymentMethod scheme so existing transactions still

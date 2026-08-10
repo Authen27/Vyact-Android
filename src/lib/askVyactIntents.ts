@@ -19,7 +19,10 @@
 
 import type { Transaction, TxnType } from '../types';
 
-export type Bucket = 'capture' | 'inquire' | 'plan' | 'manage';
+// v10.17 (item 16) — the 'manage' bucket (Open Budgets/Net Worth/Households)
+// was removed: those chips fired `navigate()` under the open Ask drawer and
+// read as dead. Deep navigation lives in the app's own nav.
+export type Bucket = 'capture' | 'inquire' | 'plan';
 
 export type IntentAction =
   | { kind: 'open-modal'; modal: 'addTxn' | 'addBudget' | 'addDebt' | 'addAsset'; seed?: Partial<Transaction> }
@@ -83,18 +86,12 @@ export const INTENTS: Intent[] = [
   // ── Plan ────────────────────────────────────────────────────
   { id: 'emergency',       bucket: 'plan',    icon: '🛡️', label: 'Emergency fund',   action: { kind: 'ask', prompt: 'How am I doing on my emergency fund?' } },
   { id: 'debts',           bucket: 'plan',    icon: '⬇️', label: 'Debt strategy',    action: { kind: 'ask', prompt: 'Tell me about my debts and the best payoff strategy.' } },
-
-  // ── Manage / Navigate ───────────────────────────────────────
-  { id: 'open-budgets',    bucket: 'manage',  icon: '🎯', label: 'Open Budgets',     action: { kind: 'navigate', to: '/budgets' } },
-  { id: 'open-networth',   bucket: 'manage',  icon: '📋', label: 'Open Net Worth',   action: { kind: 'navigate', to: '/networth' } },
-  { id: 'open-households', bucket: 'manage',  icon: '👥', label: 'Open Households',  action: { kind: 'navigate', to: '/households' } },
 ];
 
 export const BUCKET_LABEL: Record<Bucket, string> = {
   capture: 'Capture',
   inquire: 'Inquire',
   plan:    'Plan',
-  manage:  'Manage',
 };
 
 export function intentsByBucket(bucket: Bucket): Intent[] {

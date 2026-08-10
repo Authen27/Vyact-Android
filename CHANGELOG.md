@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v10.14.0`** (consumer)
+> **Current production version: `v10.18.1`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -22,6 +22,213 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v4.1 | Two distinct meanings | (a) Internal adapter refactor on the vanilla shell; (b) the cloud / auth / multi-household ship that bound the React app to Supabase. Both kept under v4.1 because the second built directly on the first and nothing was deployed between them. |
 | v6.1 | **Never shipped** | Reserved for the 7-page port-out from v5 vanilla → React. The port-out actually landed split across v6.2 (the Friction-free signup release) and v6.3 (Content + module port-out completion). |
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
+
+---
+
+## v10.18.1 — Splits: de-duplicate the split view *(2026-08-10)*
+
+An owned, cross-household split used to render **twice** on the Splits page — once in the top
+"Shared across households → you shared this" block (the cloud `shared_splits` copy) and again in the
+"N split transactions" card (the local transaction copy). This removes the redundancy and makes the
+transaction card the single owner surface:
+
+- **Removed** the redundant owned block from the "Shared across households" section (renamed
+  **"Shared with you"** — it now only lists splits *others* shared with you, which have no local card
+  and still offer "Settle my share").
+- **Transaction card participant rows** now show each member as **username + email** (matching the old
+  top block), and the **"Settled <date>" moved to the right**, beside the amount + ✓ (removing the
+  left-column redundancy).
+- **Owner controls folded in, nothing lost:** the card's *Mark paid* / *Settle all* now also settle the
+  member's **cloud** `shared_split_shares` row (matched by email — so the other household's copy +
+  notifications stay in sync), and a **Close split** action is available on the card for owned shared
+  splits.
+
+Display + existing cloud-share sync only — no ledger writes; money invariants unchanged. One file
+(`react/src/pages/Splits.tsx`).
+
+## v10.18.0 — WhatsApp as an interface: write-only logging (workflow phase) *(2026-08-10)*
+
+The parked WhatsApp integration's *connection foundation* (phone-link OTP, signed webhook,
+RLS-locked tables) shipped in June. This release adds the **workflow phase** — the part that makes
+WhatsApp an actual interface: an inbound text becomes a real Vyact transaction.
+
+**Inbound logging (MVP, write-only, no AI, no third-party egress):**
+- New self-contained deterministic parser `supabase/functions/_shared/whatsapp-parser.ts`, ported from
+  `react/src/lib/askVyactParser.ts` (normalise, k/lakh/cr amounts, `KEYWORD_MAP` categories) + a command
+  grammar, income/transfer/investment detection, account-alias matching, currency detection, and a
+  query hard-block. `850 groceries hdfc` → expense; `+50000 salary` → income; `moved 10000 to icici` →
+  transfer. Ambiguous input → a deterministic clarify reply (never a guess).
+- New `whatsapp_log_transaction` RPC (SECURITY DEFINER, service-role only) — honors the live v9 CHECK
+  matrix exactly (`created_by`/`member_id`, per-type category & account nullability), resolves account
+  aliases with a cash fallback, and is idempotent (claim-first on `whatsapp_inbound_messages`).
+  **Validated zero-cost against the live schema** (rolled-back `DO` block: expense/income/transfer/
+  investment + idempotency, zero residue); clean on the security advisor. Money invariants unchanged.
+- `whatsapp-webhook` now processes inbound messages in the background (`EdgeRuntime.waitUntil`) after the
+  200 ack: parse → RPC → **session-text** confirmation. Because the user just messaged us, replies are
+  free-form session text within the 24h window — **no new Meta template required** for the MVP.
+- Data queries ("what's my balance", "net worth") are **hard-blocked** — the reply is a secure link to
+  the app; nothing sensitive ever leaves over chat.
+
+**Proactive follow-through machinery (inert until approved):**
+- New `whatsapp-notify` edge function + a guarded `dispatchTemplate` maps app events (partner-split,
+  budget/bill alerts, split & digest notifications) → approved templates. **Nothing sends** unless both
+  `WHATSAPP_OUTBOUND_ENABLED` is set AND the template name is in `WHATSAPP_APPROVED_TEMPLATES` — so the
+  trigger machinery ships now and "activation" is flipping two secrets once Meta approves each template.
+
+**Client:** the Settings → WhatsApp panel copy flips from "coming soon" to active, with a command-grammar
+helper. **CI:** `deploy.yml` now also deploys `whatsapp-notify`.
+
+Docs: `whatsapp-vyact-solutioning.md` / `whatsapp-connection-setup.md` companions, plus a new
+`whatsapp-closure-runbook.md` for the irreducible Meta-dashboard + secret steps. The OTP *link* flow
+remains blocked on Meta business verification (its template is rejected until then); inbound logging is
+independent and testable via a service-role-seeded link.
+
+## v10.17.0 — Investment walling, "Owed to me" removal, Splits & UX polish *(2026-08-08)*
+
+A 17-item feedback batch. Two cross-cutting themes plus targeted UX fixes.
+
+**Investment accounts are walled off to the Investment track only.** Root cause: `buildAccountsFromStore` mislabelled investment accounts as `kind:'bank'`, so they leaked into every picker. Fix: `AccountOption.kind` now includes `'investment'` and the builder tags them, so a shared `notInvestment` predicate can exclude them.
+- Expense/income **source**, **transfers** (both sides), the **split** account, and **debt/EMI payments** never list an investment account.
+- Investment **"Added money"** — the *From* (cash) side excludes investment; the destination is the investment account.
+- Investment **"Took money out"** — the pickers **reorient**: *From* = the investment account, *To* = bank/cash. The stored `paymentMethod`/`linkedToAssetId` are **byte-identical** to before (the persist swap is unchanged) — money invariants INV-8 stay green.
+
+**"Owed to me" (receivables) is deprecated from the UI** (hide-only, data retained → reversible):
+- **Add Debt** loses the direction selector and the "Who owes you" field — debts are liabilities.
+- **Debts** drops the All/Owe/Owed tabs and the receivables footnote; the list shows liabilities only.
+- **Net Worth** drops the "Owed to me" sub-list; net worth is now `assets − liabilities` (the waterfall too). `totalReceivables` already excluded receivables from `totalAssets`/`totalLiabilities`, so **no number moves** — only the local `nw = ta + tr − tl` addend is gone. INV-7 stays green.
+
+**Splits:**
+- **Delete a split** from the row (removes the backing transaction and any cross-household shares).
+- The **Owed-to-you / You-owe / Net position** hero tiles are now **tappable**, expanding a **per-person breakdown keyed by email** (username · email — amount). Sums reconcile with the tile because both read the same `splitsOutstanding` details.
+- Friendlier participant tagging: a clearer label and an **email autocomplete** of people from prior splits.
+- The split account picker excludes investment accounts.
+
+**Other:**
+- **Description** on Add Transaction is a plain open field again (the recent-value dropdown is gone).
+- New **circular 24-hour time dial** (`TimeDial`) replaces the native time input; it still emits `HH:MM` so persistence is unchanged.
+- **Recurring "Add Schedule"** modal is no longer trapped under the header. `HalfSheet` now **portals to `<body>`**, so a sheet rendered inline in a page (inside `<main class="relative z-[1]">`) escapes that stacking context instead of being painted over by the sticky TopBar.
+- **Ask Vyact** drops the dead **Manage** bucket (Open Budgets/Net Worth/Households) — those chips navigated under the open drawer and read as dead.
+
+No DB migration, no edge-function change. Money invariant suites (INV-1..9) unchanged and green (170/170).
+
+## v10.16.0 — Standalone Split form, editing, email templates + onboarding chrome *(2026-08-03)*
+
+Splits become their own thing, gain editing, get proper email templates, and the
+onboarding flow loses its nav bars.
+
+- **Split removed from the Add-Transaction form** (`TransactionFormModal.tsx`) —
+  the split toggle + participant editor are gone; a plain transaction never
+  carries a `split`.
+- **New standalone `SplitFormModal`** (`components/splits/SplitFormModal.tsx`),
+  opened from a **"+ Add Split"** button on the Splits page (and the desktop FAB
+  speed-dial), following the `Budget/DebtFormModal` + `HalfSheet` pattern with a
+  new `splitModalOpen`/`editingSplit` store slot. Type (shared bill/income),
+  total amount, category, description, date, account, and participants
+  (email-primary in cloud with name resolution, name-based local).
+- **Transaction-backed — money model unchanged.** Saving creates/updates a real
+  `Transaction` carrying `SplitInfo`, so **only your share** counts in Cash Flow /
+  budgets / accounts (`effectiveDinero`) and the who-owes view
+  (`splitsOutstanding`). Verified in-browser: a 100 split with a 50 share adds
+  exactly **50** to monthly expense (not 100), `owedToYou = 50`. Money invariant
+  suite stays green (170/170).
+- **Editing with a per-participant lock** — split-level fields lock once any
+  member has paid/settled; each participant row locks individually when that
+  person pays/settles. New owner-side adapters in `lib/sharedSplits.ts`
+  (`updateSharedSplit`, `updateShareAmount`, `addShareToSplit`, `removeShare`,
+  `deleteSharedSplit`) + a `sharedSplitsSlice` diff orchestrator that touches
+  only unpaid rows. RLS already permitted owner edits — **no DB migration.**
+- **Reusable email templates** (`supabase/functions/_shared/emailTemplates.ts`) —
+  one Aurora-styled `renderEmail` layout + four split scenarios: member **with**
+  account (full split info + settle CTA), member **without** account (a distinct
+  **"sign up for Vyact"** invite email), settled, closed. `send-split-email`
+  reworked to use them and to **branch per recipient** on account existence
+  (detected server-side via the `resolve_participant_names` RPC).
+- **Onboarding renders without nav chrome** (`App.tsx`) — `/onboarding` now
+  returns outside `<Layout>` (mirroring the auth/legal routes), so there's **no
+  top bar / sub-nav / mobile tab bar / FAB** on the flow. Verified full-bleed on
+  desktop (1280) and mobile (375).
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 170/170 (money invariants green), `vite
+build` 0. Browser-verified in local mode (Add/Edit split, money math, txn form
+has no split section, onboarding chrome-free). **Follow-up:** the reworked
+`send-split-email` edge function is committed but the **live redeploy is pending**
+(no Supabase CLI here to bundle `../_shared`); run `supabase functions deploy
+send-split-email` — it pairs with the MailerSend secret setup. The current live
+v2 still sends split emails (without the new account-branch) until then.
+
+---
+
+## v10.15.0 — Real email delivery for split sharing *(2026-08-02)*
+
+Feedback item 3, completed: participants (and the owner) are now emailed for
+real, not just alerted in-app.
+
+- **New `send-split-email` edge function** (`supabase/functions/send-split-email/`)
+  sends transactional email via **MailerSend** (MailerLite's transactional API),
+  **SMTP** (any provider — e.g. MailerSend's SMTP or the one you'd set as Supabase
+  Auth Custom SMTP), **or Resend** (checked in that order). Supabase's own email
+  is auth-only with no general send API, and an MCP server is a chat-time tool
+  (not a runtime sender), so an HTTP/SMTP transport is required.
+  - `shared` → each participant is emailed when a split is shared with them.
+  - `settled` → the owner is emailed when a participant settles their share.
+  - `closed` → participants are emailed when the owner closes the split.
+- **Recipients are resolved server-side** from the split id using the service
+  role — the client never passes an address, so this can't be turned into a
+  spam relay. The caller's JWT is verified and **authorised per event** (owner
+  for shared/closed; the settling participant for settled).
+- **Client wiring** (`lib/splitEmail.ts` + `sharedSplitsSlice`): create/settle/
+  close each fire the matching email, best-effort — a mail failure never blocks
+  the action, and the in-app notification remains the always-on baseline.
+- **Inert until configured:** with none of `MAILERSEND_API_KEY` / `SMTP_HOST` /
+  `RESEND_API_KEY` set the function returns `email_not_configured` and the app is
+  unaffected. Setup (pick a transport, verify a sender domain, set secrets,
+  deploy) is documented in
+  [`docs/split-email-setup.md`](../docs/split-email-setup.md). No secrets or keys
+  are committed.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 170/170, `vite build` 0. The edge function
+is Deno (outside the client build); it deploys separately via
+`deploy_edge_function` once the Resend secrets are set.
+
+---
+
+## v10.14.1 — Split-sharing feedback fixes *(2026-08-02)*
+
+Round of fixes on v10.14.0's split sharing, from live testing:
+
+- **Participant is identified by EMAIL only** (feedback 2). The Add-Transaction
+  split section no longer has a separate name field — you type the email, and
+  the participant's Vyact **display name is resolved from it** (new
+  `resolve_participant_names` RPC) and shown **non-editable** beneath the input
+  (✓ Manu), or "Not on Vyact yet — they'll see it when they join" if the email
+  has no account. Local-only mode (no cloud) keeps the plain name input.
+- **Splits view shows name · email** (feedback 1) — each shared participant row
+  now leads with the resolved display name and shows the email beneath it,
+  instead of a bare address. Names are resolved in one batched RPC call when the
+  shared splits load.
+- **"Someone else paid" removed** (feedback 4) — a shared split always means you
+  paid (the spec's model), so the who-paid toggle is gone; every new split is
+  "you paid / you received it".
+- **Removed the long helper paragraph** under the split section (feedback 5).
+- **New in-app "split shared with you" notification** (`split_received`, P1) so a
+  participant is alerted in the bell when a split is shared with their email —
+  previously they'd only find it by opening the Splits page.
+- **Verification of feedback 3 (did it reach the other accounts?):** the shared
+  rows were created correctly. `u.reddy@vidaxl.com` (an existing account) **does**
+  see the split via RLS on their Splits page once signed in; `uday.iitkgp@gmail.com`
+  has no account yet, so it's pending their signup (by design). **No emails were
+  sent because the app has no email-sending capability at all** — all split
+  notifications are in-app. Real email/push delivery is a separate,
+  external-provider decision, not yet built.
+- **Security:** the new `resolve_participant_names` is `SECURITY DEFINER` with no
+  `auth.uid()` gate (a directory lookup), so the default PUBLIC grant would have
+  let an **unauthenticated** caller enumerate email → name. Revoked
+  anon/PUBLIC EXECUTE; authenticated-only. Verified via `has_function_privilege`.
+
+Gates: `tsc` 0, `eslint` 0, `vitest` 170/170, `vite build` 0. `get_advisors`
+(security) shows the new RPC no longer anon-executable. A true two-account
+click-through still isn't possible in the single-user local preview; that layer
+rests on the RLS proof + this review.
 
 ---
 

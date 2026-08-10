@@ -140,8 +140,6 @@ export default function DebtFormModal(props: Props) {
     }
   }
 
-  const isReceivable = form.direction === 'owed_to_me';
-
   const footer = (
     <div className="flex items-center justify-between gap-2">
       {initial ? (
@@ -163,25 +161,10 @@ export default function DebtFormModal(props: Props) {
   );
 
   return (
-    <HalfSheet open={open} title={initial ? (isReceivable ? 'Edit Receivable' : 'Edit Debt') : (isReceivable ? 'Add Receivable' : 'Add Debt')} onClose={onClose} footer={footer}>
-      {/* §6 — direction selector: I owe (liability) vs Owed to me (receivable/asset). */}
-      <Field label="Direction">
-        <div className="grid grid-cols-2 gap-2">
-          {([['owed_by_me', 'I owe'], ['owed_to_me', 'Owed to me']] as const).map(([val, lbl]) => (
-            <button
-              key={val}
-              type="button"
-              onClick={() => setForm(f => ({ ...f, direction: val }))}
-              className={`py-2 rounded-md text-sm font-medium border transition-colors ${
-                form.direction === val ? 'border-coral bg-coral/10 text-coral' : 'border-line text-ink-mid hover:bg-bg3'
-              }`}
-            >
-              {lbl}
-            </button>
-          ))}
-        </div>
-      </Field>
-
+    <HalfSheet open={open} title={initial ? 'Edit Debt' : 'Add Debt'} onClose={onClose} footer={footer}>
+      {/* v10.17 — "Owed to me" (receivables) is deprecated from the UI; debts
+          are liabilities only. The direction/counterparty model is retained in
+          the data layer (reversible), just never surfaced here. */}
       <FieldRow>
         <Field label="Type">
           <Select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
@@ -194,16 +177,6 @@ export default function DebtFormModal(props: Props) {
           <Input type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))} />
         </Field>
       </FieldRow>
-
-      {isReceivable && (
-        <Field label="Who owes you" hint="counterparty">
-          <Input
-            value={form.counterpartyName}
-            onChange={e => setForm(f => ({ ...f, counterpartyName: e.target.value }))}
-            placeholder="e.g. Sam, Acme Ltd"
-          />
-        </Field>
-      )}
 
       <Field label="Name">
         <Input
@@ -224,7 +197,7 @@ export default function DebtFormModal(props: Props) {
       </FieldRow>
 
       <FieldRow>
-        <Field label={isReceivable ? 'Amount owed to you' : 'Current balance'}>
+        <Field label="Current balance">
           <Input
             type="number"
             min="0"
@@ -243,56 +216,50 @@ export default function DebtFormModal(props: Props) {
         </Field>
       </FieldRow>
 
-      {/* Liability-only fields — a receivable (owed to me) is an asset, so it has
-          no APR / minimum payment / tenure. */}
-      {!isReceivable && (
-        <>
-          <FieldRow>
-            <Field label="Original principal" hint="optional">
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.principal}
-                onChange={e => setForm(f => ({ ...f, principal: e.target.value }))}
-                placeholder="defaults to balance"
-              />
-            </Field>
-            <Field label="Interest rate" hint="% APR">
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.interestRate}
-                onChange={e => setForm(f => ({ ...f, interestRate: e.target.value }))}
-                placeholder="0.00"
-              />
-            </Field>
-          </FieldRow>
+      <FieldRow>
+        <Field label="Original principal" hint="optional">
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.principal}
+            onChange={e => setForm(f => ({ ...f, principal: e.target.value }))}
+            placeholder="defaults to balance"
+          />
+        </Field>
+        <Field label="Interest rate" hint="% APR">
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.interestRate}
+            onChange={e => setForm(f => ({ ...f, interestRate: e.target.value }))}
+            placeholder="0.00"
+          />
+        </Field>
+      </FieldRow>
 
-          <FieldRow>
-            <Field label="Min. monthly payment">
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.minimumPayment}
-                onChange={e => setForm(f => ({ ...f, minimumPayment: e.target.value }))}
-                placeholder="0.00"
-              />
-            </Field>
-            <Field label="Tenure" hint="months, optional">
-              <Input
-                type="number"
-                min="1"
-                value={form.tenureMonths}
-                onChange={e => setForm(f => ({ ...f, tenureMonths: e.target.value }))}
-                placeholder="36"
-              />
-            </Field>
-          </FieldRow>
-        </>
-      )}
+      <FieldRow>
+        <Field label="Min. monthly payment">
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.minimumPayment}
+            onChange={e => setForm(f => ({ ...f, minimumPayment: e.target.value }))}
+            placeholder="0.00"
+          />
+        </Field>
+        <Field label="Tenure" hint="months, optional">
+          <Input
+            type="number"
+            min="1"
+            value={form.tenureMonths}
+            onChange={e => setForm(f => ({ ...f, tenureMonths: e.target.value }))}
+            placeholder="36"
+          />
+        </Field>
+      </FieldRow>
 
     </HalfSheet>
   );

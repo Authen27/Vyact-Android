@@ -6,6 +6,7 @@
 // logic; it does NOT replace the store modal-slot pattern (pages still call
 // openAdd/close via the slice).
 import { type ReactNode, useEffect, useId } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X } from 'lucide-react';
 import { scrim, sheetUp } from '../../lib/motion';
@@ -33,7 +34,13 @@ export default function HalfSheet({ open, onClose, title, ariaLabel, children, f
     return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
   }, [open, onClose]);
 
-  return (
+  // v10.17 — portal to <body> so the fixed overlay always escapes any parent
+  // stacking context. When a HalfSheet is rendered inline in a page (e.g.
+  // Recurring's Add-Schedule sheet), its ancestor `<main class="relative z-[1]">`
+  // scopes the sheet's z-index; the sticky TopBar (a root sibling, z-50) then
+  // paints over the sheet's header and close controls. Portaling lifts the sheet
+  // to the document root where its z-[200] wins outright.
+  return createPortal(
     <AnimatePresence>
       {open && (
         <motion.div
@@ -63,6 +70,7 @@ export default function HalfSheet({ open, onClose, title, ariaLabel, children, f
           </motion.div>
         </motion.div>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }

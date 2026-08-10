@@ -36,6 +36,7 @@ const ROUTE_BY_NOTIF_TYPE: Record<string, string> = {
   milestone: '/dashboard',
   split_settled: '/splits',
   split_closed: '/splits',
+  split_received: '/splits',
 };
 
 // LocalNotifications ids must be numeric — derive a stable 31-bit int from the

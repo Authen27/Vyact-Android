@@ -36,6 +36,7 @@ export const NOTIF_META: Record<NotifType, NotifMeta> = {
   member_activity:       { icon: '⌂', tint: 'var(--info)', priority: 'P2' },
   sync_conflict:         { icon: '!', tint: 'var(--crit)', priority: 'P1' },
   milestone:             { icon: '✦', tint: 'var(--good)', priority: 'P2' },
+  split_received:        { icon: '🤝', tint: 'var(--accent)', priority: 'P1' },
   split_settled:         { icon: '🤝', tint: 'var(--good)', priority: 'P2' },
   split_closed:          { icon: '🤝', tint: 'var(--ff-ink-3)', priority: 'P2' },
 };
@@ -46,7 +47,7 @@ export const NOTIF_GROUPS: { label: string; types: NotifType[] }[] = [
   { label: 'Budgets & debts', types: ['budget_threshold', 'debt_payment_due'] },
   { label: 'Insights',        types: ['insight_fresh', 'trend_alert', 'milestone'] },
   { label: 'Household',       types: ['invite_received', 'member_activity'] },
-  { label: 'Splits',          types: ['split_settled', 'split_closed'] },
+  { label: 'Splits',          types: ['split_received', 'split_settled', 'split_closed'] },
   { label: 'System',          types: ['stale_balance', 'sync_conflict'] },
 ];
 
@@ -64,6 +65,7 @@ export const NOTIF_TYPE_LABEL: Record<NotifType, string> = {
   member_activity:       'Member activity',
   sync_conflict:         'Sync conflict',
   milestone:             'Milestone',
+  split_received:        'Split shared with you',
   split_settled:         'Split settled',
   split_closed:          'Split closed',
 };
@@ -285,7 +287,32 @@ export function splitSettledNotifs(owned: SharedSplit[], prefs: NotificationPref
   return out;
 }
 
-/** 15 · split_closed (P2, participant-facing) — the owner closed a split the
+/** 14 · split_received (P1, participant-facing) — a split was shared with the
+ *  caller's email. Fires once per split (until they settle or it's closed) so
+ *  they see it in the bell, not only by visiting the Splits page. */
+export function splitReceivedNotifs(withMe: SharedSplit[], myEmail: string | undefined, prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
+  if (!typeEnabled(prefs, 'split_received') || !myEmail) return [];
+  const email = myEmail.toLowerCase();
+  const out: Notification[] = [];
+  for (const sp of withMe) {
+    if (sp.closedAt) continue;
+    const mine = sp.shares.find(s => s.email.toLowerCase() === email);
+    if (!mine || mine.paid) continue;
+    const key = `split_received:${sp.id}`;
+    if (existing.some(n => n.dedupeKey === key)) continue;
+    out.push({
+      ...base('split_received', key, ctx),
+      title: `${sp.description || 'A split'} was shared with you`,
+      body: `Your share is ${fmt(mine.share, sp.currency)}`,
+      amountRef: mine.share, splitId: sp.id,
+      deepLink: `/splits?splitId=${sp.id}`,
+      actions: [A('settle', 'Settle my share', 'primary'), A('view', 'View split', 'ghost')],
+    });
+  }
+  return out;
+}
+
+/** 16 · split_closed (P2, participant-facing) — the owner closed a split the
  *  caller is a participant in. */
 export function splitClosedNotifs(withMe: SharedSplit[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
   if (!typeEnabled(prefs, 'split_closed')) return [];

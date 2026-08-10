@@ -117,8 +117,9 @@ export default function WhatsAppLink() {
     <Panel title="WhatsApp">
       <div className="p-4 space-y-3">
         <p className="text-[0.82rem] text-ink-mid">
-          Link a WhatsApp number to a household. (Logging transactions over WhatsApp
-          is coming soon — this connects your number first.)
+          Link a WhatsApp number to a household, then log money by texting Vyact —
+          no app needed. Your messages are parsed on our server (no third-party AI),
+          and balances are never sent over chat.
         </p>
 
         {phase === 'loading' && <p className="text-[0.8rem] text-ink-dim">Checking status…</p>}
@@ -132,6 +133,18 @@ export default function WhatsAppLink() {
               className="font-mono text-[0.6rem] tracking-wider uppercase text-terra hover:underline disabled:opacity-50">
               Unlink
             </button>
+          </div>
+        )}
+
+        {phase === 'linked' && (
+          <div className="rounded-md border border-line bg-bg3 px-3 py-2.5 text-[0.78rem] text-ink-mid leading-relaxed">
+            <div className="font-mono text-[0.58rem] tracking-widest uppercase text-ink-dim mb-1.5">Text Vyact to log</div>
+            <div className="space-y-0.5 font-mono text-[0.72rem]">
+              <div><span className="text-ink">850 groceries hdfc</span> — an expense</div>
+              <div><span className="text-ink">+50000 salary</span> — income</div>
+              <div><span className="text-ink">moved 10000 to icici</span> — a transfer</div>
+            </div>
+            <p className="mt-2 text-[0.72rem] text-ink-dim">Asking for balances or reports? Vyact replies with a secure link to the app instead.</p>
           </div>
         )}
 

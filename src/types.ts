@@ -67,6 +67,9 @@ export interface SharedSplitShare {
   id: string;
   splitId: string;
   email: string;
+  /** v10.14.1 — resolved display name for `email` (via resolve_participant_names
+   *  RPC), when that email has an active Vyact account. Absent = no account yet. */
+  name?: string;
   share: number;
   paid: boolean;
   paidAt?: string | null;
@@ -387,8 +390,11 @@ export type NotifType =
   | 'member_activity' | 'sync_conflict' | 'milestone'
   // v10.14 — email-based cross-household split sharing. Generated locally on
   // each side (no cross-household writes needed — RLS already lets each
-  // party read the shared_split rows relevant to them).
-  | 'split_settled' | 'split_closed';
+  // party read the shared_split rows relevant to them). split_received is
+  // participant-facing (a split was shared with your email); split_settled is
+  // owner-facing (a participant self-settled); split_closed is participant-
+  // facing (the owner closed the split).
+  | 'split_received' | 'split_settled' | 'split_closed';
 
 export type NotifPriority = 'P1' | 'P2';
 

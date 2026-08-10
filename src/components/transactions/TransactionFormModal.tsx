@@ -10,7 +10,8 @@ import {
   CATEGORIES_BY_TYPE,
   CURRENCIES,
 } from '../../constants';
-import { buildAccounts, buildAccountsFromStore, resolveAccount, ACCOUNT_REQUIRED_TYPES } from '../../lib/accounts';
+import { buildAccounts, buildAccountsFromStore, resolveAccount, ACCOUNT_REQUIRED_TYPES, notInvestment } from '../../lib/accounts';
+import TimeDial from '../ui/TimeDial';
 import { getMoneyMapMode } from '../../lib/featureFlags';
 import { FEATURES } from '../../config/features';
 import type { Transaction, TxnType, Recurrence, PartPaymentChoice } from '../../types';
@@ -21,17 +22,6 @@ interface Props {
   open?: boolean;
   initial?: Transaction | null;
   onClose?: () => void;
-}
-
-interface SplitParticipantForm {
-  name: string;
-  share: string;
-  isYou: boolean;
-  paid: boolean;
-  paidOn?: string | null;
-  /** v10.14 — when set (and you paid, cloud enabled), a shared_splits row is
-   *  created so the account at this email sees the split too. */
-  email?: string;
 }
 
 interface FormState {
@@ -60,19 +50,7 @@ interface FormState {
   accountSplitRows: { accountId: string; amount: number }[];
   recurring: Recurrence | '';
   excluded: boolean;
-  // ── split ──
-  splitEnabled: boolean;
-  splitPaidBy: 'me' | 'external';
-  splitParticipants: SplitParticipantForm[];
-  // When true, shares are kept auto-balanced to an even split; flips to false the
-  // moment the user edits a share by hand (so manual amounts are never clobbered).
-  splitAuto: boolean;
 }
-
-const defaultParticipants = (): SplitParticipantForm[] => ([
-  { name: 'You', share: '', isYou: true,  paid: true },
-  { name: '',    share: '', isYou: false, paid: false },
-]);
 
 // v9 txn-redesign §3 — type-scoped defaults. Transfers and investments carry NO
 // category (CK_txn_category_by_type); '' is the client-side sentinel for null.
@@ -118,21 +96,7 @@ const blank = (currency: string, memberId = '', type: TxnType = 'expense'): Form
   accountSplitRows: [],
   recurring: '',
   excluded: false,
-  splitEnabled: false,
-  splitPaidBy: 'me',
-  splitParticipants: defaultParticipants(),
-  splitAuto: true,
 });
-
-// Even split of `bill` across `n` people; rounding remainder goes to the first.
-function evenShares(bill: number, n: number): string[] {
-  if (n < 1) return [];
-  const base = Math.floor((bill / n) * 100) / 100;
-  const shares = Array(n).fill(base);
-  const remainder = Math.round((bill - base * n) * 100) / 100;
-  shares[0] = Math.round((shares[0] + remainder) * 100) / 100;
-  return shares.map(s => (bill > 0 ? s.toFixed(2) : ''));
-}
 
 function categoriesFor(type: TxnType) {
   // v9 §3 — type-scoped sets. Transfers AND investments carry no category
@@ -175,9 +139,6 @@ export default function TransactionFormModal(props: Props) {
   const removeTransaction = useStore(s => s.removeTransaction);
   const toast             = useStore(s => s.toast);
   const openAddAccount    = useStore(s => s.openAddAccount);
-  const cloudEnabled          = useStore(s => s.cloudEnabled);
-  const currentHouseholdId   = useStore(s => s.currentHouseholdId);
-  const createSharedSplitForTxn = useStore(s => s.createSharedSplitForTxn);
 
   // Bind to the global store unless explicit props are passed
   const storeOpen     = useStore(s => s.txnModalOpen);
@@ -203,23 +164,27 @@ export default function TransactionFormModal(props: Props) {
   const [form, setForm]    = useState<FormState>(blank(profile.baseCurrency, defaultMemberId));
   const [saving, setSaving] = useState(false);
   const [showAllCats, setShowAllCats] = useState(false);   // board M4 "⌕ More" category tile
+  const [showTimeDial, setShowTimeDial] = useState(false); // v10.17 — circular 24h picker panel
 
   // Linked spending accounts. With `money_map` flag on (or in shadow) and
   // a populated `accounts` store, source options from the canonical table;
   // otherwise fall back to the legacy assets+debts derivation so off-mode
   // and pre-backfill households keep working unchanged.
   const useFirstClassAccounts = getMoneyMapMode() !== 'off' && accountsState.length > 0;
+  // v10.17 — the cash-side picker never offers investment accounts; they are
+  // walled off to the Investment track only (`notInvestment` predicate).
   const accounts = useMemo(
     () => useFirstClassAccounts
-      ? buildAccountsFromStore(accountsState)
+      ? buildAccountsFromStore(accountsState, { filter: notInvestment })
       : buildAccounts(assets, debts),
     [useFirstClassAccounts, accountsState, assets, debts],
   );
   // For transfer + investment, the destination dropdown excludes the source
-  // so a user can't pick the same account on both sides.
+  // so a user can't pick the same account on both sides — and (v10.17) never
+  // lists investment accounts either.
   const accountsTo = useMemo(
     () => useFirstClassAccounts
-      ? buildAccountsFromStore(accountsState, { excludeId: form.paymentMethod || undefined })
+      ? buildAccountsFromStore(accountsState, { excludeId: form.paymentMethod || undefined, filter: notInvestment })
       : buildAccounts(assets, debts, { excludeId: form.paymentMethod || undefined }),
     [useFirstClassAccounts, accountsState, assets, debts, form.paymentMethod],
   );
@@ -236,6 +201,11 @@ export default function TransactionFormModal(props: Props) {
   const isInvestment = form.type === 'investment';
   const isIncome     = form.type === 'income';
   const needsToAccount = isTransfer || isInvestment;
+  // v10.17 §2 — "Took money out" reorients the pickers: the FROM slot shows
+  // the investment account (bound to `paymentMethodTo`) and the destination
+  // slot shows the bank/cash account (bound to `paymentMethod`). The stored
+  // from/to is byte-identical to before (the persist swap is unchanged).
+  const isWithdraw = isInvestment && form.direction === 'withdrew';
   // Account-field label varies by track: expense flows out of an account,
   // income lands in one, transfer/investment have both sides.
   const accountLabel = needsToAccount ? 'From account' : isIncome ? 'To account' : 'Account';
@@ -243,12 +213,12 @@ export default function TransactionFormModal(props: Props) {
   useEffect(() => {
     if (!open) return;
     setShowAllCats(false);
+    setShowTimeDial(false);
     if (initial) {
       const initialTime = deriveInitialTime(initial);
-      const sp = initial.split;
       setForm({
         type: initial.type,
-        amount: String(sp?.isSplit ? sp.totalAmount : initial.amount),
+        amount: String(initial.amount),
         currency: initial.currency,
         date: initial.date,
         time: initialTime,
@@ -265,20 +235,6 @@ export default function TransactionFormModal(props: Props) {
         accountSplitRows: initial.accountSplits ? initial.accountSplits.map(s => ({ accountId: s.accountId, amount: s.amount })) : [],
         recurring: initial.recurring ?? '',
         excluded: Boolean(initial.excluded),
-        splitEnabled: Boolean(sp?.isSplit),
-        splitPaidBy: sp?.paidBy ?? 'me',
-        // Existing splits keep their explicit shares (no auto-rebalance);
-        // a fresh split starts in auto-even mode.
-        splitAuto: !sp?.isSplit,
-        splitParticipants: sp?.isSplit && sp.participants.length
-          ? sp.participants.map(p => ({
-              name: p.isYou ? 'You' : p.name,
-              share: String(p.share),
-              isYou: Boolean(p.isYou),
-              paid: p.paid,
-              paidOn: p.paidOn,
-            }))
-          : defaultParticipants(),
       });
     } else {
       // v7.4.5 — `storeSeed` (from Ask Vyact's two-tap flow, or a notification
@@ -330,56 +286,6 @@ export default function TransactionFormModal(props: Props) {
     const tail = cats.filter(c => !recent.includes(c.id));
     return [...head, ...tail];
   }, [transactions, form.type, cats, isTransfer, isInvestment]);
-
-  // Recent descriptions for this track — offered as an autocomplete datalist.
-  const recentDescriptions = useMemo(() => {
-    const sorted = [...transactions].sort((a, b) => b.date.localeCompare(a.date));
-    const out: string[] = [];
-    for (const t of sorted) {
-      if (t.type !== form.type) continue;
-      const d = t.description?.trim();
-      if (d && !out.includes(d)) out.push(d);
-      if (out.length >= 8) break;
-    }
-    return out;
-  }, [transactions, form.type]);
-
-  // ── split helpers ──
-  function updateName(i: number, name: string) {
-    // Editing a name never disturbs auto-balanced shares.
-    setForm(f => ({ ...f, splitParticipants: f.splitParticipants.map((x, j) => j === i ? { ...x, name } : x) }));
-  }
-  function updateParticipantEmail(i: number, email: string) {
-    setForm(f => ({ ...f, splitParticipants: f.splitParticipants.map((x, j) => j === i ? { ...x, email } : x) }));
-  }
-  function editShare(i: number, share: string) {
-    // Manual edit → leave auto mode so we respect the user's numbers.
-    setForm(f => ({ ...f, splitAuto: false, splitParticipants: f.splitParticipants.map((x, j) => j === i ? { ...x, share } : x) }));
-  }
-  function addParticipant() {
-    // Keep whatever mode we're in; the rebalance effect re-evens shares in auto mode.
-    setForm(f => ({ ...f, splitParticipants: [...f.splitParticipants, { name: '', share: '', isYou: false, paid: false }] }));
-  }
-  function removeParticipant(i: number) {
-    setForm(f => ({ ...f, splitParticipants: f.splitParticipants.filter((_, j) => j !== i) }));
-  }
-  function resetEvenSplit() {
-    setForm(f => ({ ...f, splitAuto: true }));
-  }
-
-  // Auto-balance: while in auto mode, keep every share at an even split of the bill.
-  // Re-runs when the bill or the number of participants changes.
-  useEffect(() => {
-    if (!form.splitEnabled || !form.splitAuto) return;
-    const bill = parseFloat(form.amount) || 0;
-    const shares = evenShares(bill, form.splitParticipants.length);
-    setForm(f => {
-      if (!f.splitAuto) return f;
-      const changed = f.splitParticipants.some((p, i) => p.share !== shares[i]);
-      if (!changed) return f;
-      return { ...f, splitParticipants: f.splitParticipants.map((p, i) => ({ ...p, share: shares[i] })) };
-    });
-  }, [form.amount, form.splitEnabled, form.splitAuto, form.splitParticipants.length]);
 
   // Reset for a rapid "Save & add another" — keep the track, currency, member,
   // date and account so the next entry only needs an amount.
@@ -433,37 +339,8 @@ export default function TransactionFormModal(props: Props) {
       return;
     }
 
-    // ── Build split info (expense or income) ──
-    let split: Transaction['split'] | undefined = undefined;
-    if ((form.type === 'expense' || form.type === 'income') && form.splitEnabled) {
-      const parts = form.splitParticipants
-        .map(p => ({ ...p, shareNum: parseFloat(p.share) }))
-        .filter(p => (p.isYou || p.name.trim()) && !isNaN(p.shareNum) && p.shareNum >= 0);
-      const you = parts.find(p => p.isYou);
-      if (!you) { toast('A split needs your share', 'error'); return; }
-      if (parts.length < 2) { toast('A split needs at least one other participant', 'error'); return; }
-      if (parts.some(p => !p.isYou && !p.name.trim())) { toast('All participants must have a name', 'error'); return; }
-      const sumShares = parts.reduce((s, p) => s + p.shareNum, 0);
-      if (Math.abs(sumShares - amount) > 0.01) {
-        toast(`Participant shares (${sumShares.toFixed(2)}) must add up to the total bill (${amount.toFixed(2)})`, 'error');
-        return;
-      }
-      split = {
-        isSplit: true,
-        totalAmount: amount,
-        yourShare: you.shareNum,
-        paidBy: form.splitPaidBy,
-        participants: parts.map(p => ({
-          name: p.isYou ? 'You' : p.name.trim(),
-          isYou: p.isYou || undefined,
-          share: p.shareNum,
-          paid: form.splitPaidBy === 'me' ? Boolean(p.isYou || p.paid) : Boolean(!p.isYou || p.paid),
-          paidOn: p.paidOn ?? null,
-          email: (!p.isYou && p.email?.trim()) ? p.email.trim().toLowerCase() : undefined,
-        })),
-      };
-    }
-
+    // Splits are authored in the standalone Split form (v10.16); a plain
+    // transaction never carries a `split`.
     setSaving(true);
     try {
       // v9 §4.3 — investment direction maps the account matrix:
@@ -495,46 +372,18 @@ export default function TransactionFormModal(props: Props) {
           _partPaymentChoice: form.partPaymentChoice,
         } : {}),
         linkedTxnId:   initial?.linkedTxnId,
-        split,
       };
       await upsertTransaction(txn);
-
-      // v10.14 — email-based cross-household split sharing. Only on a fresh
-      // split (not re-fired on every edit-resave, so it can't duplicate the
-      // shared_splits row): when you paid and cloud is enabled, any participant
-      // with an email gets a shared_splits/shared_split_shares row so their
-      // account (once they sign up with that email, if they haven't yet) sees
-      // this split too. Best-effort — a failure here shouldn't block the
-      // transaction save that already succeeded.
-      if (!initial && split && form.splitPaidBy === 'me' && cloudEnabled && currentHouseholdId !== 'local') {
-        const emailed = split.participants.filter(p => !p.isYou && p.email);
-        if (emailed.length) {
-          try {
-            await createSharedSplitForTxn({
-              txnId: txn.id,
-              description: txn.description,
-              currency: txn.currency,
-              totalAmount: split.totalAmount,
-              txnType: form.type === 'income' ? 'income' : 'expense',
-              date: txn.date,
-              participants: emailed.map(p => ({ email: p.email!, share: p.share })),
-            });
-          } catch (e) {
-            toast(`Split saved, but sharing failed: ${(e as Error).message}`, 'error');
-          }
-        }
-      }
 
       // v9.1 §5 — recurrence is authored ONLY in the Recurring section now;
       // the Transaction form no longer mirrors a schedule.
 
       // Offer Undo only for a freshly-added PLAIN expense/income row — those
-      // delete cleanly. System-split rows (loan_emi, transfer, investment) and
-      // people-splits create linked legs/IOUs, so we never one-tap-undo them.
+      // delete cleanly. System-split rows (loan_emi, transfer, investment)
+      // create linked legs, so we never one-tap-undo them.
       const undoable = !initial
         && (form.type === 'expense' || form.type === 'income')
-        && form.category !== 'loan_emi'
-        && !form.splitEnabled;
+        && form.category !== 'loan_emi';
       const createdId = txn.id;
       toast(
         initial ? 'Transaction updated' : 'Transaction added',
@@ -699,26 +548,25 @@ export default function TransactionFormModal(props: Props) {
         </div>
       )}
 
-      {/* Description with recent-value autocomplete */}
+      {/* Description — a plain open field (v10.17 item 1: the recent-value
+          dropdown was removed per request). */}
       <div className="mt-4">
         <div className="mono-label mb-1.5">Description {isTransfer ? <span className="text-ink-dim">·optional</span> : null}</div>
         <input
           className="input w-full"
           value={form.description}
-          list="txn-desc-suggestions"
           aria-label="Description"
           onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
           placeholder={isTransfer ? 'e.g. Move savings to brokerage' : isIncome ? 'e.g. July salary' : 'e.g. Tesco grocery run'}
         />
-        <datalist id="txn-desc-suggestions">
-          {recentDescriptions.map(d => <option key={d} value={d} />)}
-        </datalist>
       </div>
 
       {/* Board M4 "Date · paid with" — date/time pickers and the source
-          account share ONE labeled row. The time input stays native (user
-          request — the platform clock picker); the board's 📅 Pick chip IS the
-          date input. */}
+          account share ONE labeled row. The time chip opens the circular 24h
+          TimeDial (v10.17 item 14); the board's 📅 Pick chip IS the date input.
+          v10.17 §2: "Took money out" puts the INVESTMENT account in this FROM
+          slot (bound to `paymentMethodTo`); every other track puts the
+          bank/cash source here (bound to `paymentMethod`, investment walled). */}
       <div className="mt-4">
         <div className="mono-label mb-1.5">
           Date · {needsToAccount ? accountLabel.toLowerCase() : isIncome ? 'paid into' : 'paid with'} {accountRequired ? <span className="text-terra">·required</span> : null}
@@ -726,29 +574,52 @@ export default function TransactionFormModal(props: Props) {
         <div className="flex gap-1.5 items-center flex-wrap">
           <Chip on={form.date === todayStr} onClick={() => setForm(f => ({ ...f, date: todayStr }))}>Today</Chip>
           <Chip on={form.date === yStr} onClick={() => setForm(f => ({ ...f, date: yStr }))}>Yesterday</Chip>
-          {/* Inner non-wrapping group — the date and time pickers always stay
-              side by side even when the chip row wraps on narrow sheets. */}
+          {/* Inner non-wrapping group — the date input and the time chip always
+              stay side by side even when the chip row wraps on narrow sheets. */}
           <div className="flex gap-1.5 items-center">
             <input type="date" value={form.date}
               onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
               className="input h-[34px] py-0 px-2.5 text-[12.5px] w-[132px]" aria-label="Pick a date" />
-            <input type="time" value={form.time}
-              onChange={e => setForm(f => ({ ...f, time: e.target.value }))}
-              className="input h-[34px] py-0 px-2.5 text-[12.5px] w-[96px]" aria-label="Pick a time" />
+            <button type="button" onClick={() => setShowTimeDial(v => !v)}
+              className="input h-[34px] py-0 px-2.5 text-[12.5px] w-[96px] flex items-center justify-center gap-1 font-mono"
+              aria-label="Pick a time" aria-expanded={showTimeDial}>
+              <span aria-hidden>🕑</span>{form.time || '--:--'}
+            </button>
           </div>
-          {accounts.map(a => (
-            <Chip key={a.value} on={a.value === form.paymentMethod} testId={`txn-acct-${a.value}`}
-              onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
-              <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
-            </Chip>
-          ))}
-          {form.paymentMethod && !currentInList && (
+          {isWithdraw
+            ? investmentAccounts.map(a => (
+                <Chip key={a.id} on={a.id === form.paymentMethodTo} testId={`txn-acct-${a.id}`}
+                  onClick={() => setForm(f => ({ ...f, paymentMethodTo: a.id }))}>
+                  <span aria-hidden>📈</span>{a.name}
+                </Chip>
+              ))
+            : accounts.map(a => (
+                <Chip key={a.value} on={a.value === form.paymentMethod} testId={`txn-acct-${a.value}`}
+                  onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
+                  <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
+                </Chip>
+              ))}
+          {!isWithdraw && form.paymentMethod && !currentInList && (
             <Chip on onClick={() => { /* keep legacy value selectable */ }}>
               {currentAccount ? currentAccount.label : form.paymentMethod} (legacy)
             </Chip>
           )}
         </div>
-        {accountRequired && accounts.length <= 1 && (
+        {showTimeDial && (
+          <div className="mt-3 flex justify-center rounded-r3 border border-line py-4"
+            style={{ background: 'var(--elevated)' }}>
+            <TimeDial value={form.time || nowTime()} onChange={v => setForm(f => ({ ...f, time: v }))} />
+          </div>
+        )}
+        {isWithdraw && investmentAccounts.length === 0 && (
+          <div className="mt-1.5">
+            <p className="text-[0.72rem] text-ink-dim leading-snug mb-1.5">No investment accounts yet.</p>
+            <button type="button" onClick={() => { openAddAccount?.(); }} className="btn-ghost btn-sm text-[0.72rem]">
+              + Create investment account
+            </button>
+          </div>
+        )}
+        {!isWithdraw && accountRequired && accounts.length <= 1 && (
           <p className="mt-1.5 text-[0.7rem] text-ink-dim leading-snug">
             Tip: add your bank accounts and credit cards on the <strong>Net Worth</strong> page to
             spend from them here. Only Cash is available until then.
@@ -756,13 +627,16 @@ export default function TransactionFormModal(props: Props) {
         )}
       </div>
 
-      {/* Destination account (transfer/investment) — required */}
+      {/* Destination account (transfer/investment) — required.
+          transfer → bank/cash (paymentMethodTo, investment walled);
+          investment "added" → the investment account (paymentMethodTo);
+          investment "withdrew" → bank/cash destination (paymentMethod). */}
       {needsToAccount && (
         <div className="mt-4">
           <div className="mono-label mb-1.5">
-            {isTransfer ? 'To account' : 'Investment account'} <span className="text-terra">·required</span>
+            {isTransfer ? 'To account' : isWithdraw ? 'To account' : 'Investment account'} <span className="text-terra">·required</span>
           </div>
-          {isInvestment && investmentAccounts.length === 0 ? (
+          {isInvestment && !isWithdraw && investmentAccounts.length === 0 ? (
             <div>
               <p className="text-[0.72rem] text-ink-dim leading-snug mb-1.5">No investment accounts yet.</p>
               <button type="button" onClick={() => { openAddAccount?.(); }} className="btn-ghost btn-sm text-[0.72rem]">
@@ -771,7 +645,14 @@ export default function TransactionFormModal(props: Props) {
             </div>
           ) : (
             <div className="flex gap-1.5 flex-wrap">
-              {isInvestment
+              {isWithdraw
+                ? accounts.map(a => (
+                    <Chip key={a.value} on={a.value === form.paymentMethod} testId={`txn-to-${a.value}`}
+                      onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
+                      <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
+                    </Chip>
+                  ))
+                : isInvestment
                 ? investmentAccounts.map(a => (
                     <Chip key={a.id} on={a.id === form.paymentMethodTo} testId={`txn-to-${a.id}`}
                       onClick={() => setForm(f => ({ ...f, paymentMethodTo: a.id }))}>
@@ -824,122 +705,6 @@ export default function TransactionFormModal(props: Props) {
         </label>
       </div>
 
-      {/* Board M4 — split toggle lives INLINE on the main sheet: label + hint
-          + pill toggle row, with the participant editor expanding below. */}
-      {(form.type === 'expense' || form.type === 'income') && (
-        <div className="mt-3">
-          <div className="flex items-center gap-2.5 py-2.5">
-            <span className="font-display font-semibold text-[13px] text-ink">
-              ↔ {form.type === 'income' ? 'Share with someone' : 'Split with someone'}
-            </span>
-            <span className="text-[10.5px] text-ink-dim">
-              {form.splitEnabled ? 'on — shares become IOUs' : 'off — splits create IOUs'}
-            </span>
-            <button
-              type="button" role="switch" aria-checked={form.splitEnabled} aria-label="Split this transaction"
-              onClick={() => setForm(f => ({ ...f, splitEnabled: !f.splitEnabled, splitAuto: !f.splitEnabled ? true : f.splitAuto }))}
-              className="ml-auto relative w-[44px] h-[26px] rounded-pill border-none cursor-pointer flex-shrink-0"
-              style={{
-                background: form.splitEnabled ? 'color-mix(in srgb, hsl(var(--sage)) 40%, var(--sunken))' : 'var(--sunken)',
-                boxShadow: 'var(--neu-inset)',
-              }}
-            >
-              <i aria-hidden className="absolute top-[3px] w-5 h-5 rounded-full transition-[left] duration-150"
-                style={{
-                  left: form.splitEnabled ? 21 : 3,
-                  background: form.splitEnabled ? 'hsl(var(--sage))' : 'var(--ff-ink-3)',
-                  boxShadow: '0 1px 3px rgba(0,0,0,.3)',
-                }} />
-            </button>
-          </div>
-
-          {form.splitEnabled && (
-                <div className="pt-1 space-y-3">
-                  <div>
-                    <div className="mono-label mb-1.5">{form.type === 'income' ? 'Who received the money?' : 'Who paid the bill?'}</div>
-                    <div className="flex gap-1.5 flex-wrap">
-                      <Chip on={form.splitPaidBy === 'me'} onClick={() => setForm(f => ({ ...f, splitPaidBy: 'me' }))}>
-                        {form.type === 'income' ? 'You received it' : 'You paid'}
-                      </Chip>
-                      <Chip on={form.splitPaidBy === 'external'} onClick={() => setForm(f => ({ ...f, splitPaidBy: 'external' }))}>
-                        {form.type === 'income' ? 'Someone else received it' : 'Someone else paid'}
-                      </Chip>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="mono-label">Participants &amp; shares ({form.currency})</label>
-                      <div className="flex gap-2">
-                        <button type="button" onClick={resetEvenSplit}
-                          className={`font-mono text-[0.6rem] tracking-wider uppercase hover:underline ${form.splitAuto ? 'text-sage' : 'text-ink-dim'}`}
-                          title="Reset to an even split">
-                          {form.splitAuto ? '⚖ Even (auto)' : '⚖ Even split'}
-                        </button>
-                        <button type="button" onClick={addParticipant}
-                          className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:underline">
-                          + Add person
-                        </button>
-                      </div>
-                    </div>
-                    <div className="space-y-1.5">
-                      {form.splitParticipants.map((p, i) => (
-                        <div key={i} className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <input className="input flex-1 py-1.5" value={p.isYou ? 'You' : p.name} disabled={p.isYou} placeholder="Name"
-                              onChange={e => updateName(i, e.target.value)}
-                              onKeyDown={e => {
-                                if (!p.isYou && (e.key === 'Backspace' || e.key === 'Delete') && !p.name && form.splitParticipants.length > 2) {
-                                  e.preventDefault();
-                                  removeParticipant(i);
-                                }
-                              }} />
-                            <input className="input w-28 py-1.5 text-right" type="number" min="0" step="0.01" value={p.share} placeholder="0.00"
-                              onChange={e => editShare(i, e.target.value)} />
-                            {!p.isYou ? (
-                              <button type="button" onClick={() => removeParticipant(i)}
-                                className="text-ink-dim hover:text-terra w-7 flex-shrink-0 text-center" aria-label="Remove participant">✕</button>
-                            ) : <span className="w-7 flex-shrink-0" />}
-                          </div>
-                          {/* v10.14 — email-based cross-household split sharing. Only
-                             meaningful when you paid (you're the one whose account
-                             creates the shared split) and cloud sync is on. */}
-                          {!p.isYou && cloudEnabled && currentHouseholdId !== 'local' && form.splitPaidBy === 'me' && (
-                            <input className="input flex-1 py-1.5 ml-0" type="email" value={p.email ?? ''}
-                              placeholder="Their email (optional) — lets them see this split"
-                              onChange={e => updateParticipantEmail(i, e.target.value)} />
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                    {(() => {
-                      const bill = parseFloat(form.amount) || 0;
-                      const sum = form.splitParticipants.reduce((s, p) => s + (parseFloat(p.share) || 0), 0);
-                      const ok = Math.abs(sum - bill) < 0.01 && bill > 0;
-                      let error = '';
-                      if (bill === 0) error = 'Enter the total bill amount above.';
-                      else if (form.splitParticipants.length < 2) error = 'Add at least one other participant.';
-                      else if (form.splitParticipants.some(p => !p.isYou && !p.name.trim())) error = 'All participants must have a name.';
-                      else if (!ok) error = `Shares (${sum.toFixed(2)}) must add up to the bill (${bill.toFixed(2)}).`;
-                      return (
-                        <div className={`mt-2 font-mono text-[0.62rem] tracking-wider ${ok ? 'text-sage' : 'text-honey'}`}>
-                          Shares total {sum.toFixed(2)} / bill {bill.toFixed(2)} {ok ? '✓' : '— must match'}
-                          {error && <div className="text-terra mt-1 normal-case tracking-normal">{error}</div>}
-                        </div>
-                      );
-                    })()}
-                    <p className="mt-1.5 text-[0.7rem] text-ink-dim leading-snug">
-                      Shares default to an <strong>even split</strong> and rebalance as you add people —
-                      just type a number to override any share. The <strong>Amount</strong> above is the
-                      full {form.type === 'income' ? 'incoming amount' : 'bill'}; only your share counts
-                      toward your {form.type === 'income' ? 'income' : 'expenses'}, the rest is tracked
-                      as IOUs on the Splits page.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
     </HalfSheet>
   );
 }

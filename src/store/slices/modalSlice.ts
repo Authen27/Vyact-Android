@@ -55,6 +55,14 @@ export interface ModalSlice {
   openEditAccount: (a: Account) => void;
   closeAccountModal: () => void;
 
+  // v10.16 — standalone Split modal. A split is transaction-backed, so the
+  // "editing" entity is the backing Transaction (the one carrying `split`).
+  splitModalOpen: boolean;
+  editingSplit: Transaction | null;
+  openAddSplit: () => void;
+  openEditSplit: (t: Transaction) => void;
+  closeSplitModal: () => void;
+
   // v10.1.1 — Ask Vyact drawer. Owned by the store so the shell chrome (desktop
   // header ✦ Ask chip + mobile tab-bar Ask slot, per the Batch A board) can open
   // the same right-side drawer FloatingTools hosts.
@@ -107,6 +115,13 @@ export const createModalSlice: StateCreator<Store, [], [], ModalSlice> = (set) =
   openAddAccount:    () => set({ editingAccount: null, accountModalOpen: true }),
   openEditAccount:   (a) => set({ editingAccount: a, accountModalOpen: true }),
   closeAccountModal: () => set({ accountModalOpen: false, editingAccount: null }),
+
+  // v10.16 — standalone Split modal
+  splitModalOpen: false,
+  editingSplit: null,
+  openAddSplit:    () => set({ editingSplit: null, splitModalOpen: true }),
+  openEditSplit:   (t) => set({ editingSplit: t, splitModalOpen: true }),
+  closeSplitModal: () => set({ splitModalOpen: false, editingSplit: null }),
 
   // v10.1.1 — Ask Vyact drawer
   askOpen: false,

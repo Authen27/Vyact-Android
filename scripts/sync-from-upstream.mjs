@@ -31,14 +31,21 @@ if (!upstreamReact || !seedRef) {
 const BASE_DIR = '.upstream-base';
 
 // Shared files carrying inline Android edits — these need a real 3-way merge.
+// IMPORTANT: any file with a hand-applied Android patch (safe-area insets,
+// native hooks, etc.) MUST be listed here, or the next sync's plain upstream
+// copy silently overwrites the patch with no error (bit us once already —
+// MobileHeader/TopBar/SubNav's safe-area fixes were wiped by the 10.18.1 sync
+// because they were patched outside this list. Re-added + fixed 2026-08-10).
 const MERGED = [
   'index.html',
   'src/main.tsx',
   'src/lib/auth.ts',
   'src/components/layout/FloatingTools.tsx',
   'src/components/layout/Layout.tsx',
-  'src/components/layout/MobileBar.tsx',
-  'src/components/layout/Sidebar.tsx',
+  'src/components/layout/MobileHeader.tsx',
+  'src/components/layout/TopBar.tsx',
+  'src/components/layout/SubNav.tsx',
+  'src/components/layout/AddFab.tsx',
   'src/pages/Reports.tsx',
   'src/pages/Transactions.tsx',
   'src/store/slices/notifySlice.ts',

@@ -5,7 +5,7 @@ import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, convert, nowMonthKey } from '../lib/format';
 import Money from '../components/ui/Money';
-import { totalLiabilities, totalReceivables, monthlyData } from '../lib/calculations';
+import { totalLiabilities, monthlyData } from '../lib/calculations';
 import { liveAssetRows, liveTotalAssets, type LiveAssetRow } from '../lib/accountBalance';
 import { ASSET_TYPES, DEBT_TYPES } from '../constants';
 import type { Asset, AccountKind } from '../types';
@@ -66,12 +66,12 @@ export default function NetWorth() {
 
   const ta  = liveTotalAssets(liveRows);
   const tl  = totalLiabilities(debts, c, rates);
-  // v7.1 Money Map — receivables (`direction === 'owed_to_me'`) are
-  // money owed back to the household. They count toward Net Worth but
-  // surface as a separate line item rather than being merged into
-  // Assets, per the spec's privacy / clarity requirement (U-3).
-  const tr  = totalReceivables(debts, c, rates);
-  const nw  = ta + tr - tl;
+  // v10.17 — "Owed to me" (receivables) is deprecated from the UI. The rows
+  // remain in the data model (reversible) but no longer count toward the
+  // displayed Net Worth. `totalReceivables` already excludes them from
+  // `totalAssets`/`totalLiabilities`, so dropping the addend here is the only
+  // change needed to keep every number honest.
+  const nw  = ta - tl;
   const la  = liveRows.filter(r => r.liquidity === 'liquid').reduce((s, r) => s + r.value, 0);
   const { income, expense } = monthlyData(transactions, nowMonthKey(), c, rates);
   const monthlyIncome = income || 1;
@@ -137,7 +137,7 @@ export default function NetWorth() {
           assets(+owed) bar, the slice liabilities take from it, and the net-worth
           remainder. Denim spine, net worth in neutral ink. */}
       {(() => {
-        const gross = ta + tr;                                  // assets + owed
+        const gross = ta;                                       // assets
         const libPct = gross > 0 ? Math.min(100, (tl / gross) * 100) : 0;
         const nwPct  = gross > 0 ? Math.max(0, Math.min(100, (nw / gross) * 100)) : 0;
         const barRow = (barWidth: string, barStyle: CSSProperties, alignEnd: boolean, label: ReactNode) => (
@@ -156,7 +156,7 @@ export default function NetWorth() {
               className={`num text-[30px] font-bold leading-tight ${nw >= 0 ? 'text-ink' : 'text-terra'}`} />
             <div className="flex flex-col gap-1.5 mt-3">
               {barRow('100%', { background: 'hsl(var(--sage))', boxShadow: 'var(--neu-sm)' }, false,
-                <>Assets {tr > 0 ? '＋ owed ' : ''}<b className="num text-ink-mid">{fmt(gross, c)}</b></>)}
+                <>Assets <b className="num text-ink-mid">{fmt(gross, c)}</b></>)}
               {barRow(`${libPct}%`, { background: 'var(--sunken)', boxShadow: 'var(--neu-inset), inset 0 0 0 1px hsl(var(--line2))' }, true,
                 <>− Liabilities <b className="num text-ink-mid">{fmt(tl, c)}</b></>)}
               {barRow(`${nwPct}%`, { background: 'hsl(var(--denim))', boxShadow: 'var(--neu-sm)' }, false,
@@ -360,36 +360,6 @@ export default function NetWorth() {
                 <span className="font-semibold text-terra">Total Liabilities</span>
                 <Money amount={tl} currency={c} maxChars={12} className="font-semibold text-terra text-lg" />
               </div>
-
-              {/* v7.1 Money Map — receivables shown as a separate sub-list. */}
-              {tr > 0 && (
-                <>
-                  <div className="font-mono text-[0.6rem] tracking-widest text-ink-dim uppercase px-1 mt-3 mb-1.5">
-                    Owed to me · {fmt(tr, c)}
-                  </div>
-                  {debts.filter(d => d.direction === 'owed_to_me').map(d => {
-                    const { icon, label } = DEBT_TYPES[d.type] || DEBT_TYPES.other;
-                    const balBase = convert(d.currentBalance, d.currency, c, rates);
-                    return (
-                      <div key={d.id} className="bg-bg border border-denim/30 rounded-lg px-4 py-3 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span>{icon}</span>
-                          <div className="min-w-0">
-                            <div className="text-[0.84rem] font-semibold text-ink truncate">
-                              {d.name}{d.counterpartyName ? ` · ${d.counterpartyName}` : ''}
-                            </div>
-                            <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{label} · receivable</div>
-                          </div>
-                        </div>
-                        <div className="text-right min-w-0">
-                          <Money amount={balBase} currency={c} maxChars={11} className="font-semibold text-denim text-[0.9rem]" />
-                          {d.currency !== c && <div className="font-mono text-[0.58rem] text-ink-dim">{fmt(d.currentBalance, d.currency)}</div>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </>
-              )}
             </div>
           )}
         </div>

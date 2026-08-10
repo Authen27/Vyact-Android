@@ -38,6 +38,21 @@ function fromShareRow(r: ShareRow): SharedSplitShare {
   };
 }
 
+/** Resolve participant emails → display names for any that have an active Vyact
+ *  account (via the resolve_participant_names RPC). Returns a lowercase-email →
+ *  name map; emails with no account are simply absent. */
+export async function resolveParticipantNames(emails: string[]): Promise<Record<string, string>> {
+  const uniq = [...new Set(emails.map(e => e.toLowerCase().trim()).filter(Boolean))];
+  if (!uniq.length) return {};
+  const { data, error } = await sb().rpc('resolve_participant_names', { p_emails: uniq });
+  if (error) throw error;
+  const map: Record<string, string> = {};
+  for (const row of (data as { email: string; display_name: string | null }[])) {
+    if (row.display_name) map[row.email.toLowerCase()] = row.display_name;
+  }
+  return map;
+}
+
 function fromSplitRow(r: SplitRow, shares: ShareRow[]): SharedSplit {
   return {
     id: r.id, ownerUserId: r.owner_user_id, ownerHouseholdId: r.owner_household_id,
@@ -159,5 +174,51 @@ export async function closeSharedSplit(splitId: string): Promise<void> {
     .from('shared_splits')
     .update({ closed_at: new Date().toISOString() })
     .eq('id', splitId);
+  if (error) throw error;
+}
+
+// ── v10.16 — owner-side editing (RLS already permits owner UPDATE/INSERT/DELETE) ──
+
+/** Owner edits a split's own fields (only while nothing is paid — enforced by
+ *  the caller, which knows the paid state). `set_updated_at` trigger bumps updated_at. */
+export async function updateSharedSplit(
+  splitId: string,
+  fields: { description?: string; currency?: string; totalAmount?: number; txnType?: 'expense' | 'income'; date?: string },
+): Promise<void> {
+  const row: Record<string, unknown> = {};
+  if (fields.description !== undefined) row.description = fields.description;
+  if (fields.currency !== undefined) row.currency = fields.currency;
+  if (fields.totalAmount !== undefined) row.total_amount = fields.totalAmount;
+  if (fields.txnType !== undefined) row.txn_type = fields.txnType;
+  if (fields.date !== undefined) row.date = fields.date;
+  if (!Object.keys(row).length) return;
+  const { error } = await sb().from('shared_splits').update(row).eq('id', splitId);
+  if (error) throw error;
+}
+
+/** Owner changes an unpaid share's amount. */
+export async function updateShareAmount(shareId: string, share: number): Promise<void> {
+  const { error } = await sb().from('shared_split_shares').update({ share }).eq('id', shareId).eq('paid', false);
+  if (error) throw error;
+}
+
+/** Owner adds a participant to an existing split (only while nothing is paid). */
+export async function addShareToSplit(splitId: string, email: string, share: number): Promise<void> {
+  const { error } = await sb()
+    .from('shared_split_shares')
+    .insert({ split_id: splitId, email: email.toLowerCase().trim(), share });
+  if (error) throw error;
+}
+
+/** Owner removes an unpaid participant. */
+export async function removeShare(shareId: string): Promise<void> {
+  const { error } = await sb().from('shared_split_shares').delete().eq('id', shareId).eq('paid', false);
+  if (error) throw error;
+}
+
+/** Owner deletes a whole shared split (its shares cascade). Used when the
+ *  backing transaction is deleted. */
+export async function deleteSharedSplit(splitId: string): Promise<void> {
+  const { error } = await sb().from('shared_splits').delete().eq('id', splitId);
   if (error) throw error;
 }
