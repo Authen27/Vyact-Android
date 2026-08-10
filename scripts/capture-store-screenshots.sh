@@ -13,7 +13,14 @@ sleep 30
 i=1
 for route in dashboard transactions splits budgets networth reports; do
   adb shell am start -W -a android.intent.action.VIEW -d "vyact://open/${route}" "$PKG"
-  sleep 5
+  if [ "$route" = "reports" ]; then
+    # Reports renders a Recharts entrance animation that runs longer than the
+    # other routes' framer-motion transitions; 5s isn't consistently enough
+    # and captures a mid-animation (garbled) frame.
+    sleep 8
+  else
+    sleep 5
+  fi
   adb exec-out screencap -p > "store-shot-${i}-${route}.png"
   i=$((i+1))
 done
