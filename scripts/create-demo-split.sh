@@ -58,16 +58,33 @@ tap_by_text "Add Split" || exit 0
 sleep 5   # HalfSheet slide-up animation (framer-motion) needs more than 2s to settle
 
 echo "=== filling the form ==="
-tap_by_text "Amount" && type_text "120" || exit 0
+# Diagnostic run confirmed: this WebView's a11y dump does NOT expose
+# aria-label/placeholder for EMPTY inputs (only nodes with real visible text
+# show up), so empty fields can't be found by matching their own label/name.
+# Workarounds, confirmed against a captured on-screen text dump:
+#  - Amount has no adjacent label at all (just the "$" sign) but IS autofocused
+#    on open (SplitFormModal's AmountField autoFocus={!editing}) -> type directly.
+#  - Description DOES have a "Description" mono-label div right before its
+#    input -> --after finds the very next distinct element.
+#  - The empty participant-2 Name input has no adjacent label either, but sits
+#    at a known offset from "You": You(text) -> 0.00(You's share, has a value
+#    so it's visible) -> [Name input] -> [share input] -> "Remove participant".
+#    --skip 1 passes over the "0.00" node to land on the Name input.
+type_text "120"
 sleep 1
 
-tap_by_text "Description" && type_text "Dinner with Sam" || exit 0
+dump
+coords=$(node scripts/ui-find.mjs "$DUMP" --after "Description")
+if [ -z "$coords" ]; then echo "FAIL: could not locate the Description input"; node scripts/ui-find.mjs "$DUMP" --list; exit 0; fi
+echo "tapping Description field at ($coords)"; adb shell input tap $coords
+type_text "Dinner with Sam"
 sleep 1
 
-# Participant row 2's name input has no aria-label; its placeholder "Name" is
-# exposed as the accessible name (HTML-AAM: placeholder is the fallback
-# accessible-name source when no label/aria-label exists).
-tap_by_text "Name" && type_text "Sam" || exit 0
+dump
+coords=$(node scripts/ui-find.mjs "$DUMP" --after "You" --skip 1)
+if [ -z "$coords" ]; then echo "FAIL: could not locate participant Name input"; node scripts/ui-find.mjs "$DUMP" --list; exit 0; fi
+echo "tapping participant Name field at ($coords)"; adb shell input tap $coords
+type_text "Sam"
 sleep 1
 
 # Expense requires an account/payment-method chip; seed data includes a
@@ -79,7 +96,16 @@ adb shell input keyevent 4   # dismiss the on-screen keyboard before locating Sa
 sleep 1
 
 echo "=== saving ==="
-tap_by_text "Add split" || exit 0
+# NOT tap_by_text "Add split" — case-insensitive substring matching would
+# collide with the modal's own title ("Add Split") and the original page
+# trigger button ("+ Add Split"), both of which likely precede the actual
+# footer Save button ("Add split", lowercase s) in document order, risking a
+# tap on inert title text. "Cancel" sits immediately before it in the footer
+# (Cancel/Save button pair) and is unambiguous.
+dump
+coords=$(node scripts/ui-find.mjs "$DUMP" --after "Cancel")
+if [ -z "$coords" ]; then echo "FAIL: could not locate the Save/Add-split button"; node scripts/ui-find.mjs "$DUMP" --list; exit 0; fi
+echo "tapping Save button at ($coords)"; adb shell input tap $coords
 sleep 3   # modal close + list re-render
 
 echo "=== capturing populated Splits screenshot ==="
