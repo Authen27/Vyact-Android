@@ -10,7 +10,31 @@
 import { readFileSync } from 'node:fs';
 
 const [, , dumpPath, needleRaw, ...rest] = process.argv;
-if (!dumpPath || !needleRaw) {
+if (!dumpPath) {
+  console.error('usage: node ui-find.mjs <dump.xml> "<needle>" [--index N]');
+  console.error('       node ui-find.mjs <dump.xml> --list   (diagnostic: print every text/content-desc/hint on screen)');
+  process.exit(2);
+}
+
+if (needleRaw === '--list') {
+  const xml = readFileSync(dumpPath, 'utf8');
+  const nodeRe2 = /<node\b[^>]*>/g;
+  const attrRe2 = /(\w[\w:-]*)="([^"]*)"/g;
+  let mm;
+  const seen = new Set();
+  while ((mm = nodeRe2.exec(xml))) {
+    const tag = mm[0];
+    const attrs = {};
+    let aa;
+    attrRe2.lastIndex = 0;
+    while ((aa = attrRe2.exec(tag))) attrs[aa[1]] = aa[2];
+    const label = [attrs.text, attrs['content-desc'], attrs['hint']].filter(Boolean).join(' | ');
+    if (label && !seen.has(label)) { seen.add(label); console.log(label); }
+  }
+  process.exit(0);
+}
+
+if (!needleRaw) {
   console.error('usage: node ui-find.mjs <dump.xml> "<needle>" [--index N]');
   process.exit(2);
 }

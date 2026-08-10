@@ -18,14 +18,16 @@ dump() {
 }
 
 # tap_by_text <needle> [index] — dumps, finds the node, taps its center.
-# Returns 1 (and leaves $DUMP for inspection) if no match.
+# On failure, dumps every visible text/content-desc to logs (diagnostic —
+# tells us what's actually on screen instead of just "not found").
 tap_by_text() {
   local needle="$1" idx="${2:-0}"
   dump
   local coords
   coords=$(node scripts/ui-find.mjs "$DUMP" "$needle" --index "$idx")
   if [ -z "$coords" ]; then
-    echo "FAIL: could not find UI element matching '$needle'"
+    echo "FAIL: could not find UI element matching '$needle'. On-screen text right now:"
+    node scripts/ui-find.mjs "$DUMP" --list
     return 1
   fi
   echo "tapping '$needle' at ($coords)"
@@ -53,7 +55,7 @@ fi
 echo "OK: WebView accessibility tree is visible."
 
 tap_by_text "Add Split" || exit 0
-sleep 2   # HalfSheet slide-up animation
+sleep 5   # HalfSheet slide-up animation (framer-motion) needs more than 2s to settle
 
 echo "=== filling the form ==="
 tap_by_text "Amount" && type_text "120" || exit 0
