@@ -142,8 +142,10 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
     setInput('');
     setThinking(true);
 
-    // Privacy-safe usage metric (intent + sentiment only, no message text).
-    void logAiUsage({ householdId, text: question, surface: 'chat' });
+    // AI-P0 — telemetry is logged AFTER the turn so it can carry which engine
+    // answered and the outcome. Still privacy-safe: intent + sentiment + length
+    // + call metadata only, never the message text.
+    const startedAt = Date.now();
 
     try {
       // Ask Vyact assistant (spec §3). When the flag is OFF this whole branch is
@@ -154,6 +156,15 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
           profile, rates, baseCurrency: profile.baseCurrency,
         };
         const turn = runAssistant(question, ctx, assistantBackend);
+        // The deterministic hit-rate this records is the headline cost metric:
+        // every 'rules' row is an LLM call that was never paid for.
+        void logAiUsage({
+          householdId, text: question, surface: 'chat',
+          backend: assistantBackend.id,
+          tier: assistantBackend.id === 'rules' ? 't0' : 't1',
+          outcome: turn.clarify ? 'clarify' : turn.intentId === 'fallback' ? 'fallback' : 'ok',
+          latencyMs: Date.now() - startedAt,
+        });
         // Capture intents seed the EXISTING TransactionFormModal — no parallel path.
         if (turn.seed) openAddTxn(turn.seed);
         // #4 — human-like: a brief "thinking" pause, then stream word-by-word.
@@ -163,8 +174,16 @@ export default function Chat({ embedded = false }: { embedded?: boolean } = {}) 
         return;
       }
       const answer = await backend.ask(question, summary, history);
+      void logAiUsage({
+        householdId, text: question, surface: 'chat',
+        backend: 'llm', tier: 't1', outcome: 'ok', latencyMs: Date.now() - startedAt,
+      });
       setHistory(h => [...h, { role: 'assistant', content: answer }]);
     } catch (e) {
+      void logAiUsage({
+        householdId, text: question, surface: 'chat',
+        outcome: 'error', latencyMs: Date.now() - startedAt,
+      });
       setHistory(h => [...h, { role: 'assistant', content: `Error: ${(e as Error).message}` }]);
     } finally {
       setThinking(false);

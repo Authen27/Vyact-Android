@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v10.18.1`** (consumer)
+> **Current production version: `v10.19.0`** (consumer)
 > **Live URL:** https://vyact-twentyx.vercel.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
@@ -24,6 +24,48 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v10.19.0 — Agent-as-a-service: architecture + the LLM-spend gate *(2026-08-15)*
+
+Kicks off the **Vyact Agent** programme — extending Ask Vyact from a deterministic rules assistant
+into an **LLM agent that answers every user query**, playing a **Planner/Advisor** and an **Actions**
+role, across **Ask Vyact and WhatsApp**.
+
+> **The agent is NOT live in this release.** Ask Vyact remains 100% rules-based and on-device. This
+> release lands the *architecture of record* and the *measurement* that authorises the build.
+
+**Architecture — a service, not a second app.** One Supabase Edge gateway serves every client (PWA ·
+Android · future iOS · WhatsApp) through **channel adapters**; only presentation and policy differ per
+channel. Full design in the new [`vyact-agent-architecture.md`](../vyact-agent-architecture.md);
+binding rules recorded in `CLAUDE.md`:
+- **The LLM never computes money** — it selects tools and phrases their returns; stage 4 (`resolve`)
+  stays the sole source of every figure. This preserves the spec's "assistant phrases, services
+  compute" non-negotiable *and* is the anti-hallucination guarantee.
+- **Hybrid, not replacement** — rules answer first; the model runs only on a miss.
+- **Reads/writes separated** — planner holds read tools only; writes are **propose → user confirms**.
+- **All stored text is untrusted** (`transactions.description` now carries WhatsApp-ingested text).
+- **"Learning" = context + memory, never fine-tuning** (cross-tenant leakage risk).
+- **OpenAI-compatible providers** so a model swap is a DB row; the feature's **off state must be
+  provably byte-identical to today**.
+- Money the agent calls must live **server-side** (`_shared/` ports + Postgres RPCs) — WhatsApp has no
+  browser — guarded by **parity tests** against the client TS originals.
+
+**Shipped: the LLM-spend gate (spec §8/§10).** Adoption + cost measurement is the *precondition* for
+authorising LLM spend, and `ai_usage` previously recorded intent/sentiment/length only.
+- Migration `20260815120000_ai_usage_metering.sql` adds 12 nullable columns — `backend`, `tier`,
+  `provider`, `model`, `prompt_tokens`, `completion_tokens`, `cost_usd`, `latency_ms`, `outcome`,
+  `tool_calls`, `helpful`, `tap_depth` — with CHECK constraints.
+- `admin_ai_usage_summary()` gains `byModel`, `byProvider`, `byBackend`, `tokens30`, `cost7Usd`,
+  `cost30Usd`, `latencyMsP50/P95`, `fallbackRate30`, `errorRate30`, **`deterministicRate30`**,
+  `helpfulRate30`, `ratedCount30`. All six existing keys (incl. `segments`) are preserved, so the
+  admin Intelligence page is unaffected.
+- `aiUsage.ts` accepts the new optional telemetry; `Chat.tsx` now logs *after* the turn so it records
+  which engine answered, the outcome and latency.
+
+The headline metric is **`deterministicRate30`** — the share answered by rules alone. Every such row
+is an LLM call never paid for, so it directly sizes the future bill.
+
+**Privacy contract unchanged: no message content is stored, ever.**
 
 ## v10.18.1 — Splits: de-duplicate the split view *(2026-08-10)*
 
