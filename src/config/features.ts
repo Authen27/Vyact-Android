@@ -11,6 +11,10 @@
 // the swap point.
 
 export const FEATURES = {
+  dashboard: {
+    showPulse: false,
+    showDebtSummary: false,
+  },
   onboarding: {
     enabled: true,            // master switch — false disables the entire feature
     perHousehold: true,       // run onboarding per household (vs once per user)

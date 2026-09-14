@@ -6,12 +6,14 @@
 // trigger (boolean function on PlannerContext), and a templated text.
 // Engine evaluates all, sorts by (severity × priority), returns top 5.
 
-import type { Transaction, Budget, Goal, Debt, Asset, ExchangeRates, ProfileTypeKey } from '../types';
+import type { Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, Account, RecurringSchedule, ExchangeRates, ProfileTypeKey } from '../types';
 import {
-  monthlyData, totalAssets, totalLiabilities, liquidAssets,
-  totalMonthlyDebtPayment, reportableTxns, effectiveAmount,
+  monthlyData, totalAssets,
+  totalMonthlyDebtPayment, reportableTxns, effectiveAmount, budgetLinesForMonth, budgetWindow, resolveBudgetPeriod, spendByCategoryInRange,
 } from './calculations';
-import { fmt, getMonthKey, nowMonthKey } from './format';
+import { convert, fmt, getMonthKey, nowMonthKey } from './format';
+import { computeNetWorth, type NetWorthProjection } from './netWorth';
+import { getCat } from '../constants';
 
 export type Domain = 'income' | 'expenses' | 'investments' | 'debt' | 'tax';
 export type Severity = 'info' | 'watch' | 'critical';
@@ -24,6 +26,10 @@ export interface PlannerContext {
   assets: Asset[];
   baseCurrency: string;
   rates: ExchangeRates;
+  accounts?: Account[];
+  budgetAllocations?: BudgetAllocation[];
+  recurring?: RecurringSchedule[];
+  position?: NetWorthProjection;
   /** #8 — Planner advice adapts to the household type (personal/family/business).
    *  Defaults to 'personal' when unset. */
   householdType?: ProfileTypeKey;
@@ -42,6 +48,10 @@ export interface Recommendation {
   title: string;
   body: string;
   action?: { label: string; route: string };
+  issue?: string;
+  period?: string;
+  basis?: string;
+  relatedIssues?: { issue: string; period: string }[];
 }
 
 interface Rule {
@@ -80,15 +90,15 @@ const incomeRules: Rule[] = [
     domain: 'income',
     priority: 4,
     evaluate(ctx) {
-      const incomeTxns = ctx.transactions.filter(t => t.type === 'income' && !t.excluded);
+      const incomeTxns = reportableTxns(ctx.transactions).filter(t => t.type === 'income');
       const sources = new Set(incomeTxns.map(t => t.category));
-      if (sources.size > 1) return { match: false };
+      if (sources.size !== 1) return { match: false };
       return {
         match: true,
         rec: {
           severity: 'watch',
-          title: 'Single income source — concentrated risk',
-          body: 'All your income comes from one source. A redundancy or job loss leaves zero cash flow. Consider a 6-month emergency fund or a secondary income stream.',
+          title: 'Review income resilience',
+          body: 'Recorded income uses one category. This does not establish how many earners or employers you have; review your income sources and available buffer.',
           action: { label: 'Check net worth', route: '/networth' },
         },
       };
@@ -135,7 +145,8 @@ const expenseRules: Rule[] = [
         rec: {
           severity: pct > 0.95 ? 'critical' : 'watch',
           title: `You spend ${Math.round(pct * 100)}% of your income`,
-          body: `Healthy threshold is 70–80%. ${pct > 0.95 ? "You're spending nearly everything you earn — one shock and you're underwater." : 'Trim 5–10% in the top category to widen your margin.'}`,
+          body: 'Recorded spending is using most of the income recorded this month so far. Review remaining bills and the timing of your next income before changing your budget.',
+          issue: 'cash-flow', period: mk, basis: 'Income and reportable spending this month to date.',
           action: { label: 'View Budgets', route: '/budgets' },
         },
       };
@@ -147,20 +158,23 @@ const expenseRules: Rule[] = [
     priority: 4,
     evaluate(ctx) {
       const mk = nowMonthKey();
-      const txns = reportableTxns(ctx.transactions).filter(t => t.type === 'expense' && getMonthKey(t.date) === mk);
-      const spend: Record<string, number> = {};
-      for (const t of txns) spend[t.category] = (spend[t.category] || 0) + effectiveAmount(t, ctx.baseCurrency, ctx.rates);
-      const over = ctx.budgets.filter(b => {
-        const limitBase = b.limit * ((ctx.rates[b.currency] || 1) / (ctx.rates[ctx.baseCurrency] || 1));
-        return (spend[b.category ?? ''] || 0) > limitBase;
+      const over = budgetLinesForMonth(ctx.budgets, ctx.budgetAllocations ?? [], mk).filter(b => {
+        const range = b.scope && b.periodYear
+          ? resolveBudgetPeriod(b.scope, b.periodYear, b.periodMonth ?? 1)
+          : { periodStart: b.periodStart || budgetWindow(b).start, periodEnd: b.periodEnd || budgetWindow(b).end };
+        const spend = spendByCategoryInRange(ctx.transactions, range.periodStart, range.periodEnd, ctx.baseCurrency, ctx.rates);
+        return (spend[b.category ?? ''] || 0) > convert(b.limit, b.currency, ctx.baseCurrency, ctx.rates);
       });
       if (!over.length) return { match: false };
       return {
         match: true,
         rec: {
           severity: 'watch',
-          title: `${over.length} budget${over.length === 1 ? '' : 's'} exceeded this month`,
-          body: `${over.map(b => b.category).slice(0, 3).join(', ')}. Either raise the limits to be realistic, or rein in spending. Hidden over-spending is the #1 reason budgets fail.`,
+          title: `${over.length} category limit${over.length === 1 ? '' : 's'} exceeded`,
+          body: `${over.map(b => getCat(b.category ?? '').label).slice(0, 3).join(', ')}. Review spending against each budget's own period before adjusting a limit.`,
+          issue: 'budget-pressure', period: mk, basis: 'Active monthly and annual category allocations, each compared over its own budget period.',
+          relatedIssues: over.filter(b => b.scope !== 'annual' && (!b.period || b.period === 'monthly') && (!b.periodStart || b.periodStart === `${mk}-01`))
+            .map(b => ({ issue: `category:${b.category}`, period: mk })),
           action: { label: 'Review budgets', route: '/budgets' },
         },
       };
@@ -171,6 +185,16 @@ const expenseRules: Rule[] = [
     domain: 'expenses',
     priority: 3,
     evaluate(ctx) {
+      if (ctx.recurring) {
+        const schedules = ctx.recurring.filter(schedule => schedule.active && schedule.transactionTemplate.type === 'expense');
+        if (!schedules.length) return { match: false };
+        return { match: true, rec: {
+          severity: 'info', title: `${schedules.length} repeating expense${schedules.length === 1 ? '' : 's'} to review`,
+          body: 'Check the next due dates and approval settings. A schedule is a future instruction, not proof that its payment has posted.',
+          issue: 'recurring-commitments', period: nowMonthKey(), basis: 'Active expense schedules; no assumed monthly total.',
+          action: { label: 'Review upcoming bills', route: '/recurring' },
+        } };
+      }
       const recurring = ctx.transactions.filter(t => t.type === 'expense' && t.recurring && !t.excluded);
       if (recurring.length < 4) return { match: false };
       const monthly = recurring.reduce((s, t) => s + effectiveAmount(t, ctx.baseCurrency, ctx.rates), 0);
@@ -197,7 +221,8 @@ const investmentRules: Rule[] = [
       const mk = nowMonthKey();
       const { income } = monthlyData(ctx.transactions, mk, ctx.baseCurrency, ctx.rates);
       if (income <= 0) return { match: false };
-      const investments = ctx.transactions.filter(t => t.type === 'investment' && getMonthKey(t.date) === mk);
+      const investments = ctx.transactions.filter(t => t.type === 'investment' && !t.excluded && getMonthKey(t.date) === mk
+        && !(t.assetId && t.toAccountId && !t.accountId) && t.category !== 'investment_out');
       const invested = investments.reduce((s, t) => s + effectiveAmount(t, ctx.baseCurrency, ctx.rates), 0);
       const rate = invested / income;
       if (rate >= 0.10) return { match: false };
@@ -206,7 +231,7 @@ const investmentRules: Rule[] = [
         rec: {
           severity: rate < 0.03 ? 'watch' : 'info',
           title: `You invest ${Math.round(rate * 100)}% of monthly income`,
-          body: `Target for sustained wealth-building: 15–20%. Even an extra ${fmt(income * 0.02, ctx.baseCurrency)}/mo into an index fund compounds meaningfully over 10+ years.`,
+          body: 'This is the share of recorded income directed to investment purchases, not an expense. Review near-term bills, debt and your cash buffer before increasing contributions.',
           action: { label: 'View Net Worth', route: '/networth' },
         },
       };
@@ -217,12 +242,14 @@ const investmentRules: Rule[] = [
     domain: 'investments',
     priority: 3,
     evaluate(ctx) {
-      if (ctx.assets.length < 2) return { match: false };
-      const total = totalAssets(ctx.assets, ctx.baseCurrency, ctx.rates);
+      const projection = ctx.position ?? (ctx.accounts ? computeNetWorth({ assets: ctx.assets, accounts: ctx.accounts, debts: ctx.debts, transactions: ctx.transactions }, ctx.baseCurrency, ctx.rates) : null);
+      const rows = projection ? projection.assetRows.map(row => ({ type: row.account?.kind ?? row.asset?.type ?? 'other', value: row.value }))
+        : ctx.assets.map(asset => ({ type: asset.type, value: convert(asset.value, asset.currency, ctx.baseCurrency, ctx.rates) }));
+      if (rows.length < 2) return { match: false };
+      const total = projection?.totalAssets ?? totalAssets(ctx.assets, ctx.baseCurrency, ctx.rates);
       const byType: Record<string, number> = {};
-      for (const a of ctx.assets) {
-        const v = a.value * ((ctx.rates[a.currency] || 1) / (ctx.rates[ctx.baseCurrency] || 1));
-        byType[a.type] = (byType[a.type] || 0) + v;
+      for (const row of rows) {
+        byType[row.type] = (byType[row.type] || 0) + row.value;
       }
       const max = Math.max(...Object.values(byType));
       const pct = total > 0 ? max / total : 0;
@@ -232,8 +259,9 @@ const investmentRules: Rule[] = [
         match: true,
         rec: {
           severity: 'info',
-          title: `${Math.round(pct * 100)}% of your wealth is in ${dominant}`,
-          body: 'Concentration in a single asset class amplifies risk. Consider diversifying across cash, equities, real estate, and retirement accounts as your balance grows.',
+          title: `${Math.round(pct * 100)}% of recorded assets are in ${dominant.replace(/_/g, ' ')}`,
+          body: 'Review whether this mix suits the money you need soon and your longer-term plans. An asset type alone does not describe every risk within it.',
+          basis: 'Current account-aware asset values; linked assets are counted once.',
           action: { label: 'View Net Worth', route: '/networth' },
         },
       };
@@ -258,7 +286,8 @@ const debtRules: Rule[] = [
         rec: {
           severity: dti > 50 ? 'critical' : 'watch',
           title: `Debt-to-Income ratio: ${dti.toFixed(0)}%`,
-          body: `Healthy threshold is 36%. ${dti > 50 ? 'Above 50% means most income services debt — emergency-fund building stalls.' : 'Above 36% blocks most mortgage approvals and constrains flexibility.'}`,
+          body: 'Compare tracked minimum monthly payments with recorded income so far this month. The month may be incomplete; this is not a lender eligibility assessment.',
+          issue: 'debt-payments', period: mk, basis: 'Tracked monthly minimum debt payments divided by month-to-date recorded income.',
           action: { label: 'View Debts', route: '/debts' },
         },
       };
@@ -269,7 +298,7 @@ const debtRules: Rule[] = [
     domain: 'debt',
     priority: 4,
     evaluate(ctx) {
-      const cards = ctx.debts.filter(d => d.type === 'credit_card' && d.interestRate >= 18);
+      const cards = ctx.debts.filter(d => d.direction !== 'owed_to_me' && d.currentBalance > 0 && d.type === 'credit_card' && d.interestRate >= 18);
       if (!cards.length) return { match: false };
       const top = cards.sort((a, b) => b.interestRate - a.interestRate)[0];
       return {
@@ -277,7 +306,7 @@ const debtRules: Rule[] = [
         rec: {
           severity: 'watch',
           title: `${top.name} at ${top.interestRate}% APR`,
-          body: `High-APR cards compound expensively. Avalanche this debt before increasing investment contributions — the guaranteed return on debt payoff exceeds most market expectations.`,
+          body: 'Review the balance, interest rate and payment plan. Keep essential bills and minimum payments covered when comparing payoff priorities.',
           action: { label: 'View Debts', route: '/debts' },
         },
       };

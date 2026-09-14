@@ -18,12 +18,13 @@
 // vitest unit suite under `react/src/lib/__tests__/amortization.test.ts`).
 // ──────────────────────────────────────────────────────────────────────────
 
+import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/app';
 import { defaultSeed, seedWith, sampleCreditCardDebt } from '../fixtures/seed';
 
 const seed = seedWith({ debts: [sampleCreditCardDebt] });
 
-async function debtSnapshot(page: Parameters<typeof test>[0]['page'], debtId: string) {
+async function debtSnapshot(page: Page, debtId: string) {
   return page.evaluate((id: string) => {
     const win = window as typeof window & {
       __vt_store?: { getState(): { debts: Array<{ id: string; currentBalance: number; minimumPayment: number; remainingMonths?: number; paymentLog?: Array<{ partChoice?: string }> }> } };
@@ -53,7 +54,7 @@ test.describe('§7 DEBT-FC · Debt Payment Cascading', () => {
       await debts.goto();
       await page.getByRole('button', { name: /add first debt|add debt/i }).first().click();
 
-      const dialog = page.getByRole('dialog', { name: /add debt/i });
+      const dialog = page.getByRole('main', { name: /add debt/i });
       await expect(dialog).toBeVisible();
 
       await dialog.getByLabel('Name').fill('DEBT-FC-001 Loan');

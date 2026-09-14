@@ -6,6 +6,8 @@ import {
   recordConflict, recordFailed, pendingConflictCount, pendingFailedCount,
   clearConflicts, clearFailed, retryDeadLettered,
 } from '../sync/deadLetter';
+import * as outbox from '../sync/outbox';
+import { MemoryDriver } from '../sync/outbox';
 import type { QueueOp } from '../sync/types';
 import { ConcurrencyConflictError } from '../supabaseAdapter';
 
@@ -79,25 +81,31 @@ describe('sync/syncQueue — TD-26', () => {
 });
 
 describe('sync/deadLetter — TD-26', () => {
-  it('CON-UNIT-077 · record → count → clear on both buckets; retry drains back into the main queue and kicks a flush', () => {
+  // Audit F6: retryDeadLettered now drains into the DURABLE OUTBOX (async,
+  // owner-stamped) instead of the legacy localStorage queue, and the caller
+  // (HybridAdapter) owns kicking the flush. The contract pinned here is
+  // unchanged in substance: the bucket clears and each op re-enters the queue
+  // with retries reset and the concurrency precondition stripped (LWW retry).
+  it('CON-UNIT-077 · record → count → clear on both buckets; retry drains into the outbox owner-stamped', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {}); // recordFailed → unexpected → console.error
-    recordConflict(op({ ts: 9, expectedUpdatedAt: '2026-01-01T00:00:00Z' }));
+    outbox.setDriverForTests(new MemoryDriver());
+    recordConflict({ ...op({ ts: 9, expectedUpdatedAt: '2026-01-01T00:00:00Z' }), ownerUid: 'user-1' } as QueueOp);
     expect(pendingConflictCount()).toBe(1);
     recordFailed(op({ ts: 10 }), new Error('boom'));
     expect(pendingFailedCount()).toBe(1);
 
-    const flush = vi.fn();
-    retryDeadLettered('sync_conflicts', flush);
+    await retryDeadLettered('sync_conflicts', 'user-1');
     expect(pendingConflictCount()).toBe(0);
-    const requeued = readQueue().find(o => o.ts === 9);
+    const requeued = (await outbox.claimDue('w', Date.now(), 'user-1')).find(o => o.ts === 9);
     expect(requeued).toBeTruthy();
     expect(requeued!.expectedUpdatedAt).toBeUndefined();  // stripped → unconditional LWW retry
     expect(requeued!.attempts).toBe(0);
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(requeued!.ownerUid).toBe('user-1');            // stamped to the retrying user
 
     clearFailed();
     expect(pendingFailedCount()).toBe(0);
     clearConflicts();
+    outbox.setDriverForTests(null);
     vi.restoreAllMocks();
   });
 });

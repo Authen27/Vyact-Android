@@ -5,8 +5,11 @@ import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, convert, nowMonthKey } from '../lib/format';
 import Money from '../components/ui/Money';
-import { totalLiabilities, monthlyData } from '../lib/calculations';
-import { liveAssetRows, liveTotalAssets, type LiveAssetRow } from '../lib/accountBalance';
+import { monthlyData } from '../lib/calculations';
+import { computeNetWorth } from '../lib/netWorth';
+import { netWorthHistory, monthLabel, type NetWorthSnapshot } from '../lib/netWorthSnapshots';
+import { NetWorthHistoryChart } from '../components/charts/ReportCharts';
+import { computeAssetValue, type LiveAssetRow } from '../lib/accountBalance';
 import { ASSET_TYPES, DEBT_TYPES } from '../constants';
 import type { Asset, AccountKind } from '../types';
 
@@ -32,17 +35,22 @@ export default function NetWorth() {
   const toast        = useStore(s => s.toast);
   const openAddAsset  = useStore(s => s.openAddAsset);
   const openEditAsset = useStore(s => s.openEditAsset);
+  const snapshots    = useStore(s => s.netWorthSnapshots);
 
   const c = profile.baseCurrency;
 
-  // Money-Model — Net Worth's asset side is LIVE: every spendable account
-  // (cash/bank/investment) contributes its computed balance (opening + ledger
-  // folds + reconciliation offset), not a frozen linked-asset snapshot. See
-  // lib/accountBalance.ts `liveAssetRows` for the de-dup rule.
-  const liveRows = useMemo(
-    () => liveAssetRows(assets, accountsState, transactions, c, rates),
-    [assets, accountsState, transactions, c, rates],
+  // Audit F3 — Net Worth reads THE canonical projection, the same one the
+  // Dashboard and Ask Vyact read. Live account balances on both sides
+  // (asset accounts + liability accounts), unlinked legacy assets and
+  // unlinked debts folded in, receivables excluded, one FX path. The
+  // asset-side rows still drive the per-liquidity display below.
+  const projection = useMemo(
+    () => computeNetWorth(
+      { assets, accounts: accountsState, debts, transactions }, c, rates,
+    ),
+    [assets, accountsState, debts, transactions, c, rates],
   );
+  const liveRows = projection.assetRows;
 
   // Remind once per mount if any legacy (account-less) asset is stale (>30
   // days). Account-sourced rows are computed live from the ledger on every
@@ -64,15 +72,13 @@ export default function NetWorth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const ta  = liveTotalAssets(liveRows);
-  const tl  = totalLiabilities(debts, c, rates);
+  const ta  = projection.totalAssets;
+  const tl  = projection.totalLiabilities;
   // v10.17 — "Owed to me" (receivables) is deprecated from the UI. The rows
   // remain in the data model (reversible) but no longer count toward the
-  // displayed Net Worth. `totalReceivables` already excludes them from
-  // `totalAssets`/`totalLiabilities`, so dropping the addend here is the only
-  // change needed to keep every number honest.
-  const nw  = ta - tl;
-  const la  = liveRows.filter(r => r.liquidity === 'liquid').reduce((s, r) => s + r.value, 0);
+  // displayed Net Worth — the projection excludes them, so no addend here.
+  const nw  = projection.netWorth;
+  const la  = projection.liquidAssets;
   const { income, expense } = monthlyData(transactions, nowMonthKey(), c, rates);
   const monthlyIncome = income || 1;
 
@@ -97,8 +103,14 @@ export default function NetWorth() {
 
   async function del(id: string) {
     if (!confirm('Delete this asset?')) return;
-    await removeAsset(id);
-    toast('Asset removed', 'info');
+    // v10.26.0 (R4) — the store refuses an investment with buys recorded against
+    // it; that refusal must reach the user, not vanish as an unhandled rejection.
+    try {
+      await removeAsset(id);
+      toast('Asset removed', 'info');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
   }
 
   const byLiquidity = (liq: LiveAssetRow['liquidity']) =>
@@ -230,7 +242,9 @@ export default function NetWorth() {
       </div>
       </div>{/* /hero + ratios desktop grid */}
 
-      {/* Add/Edit form lives in <AssetFormModal /> mounted at App root */}
+      <NetWorthHistory snapshots={snapshots} currency={c} />
+
+      {/* Add/Edit is the /networth/assets/new and /networth/assets/:id/edit page (v10.28.0) */}
 
       {/* Balance sheet split — board D3: Assets (1fr) | Liabilities + Owed (1fr),
           each a neu card.
@@ -301,7 +315,9 @@ export default function NetWorth() {
                             )}
                             <div className="text-right min-w-0">
                               <Money amount={row.value} currency={c} maxChars={11} className="font-semibold text-sage text-[0.9rem]" />
-                              {a.currency !== c && <div className="font-mono text-[0.58rem] text-ink-dim">{fmt(a.value, a.currency)}</div>}
+                              {/* v10.26.0 (R4) — the live value in the asset's own currency;
+                                  for an investment `value` is only its opening value. */}
+                              {a.currency !== c && <div className="font-mono text-[0.58rem] text-ink-dim">{fmt(computeAssetValue(a, transactions, rates), a.currency)}</div>}
                             </div>
                             <div className="flex gap-1">
                               <button className="row-action" aria-label={`Edit ${a.name}`} title="Edit" onClick={() => openEdit(a)}>
@@ -365,5 +381,38 @@ export default function NetWorth() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * v10.30.0 — Net Worth over time, from RECORDED monthly snapshots only. A past
+ * position is never rebuilt from today's rows (standalone assets and debts keep
+ * only their current value), so the chart waits for two recorded months.
+ */
+function NetWorthHistory({ snapshots, currency }: { snapshots: NetWorthSnapshot[]; currency: string }) {
+  const history = netWorthHistory(snapshots, currency);
+  const first = history.points[0];
+  return (
+    <section aria-label="Net worth history" className="mt-4 min-w-0">
+      <Panel title="Net worth history" sub="Recorded once a month · never reconstructed" className="min-w-0">
+        {history.ready
+          ? <NetWorthHistoryChart data={history.points} currency={currency} />
+          : (
+            <p className="px-4 py-6 text-sm text-ink-mid">
+              {first
+                ? `Recording started ${monthLabel(first.month)}. The chart appears once a second month is recorded.`
+                : 'Your Net Worth is recorded the first time the household opens Vyact each month. The chart appears once two months are recorded.'}
+            </p>
+          )}
+        {history.otherCurrency > 0 && (
+          <p className="px-4 pb-2 text-xs text-ink-dim">
+            {history.otherCurrency} month{history.otherCurrency === 1 ? '' : 's'} recorded in a previous household currency {history.otherCurrency === 1 ? 'is' : 'are'} not shown.
+          </p>
+        )}
+        <p className="px-4 pb-4 text-xs text-ink-dim">
+          Each point is the Net Worth shown when the month was first recorded, in {currency}. Earlier months are never filled in.
+        </p>
+      </Panel>
+    </section>
   );
 }

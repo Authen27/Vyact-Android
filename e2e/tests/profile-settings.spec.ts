@@ -1,6 +1,7 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/app';
 
-async function storeTheme(page: Parameters<typeof test>[0]['page']) {
+async function storeTheme(page: Page) {
   return page.evaluate(() => {
     const win = window as typeof window & {
       __vt_store?: { getState(): { theme: string } };
@@ -12,11 +13,11 @@ async function storeTheme(page: Parameters<typeof test>[0]['page']) {
   });
 }
 
-function cardValueByLabel(page: Parameters<typeof test>[0]['page'], label: string) {
+function cardValueByLabel(page: Page, label: string) {
   return page.locator('div').filter({ has: page.getByText(label, { exact: true }) }).locator('span[title]').first();
 }
 
-function debtCard(page: Parameters<typeof test>[0]['page'], name: string) {
+function debtCard(page: Page, name: string) {
   return page.locator('div').filter({ has: page.getByText(name, { exact: true }) }).filter({ has: page.getByRole('button', { name: 'Edit' }) }).first();
 }
 
@@ -286,8 +287,15 @@ test.describe('§15 PROFILE-FC · Settings profile behavior', () => {
 
       await page.goto('/settings');
       await page.waitForURL('**/settings');
-      await page.getByDisplayValue('1').nth(1).fill('2');
-      await page.getByDisplayValue('2').nth(0).blur();
+      // `page.getByDisplayValue(...)` is a Testing Library API — Playwright has
+      // no such method, so this pair could never have run. It was also indexing
+      // `.nth(1)` into "every input currently showing 1", which is a different
+      // field whenever the rate table changes. The inputs now carry an
+      // accessible name (added in v10.22.3 — they had none at all), so the EUR
+      // row can be addressed directly.
+      const eurRate = page.getByLabel('EUR rate');
+      await eurRate.fill('2');
+      await eurRate.blur();
       await expect(page.getByText('EUR rate updated')).toBeVisible();
 
       await page.goto('/dashboard');

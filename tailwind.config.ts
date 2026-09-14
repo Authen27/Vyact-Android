@@ -7,6 +7,14 @@ const config: Config = {
   darkMode: 'class',
   theme: {
     extend: {
+      spacing: {
+        section: 'var(--space-section)',
+        'section-content': 'var(--space-section-content)',
+        group: 'var(--space-group)',
+        field: 'var(--space-field)',
+        related: 'var(--space-related)',
+        'surface-inset': 'var(--space-surface-inset)',
+      },
       colors: {
         bg:        'hsl(var(--bg))',
         bg2:       'hsl(var(--bg2))',

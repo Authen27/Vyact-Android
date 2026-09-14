@@ -5,7 +5,7 @@
 import ls from '../localStorageCompat';
 import { expected, unexpected } from '../faults';
 import type { QueueOp } from './types';
-import { readQueue, writeQueue } from './syncQueue';
+import { requeueOp } from './outbox';
 
 const CONFLICTS_KEY = 'sync_conflicts';
 const FAILED_KEY = 'sync_failed';
@@ -56,19 +56,26 @@ export function clearFailed(): void {
 /**
  * Re-queue a dead-lettered op for another flush attempt (R5). For conflict ops
  * we strip `expectedUpdatedAt` so the retry is an unconditional last-write-wins;
- * retry counters reset so it isn't instantly re-dropped. `flush` is invoked
- * after the bucket is drained back into the main queue.
+ * retry counters reset so it isn't instantly re-dropped. Audit F6: retries
+ * re-enter the durable outbox (owner-stamped to the retrying user); the caller
+ * kicks the flush once this resolves.
  */
-export function retryDeadLettered(bucket: 'sync_conflicts' | 'sync_failed', flush: () => void): void {
+export async function retryDeadLettered(
+  bucket: 'sync_conflicts' | 'sync_failed',
+  ownerUid: string | null,
+): Promise<void> {
   try {
-    const list = ls.readJson<QueueOp[]>(bucket) || [];
+    const list = ls.readJson<Array<QueueOp & { ownerUid?: string | null }>>(bucket) || [];
     if (!list.length) return;
-    const queue = readQueue();
+    const retained: typeof list = [];
     for (const op of list) {
-      queue.push({ ...op, attempts: 0, nextRetryAt: undefined, expectedUpdatedAt: undefined });
+      if (!ownerUid || op.ownerUid !== ownerUid) { retained.push(op); continue; }
+      await requeueOp(
+        { ...op, attempts: 0, nextRetryAt: undefined, expectedUpdatedAt: undefined },
+        ownerUid,
+      );
     }
-    writeQueue(queue);
-    ls.removeBoth(bucket);
-    flush();
+    if (retained.length) ls.setJson(bucket, retained);
+    else ls.removeBoth(bucket);
   } catch { /* storage error — non-fatal */ }
 }

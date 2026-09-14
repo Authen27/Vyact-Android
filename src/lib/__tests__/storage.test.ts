@@ -30,8 +30,8 @@ afterEach(() => {
   delete g.localStorage;
 });
 
-describe('TD-14 kvStore (CON-UNIT-057)', () => {
-  it('round-trips JSON via the localStorage fallback when IDB is unavailable', async () => {
+describe('TD-14 kvStore', () => {
+  it('CON-UNIT-057 · round-trips JSON via the localStorage fallback when IDB is unavailable', async () => {
     const { kvSet, kvGet, kvRemove } = await import('../kvStore');
     await kvSet('demo', { hello: 'world', n: 7 });
     expect(await kvGet<{ hello: string; n: number }>('demo')).toEqual({ hello: 'world', n: 7 });
@@ -40,8 +40,8 @@ describe('TD-14 kvStore (CON-UNIT-057)', () => {
   });
 });
 
-describe('TD-14 quota surfacing (CON-UNIT-058)', () => {
-  it('emits a quota-exceeded event when localStorage.setItem throws', async () => {
+describe('TD-14 quota surfacing', () => {
+  it('CON-UNIT-058 · emits a quota-exceeded event when localStorage.setItem throws', async () => {
     const ls = (await import('../localStorageCompat')).default;
     const events: unknown[] = [];
     const unsub = onStorageEvent(e => { events.push(e); });
@@ -78,8 +78,8 @@ describe('TD-14 quota surfacing (CON-UNIT-058)', () => {
   });
 });
 
-describe('TD-14 legacy key migration (CON-UNIT-059)', () => {
-  it('kvGet falls back to a legacy ff_ key when no vt_ value exists', async () => {
+describe('TD-14 legacy key migration', () => {
+  it('CON-UNIT-059 · kvGet falls back to a legacy ff_ key when no vt_ value exists', async () => {
     g.localStorage!.setItem('ff_legacy_demo', JSON.stringify({ from: 'ff' }));
     const { kvGet } = await import('../kvStore');
     expect(await kvGet<{ from: string }>('legacy_demo')).toEqual({ from: 'ff' });

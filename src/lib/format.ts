@@ -69,18 +69,53 @@ export const clamp = (v: number, min: number, max: number): number => Math.max(m
 export const getMonthKey = (d: string): string => d.slice(0, 7);
 export const nowMonthKey = (): string => today().slice(0, 7);
 
+/**
+ * When the MONEY MOVED: the transaction's own date, plus an explicit time if the
+ * user gave one.
+ *
+ * 🔴 `created_at` is deliberately NOT consulted here (v10.20.8). It used to be
+ * the second choice, ahead of the date, so any row without a `time` sorted by
+ * WHEN IT WAS WRITTEN rather than when it happened. That is wrong for a ledger
+ * and it broke "recent transactions" the moment rows started carrying
+ * `created_at`: three Salary rows written in one catch-up batch sorted above a
+ * transaction dated a month later, so July's salary appeared above September's
+ * rent.
+ *
+ * The bug was invisible while rows came from the local cache, which does not set
+ * `created_at`; clearing that cache in v10.20.7 made every row cloud-sourced and
+ * exposed it. `created_at` still breaks ties — see `compareTxnRecency`.
+ */
 export function transactionSortValue(txn: Pick<Transaction, 'date' | 'time' | 'created_at'>): number {
   const normalizedTime = normalizeTimeInput(txn.time);
   if (txn.date && normalizedTime) {
     const explicit = Date.parse(`${txn.date}T${normalizedTime}:00`);
     if (!Number.isNaN(explicit)) return explicit;
   }
-  if (txn.created_at) {
-    const created = Date.parse(txn.created_at);
-    if (!Number.isNaN(created)) return created;
-  }
   const fallback = Date.parse(`${txn.date}T00:00:00`);
   return Number.isNaN(fallback) ? 0 : fallback;
+}
+
+/**
+ * Newest-first ordering for a transaction list. Total and deterministic:
+ *
+ *   1. when the money moved (date, + time when given)
+ *   2. `created_at` — only ever a TIE-BREAK, so two rows on the same day appear
+ *      in the order they were entered
+ *   3. `id`, so the order can never depend on array position
+ *
+ * Every list that shows transactions newest-first must use this. Two call sites
+ * previously inlined step 1 and step 3 and skipped step 2.
+ */
+export function compareTxnRecency(
+  a: Pick<Transaction, 'id' | 'date' | 'time' | 'created_at'>,
+  b: Pick<Transaction, 'id' | 'date' | 'time' | 'created_at'>,
+): number {
+  const byMoment = transactionSortValue(b) - transactionSortValue(a);
+  if (byMoment) return byMoment;
+  const ac = a.created_at ? Date.parse(a.created_at) : NaN;
+  const bc = b.created_at ? Date.parse(b.created_at) : NaN;
+  if (!Number.isNaN(ac) && !Number.isNaN(bc) && bc !== ac) return bc - ac;
+  return b.id.localeCompare(a.id);
 }
 
 export function formatTime(time?: string): string {

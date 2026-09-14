@@ -44,15 +44,38 @@ export function analyzeSentiment(text: string): { sentiment: Sentiment; score: n
   return { sentiment, score: Number(score.toFixed(2)) };
 }
 
+// AI-P0 — engine/cost telemetry. These feed the spec §8/§10 LLM-spend gate
+// (fallback rate, thumbs-up rate, deterministic hit rate, tokens, cost, latency)
+// surfaced by `admin_ai_usage_summary()` on the admin Intelligence page.
+// STILL NO MESSAGE CONTENT — these are all metadata about the call.
+export interface AiUsageTelemetry {
+  /** Which engine answered. Every 'rules' row is an LLM call we did NOT pay for. */
+  backend?: 'rules' | 'llm';
+  /** t0 = rules fast-path · t1 = single agent + tools · t2 = supervisor. */
+  tier?: 't0' | 't1' | 't2';
+  provider?: string;            // 'openrouter' | 'groq' | 'vllm' | …
+  model?: string;               // e.g. 'llama-3.3-70b-instruct'
+  promptTokens?: number;
+  completionTokens?: number;
+  /** Computed server-side from tokens × the model rate; a client value is advisory only. */
+  costUsd?: number;
+  latencyMs?: number;
+  outcome?: 'ok' | 'error' | 'blocked' | 'fallback' | 'clarify';
+  toolCalls?: number;
+  /** §10 gate: thumbs up/down. Leave undefined until the user actually rates. */
+  helpful?: boolean;
+  tapDepth?: number;
+}
+
 /**
  * Log one AI interaction. Fire-and-forget; never throws into the caller.
- * Stores intent + sentiment + message length only — no message text.
+ * Stores intent + sentiment + length + call metadata only — NEVER message text.
  */
 export async function logAiUsage(opts: {
   householdId: string;
   text: string;
   surface?: string;
-}): Promise<void> {
+} & AiUsageTelemetry): Promise<void> {
   if (!isCloudEnabled() || !supabase) return;
   if (!opts.householdId || opts.householdId === 'local') return;
   try {
@@ -65,6 +88,19 @@ export async function logAiUsage(opts: {
       sentiment,
       sentiment_score: score,
       message_len: opts.text.length,
+      // ── AI-P0 telemetry (all nullable; omitted keys stay null) ──
+      backend: opts.backend ?? null,
+      tier: opts.tier ?? null,
+      provider: opts.provider ?? null,
+      model: opts.model ?? null,
+      prompt_tokens: opts.promptTokens ?? null,
+      completion_tokens: opts.completionTokens ?? null,
+      cost_usd: opts.costUsd ?? null,
+      latency_ms: opts.latencyMs ?? null,
+      outcome: opts.outcome ?? null,
+      tool_calls: opts.toolCalls ?? null,
+      helpful: opts.helpful ?? null,
+      tap_depth: opts.tapDepth ?? null,
       // user_id defaults to auth.uid() on the server.
     });
   } catch {

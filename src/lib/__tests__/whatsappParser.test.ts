@@ -118,3 +118,54 @@ describe('category id sets stay valid', () => {
     expect(cat && (EXPENSE_IDS.has(cat) || INCOME_IDS.has(cat))).toBe(true);
   });
 });
+
+// v10.25.0 (R3) — the payment mode a message names.
+import { detectPaymentMode, PAYMENT_MODE_IDS, PAYMENT_MODE_LABEL as WA_MODE_LABEL } from '../../../../supabase/functions/_shared/whatsapp-parser';
+import { PAYMENT_MODE_IDS as AGENT_MODE_IDS } from '../../../../supabase/functions/_shared/agent/types';
+import { PAYMENT_MODE_LABEL } from '../accountsView';
+
+describe('payment mode from a WhatsApp line', () => {
+  it.each([
+    ['450 lunch hdfc gpay', 'upi'],
+    ['1200 groceries paytm', 'upi'],
+    ['2000 shopping amex upi on card', 'upi_on_card'],
+    ['900 fuel hdfc debit card', 'debit_card'],
+    ['15000 rent neft hdfc', 'net_banking'],
+    ['5000 school fees cheque', 'cheque'],
+    ['799 netflix amex online', 'online'],
+    ['3200 dinner amex swiped', 'swipe'],
+    ['650 insurance auto debit', 'auto_debit'],
+  ])('%s → %s', (line, mode) => {
+    const r = parseWhatsAppMessage(line, ACCOUNTS, 'INR');
+    expect(r.ok && r.tx.payment_mode).toBe(mode);
+  });
+
+  it('a line that names no mode carries none — nothing is guessed', () => {
+    const r = parseWhatsAppMessage('850 groceries hdfc', ACCOUNTS, 'INR');
+    expect(r.ok && r.tx.payment_mode).toBeNull();
+  });
+
+  it('an investment never carries a mode, even when one is named', () => {
+    const r = parseWhatsAppMessage('invested 5000 via upi to vanguard', ACCOUNTS, 'INR');
+    expect(r.ok && r.tx.transaction_type).toBe('investment');
+    expect(r.ok && r.tx.payment_mode).toBeNull();
+  });
+
+  it('every detected mode is in the allowlist', () => {
+    for (const line of ['gpay', 'neft', 'cheque', 'online', 'swipe', 'debit card', 'upi on card', 'auto debit', 'standing instruction']) {
+      const mode = detectPaymentMode(line);
+      expect(mode && PAYMENT_MODE_IDS.has(mode)).toBe(true);
+    }
+  });
+});
+
+describe('payment mode sets — the client, WhatsApp and agent copies must not drift', () => {
+  const client = Object.keys(PAYMENT_MODE_LABEL).sort();
+  it('the WhatsApp parser accepts exactly the modes the app offers, with the same labels', () => {
+    expect([...PAYMENT_MODE_IDS].sort()).toEqual(client);
+    expect(WA_MODE_LABEL).toEqual(PAYMENT_MODE_LABEL);
+  });
+  it('the agent accepts exactly the modes the app offers', () => {
+    expect([...AGENT_MODE_IDS].sort()).toEqual(client);
+  });
+});

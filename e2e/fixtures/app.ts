@@ -22,7 +22,6 @@ import { TransactionsPage } from '../pages/TransactionsPage';
 import { TransactionFormModal } from '../pages/TransactionFormModal';
 import { NetWorthPage } from '../pages/NetWorthPage';
 import { BudgetsPage } from '../pages/BudgetsPage';
-import { GoalsPage } from '../pages/GoalsPage';
 import { DebtsPage } from '../pages/DebtsPage';
 import { AssetsPage } from '../pages/AssetsPage';
 import { HouseholdsPage } from '../pages/HouseholdsPage';
@@ -38,7 +37,6 @@ type AppFixtures = {
   txnModal: TransactionFormModal;
   networth: NetWorthPage;
   budgets: BudgetsPage;
-  goals: GoalsPage;
   debts: DebtsPage;
   assets: AssetsPage;
   households: HouseholdsPage;
@@ -81,7 +79,6 @@ export const test = base.extend<AppFixtures>({
   txnModal:     async ({ page }, use) => { await use(new TransactionFormModal(page)); },
   networth:     async ({ page }, use) => { await use(new NetWorthPage(page)); },
   budgets:      async ({ page }, use) => { await use(new BudgetsPage(page)); },
-  goals:        async ({ page }, use) => { await use(new GoalsPage(page)); },
   debts:        async ({ page }, use) => { await use(new DebtsPage(page)); },
   assets:       async ({ page }, use) => { await use(new AssetsPage(page)); },
   households:   async ({ page }, use) => { await use(new HouseholdsPage(page)); },

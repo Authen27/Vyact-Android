@@ -80,6 +80,13 @@ export default defineConfig({
           {
             // Supabase reads — network-first so users always see latest data
             // when online, but still get a cached fallback when offline.
+            //
+            // Audit S5 — the SW cache is URL-keyed and NOT auth-aware: two
+            // users on one browser share an origin, so a cached REST response
+            // could be served to the second user. Never cache an AUTHORISED
+            // request. The offline fallback still works for public reads
+            // (apikey-only, e.g. /learn content); household data is covered
+            // by the app's own outbox+cache layer, not the SW.
             urlPattern: ({ url }) => /supabase\.co\/rest\/v1\//.test(url.href),
             handler: 'NetworkFirst',
             options: {
@@ -87,6 +94,21 @@ export default defineConfig({
               networkTimeoutSeconds: 4,
               expiration: { maxEntries: 80, maxAgeSeconds: 60 * 60 * 24 },
               cacheableResponse: { statuses: [0, 200] },
+              matchOptions: {
+                // An authenticated request never matches a cache entry.
+                ignoreSearch: false,
+              },
+              plugins: [{
+                // Workbox plugin hook: only put UNauthenticated responses in
+                // the cache. An Authorization/apikey-bearing request (every
+                // household-scoped read) is fetched, returned, and never
+                // stored — so a second user on this browser cannot be served
+                // the first user's cached rows.
+                cacheWillUpdate: async ({ request, response }: { request: Request; response: Response }) => {
+                  if (request.headers.has('authorization')) return null;
+                  return response.status === 200 ? response : null;
+                },
+              }],
             },
           },
         ],

@@ -16,6 +16,7 @@ import { spendByCategoryInRange, cumulativeSpendSeries } from '../lib/calculatio
 import { getCat } from '../constants';
 import Money from '../components/ui/Money';
 import BudgetPaceChart from '../components/budgets/BudgetPaceChart';
+import { sortBudgetsForDisplay, sortByUtilisation } from '../lib/budgetOrdering';
 import type { Budget } from '../types';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -26,7 +27,17 @@ function budgetTitle(b: Budget): string {
   // legacy fallback
   return b.periodStart ? `${b.periodStart} → ${b.periodEnd}` : 'Budget';
 }
-function pct(spent: number, limit: number) { return limit > 0 ? Math.min((spent / limit) * 100, 100) : 0; }
+// v10.22.1 — the displayed percentage and the bar width are NOT the same number.
+//
+// `pct` used to clamp at 100 and feed both, so ₹350 spent against a ₹300 budget
+// read "100%" — identical to spending exactly ₹300. The magnitude of an overrun,
+// which is the one thing a budget card exists to tell you, was invisible; only
+// the terra tint distinguished the two.
+//
+// The clamp was there for the bar (a width over 100% overflows its trough), so
+// it stays — on the bar alone. The number now tells the truth.
+function pct(spent: number, limit: number) { return limit > 0 ? (spent / limit) * 100 : 0; }
+function barPct(p: number) { return Math.min(p, 100); }
 function barCls(p: number) { return p >= 100 ? 'bg-terra' : p >= 80 ? 'bg-honey' : 'bg-sage'; }
 
 export default function Budgets() {
@@ -47,23 +58,31 @@ export default function Budgets() {
 
   const cur = profile.baseCurrency;
 
+  // §4.2 — nudge: no budget for the CURRENT month.
+  const now = new Date();
+  const nowKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
+
   // per-budget resolved view: total, allocations with spend, overall spend.
-  const rows = useMemo(() => budgets.map(b => {
+  // v10.27.2 — budgets run current month → oldest (lib/budgetOrdering), and the
+  // categories inside each run most-utilised first. Display order only.
+  const rows = useMemo(() => sortBudgetsForDisplay(budgets, new Date()).map(b => {
     const start = b.periodStart || '';
     const end = b.periodEnd || '';
     const spendMap = start && end ? spendByCategoryInRange(transactions, start, end, cur, rates) : {};
-    const allocs = allocations.filter(a => a.budgetId === b.id).map(a => ({
-      ...a,
-      limitBase: convert(a.amount, b.currency, cur, rates),
-      spent: spendMap[a.category] || 0,
-    }));
+    const allocs = sortByUtilisation(
+      allocations.filter(a => a.budgetId === b.id).map(a => ({
+        ...a,
+        limitBase: convert(a.amount, b.currency, cur, rates),
+        spent: spendMap[a.category] || 0,
+      })),
+      a => ({ spent: a.spent, limit: a.limitBase, label: getCat(a.category).label }),
+    );
     const totalBase = convert(b.limit, b.currency, cur, rates);
     const spent = allocs.reduce((s, a) => s + a.spent, 0);
     return { b, allocs, totalBase, spent };
-  }), [budgets, allocations, transactions, cur, rates]);
-
-  // §4.2 — nudge: no budget for the CURRENT month.
-  const now = new Date();
+    // nowKey re-sorts when the month rolls over while the page is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [budgets, allocations, transactions, cur, rates, nowKey]);
   const hasCurrentMonth = budgets.some(b => b.scope === 'month'
     && b.periodYear === now.getFullYear() && b.periodMonth === now.getMonth() + 1);
   // Board C — the current-month budget drives the pace hero.
@@ -160,7 +179,7 @@ export default function Budgets() {
               <span>{MONTHS[now.getMonth()]} {daysInMonth}</span>
             </div>
             <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-              <div className={`h-full rounded-full chart-grow ${barCls(overall)}`} style={{ width: `${overall}%` }} />
+              <div className={`h-full rounded-full chart-grow ${barCls(overall)}`} style={{ width: `${barPct(overall)}%` }} />
             </div>
           </div>
         );
@@ -179,7 +198,7 @@ export default function Budgets() {
           {rows.map(({ b, allocs, totalBase, spent }) => {
             const overall = pct(spent, totalBase);
             return (
-              <div key={b.id} className="rounded-r3 p-4 min-w-0" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+              <div key={b.id} data-testid="budget-card" className="rounded-r3 p-4 min-w-0" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
                 <div className="flex items-start justify-between mb-2 gap-2">
                   <button onClick={() => navigate(`/transactions?budgetId=${b.id}`)}
                     className="font-semibold text-ink text-[0.95rem] truncate hover:text-coral text-left" title="View transactions">
@@ -202,7 +221,7 @@ export default function Budgets() {
                   <span className={overall >= 100 ? 'text-terra font-medium' : 'text-ink-dim'}>{Math.round(overall)}%</span>
                 </div>
                 <div className="h-2 bg-bg3 rounded-full mb-3 overflow-hidden">
-                  <div className={`h-full rounded-full chart-grow transition-all ${barCls(overall)}`} style={{ width: `${overall}%` }} />
+                  <div className={`h-full rounded-full chart-grow transition-all ${barCls(overall)}`} style={{ width: `${barPct(overall)}%` }} />
                 </div>
                 {/* allocations */}
                 {allocs.length === 0 ? (
@@ -222,7 +241,7 @@ export default function Budgets() {
                             </span>
                           </div>
                           <div className="h-1.5 bg-bg3 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full chart-grow ${barCls(ap)}`} style={{ width: `${ap}%`, animationDelay: `${ai * 60}ms` }} />
+                            <div className={`h-full rounded-full chart-grow ${barCls(ap)}`} style={{ width: `${barPct(ap)}%`, animationDelay: `${ai * 60}ms` }} />
                           </div>
                         </button>
                       );

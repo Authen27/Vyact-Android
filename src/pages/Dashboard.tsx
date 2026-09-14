@@ -14,11 +14,12 @@ import EmptyState from '../components/ui/EmptyState';
 import { CategoryDonut } from '../components/charts/DonutCharts';
 import {
   selectMonthlyData, selectPulse, selectInsights,
-  selectSpendByCategory, selectRecentTxns, selectTotalAssets, selectTotalLiabilities,
+  selectSpendByCategory, selectRecentTxns, selectNetWorth,
   selectMonthlyDebtPayment,
 } from '../lib/selectors';
 import { fmtShort, monthName, nowMonthKey, convert, today, formatDate } from '../lib/format';
-import { budgetLines, monthlyData } from '../lib/calculations';
+import { budgetLinesForMonth, monthlyData } from '../lib/calculations';
+import { sortByUtilisation } from '../lib/budgetOrdering';
 import Money from '../components/ui/Money';
 import AnimatedMoney from '../components/ui/AnimatedMoney';
 import StartingBaselineBand from '../components/dashboard/StartingBaselineBand';
@@ -26,7 +27,8 @@ import { Pip } from '../components/layout/Brand';
 import { motion } from 'framer-motion';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import { getCat } from '../constants';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Plus } from 'lucide-react';
+import { FEATURES } from '../config/features';
 import type { PulseScore } from '../lib/calculations';
 import type { Transaction } from '../types';
 
@@ -73,12 +75,23 @@ export default function Dashboard() {
   const recent = useStore(selectRecentTxns);
   const transactions = useStore(s => s.transactions);
 
-  const ta = useStore(selectTotalAssets);
-  const tl = useStore(selectTotalLiabilities);
+  // Audit F3 — the dashboard's Net Worth figures come from the ONE canonical
+  // projection (live account balances, liabilities, unlinked assets/debts),
+  // not the static assets/debts arrays that used to drift from NetWorth.tsx.
+  const netWorth = useStore(selectNetWorth);
+  const ta = netWorth.totalAssets;
+  const tl = netWorth.totalLiabilities;
   const monthlyDebtPmt = useStore(selectMonthlyDebtPayment);
   const dti = month.income > 0 ? (monthlyDebtPmt / month.income) * 100 : 0;
   // v9.1 §4 — flatten container budgets + allocations into per-category lines.
-  const budgetView = useMemo(() => budgetLines(budgets, budgetAllocations), [budgets, budgetAllocations]);
+  // Scoped to the CURRENT month. This used to call budgetLines() across every
+  // budget the household has ever had and then slice(0, 5), so the month you saw
+  // was whichever one happened to sort first in the array — in September it
+  // showed August. See budgetLinesForMonth.
+  const budgetView = useMemo(
+    () => budgetLinesForMonth(budgets, budgetAllocations, mk),
+    [budgets, budgetAllocations, mk],
+  );
 
   // A6 — inline 6-month net trend for the Cash Flow hero. Presentation only:
   // each point reuses the SAME `monthlyData` aggregate the dashboard already
@@ -146,18 +159,18 @@ export default function Dashboard() {
   }, [pace, month.income, month.expense, rate, baseCur]);
 
   return (
-    <div>
+    <div className="ui-pilot dashboard-stack" data-testid="dashboard-pilot">
       {/* Desktop page header (board D1) — mobile identity lives in MobileHeader. */}
-      <div className="hidden sm:flex mb-5 items-end justify-between gap-3">
+      <div className="hidden sm:flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="display-italic text-4xl text-ink mb-1.5">
             {(() => { const who = (profile.name || '').trim().split(/\s+/)[0]; return who ? `${greet()}, ${who}` : greet(); })()}
           </h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
+          <p className="ui-label">
             Family finance overview · {monthName(mk)}
           </p>
         </div>
-        <button className="btn-primary flex-shrink-0" onClick={() => openAddTxn()}>+ Add transaction</button>
+        <button className="btn-primary flex-shrink-0" onClick={() => openAddTxn()}><Plus size={16} aria-hidden />Add transaction</button>
       </div>
 
       {/* v9.7 — estimated starting picture from onboarding; clears as real data lands. */}
@@ -183,7 +196,7 @@ export default function Dashboard() {
           (Cash flow, then Net worth peeks in beside it); desktop shows the
           pair side by side. One instance of each hero: flex+snap collapses to
           a 2-col grid at sm. */}
-      <div className="flex sm:grid sm:grid-cols-2 gap-3.5 mb-3.5 overflow-x-auto sm:overflow-visible snap-x snap-mandatory sm:snap-none [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+      <div data-testid="dashboard-heroes" className="flex sm:grid sm:grid-cols-2 gap-section-content overflow-x-auto sm:overflow-visible snap-x snap-mandatory sm:snap-none [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
         <div className="snap-start shrink-0 basis-[86%] sm:basis-auto sm:shrink">
           <CashFlowHero series={netSeries} month={month} rate={rate} baseCur={baseCur} mk={mk} />
         </div>
@@ -193,16 +206,16 @@ export default function Dashboard() {
       </div>
 
       {/* Pulse + desktop metric tiles / insight spine-cards (board D1). */}
-      <div className="grid sm:grid-cols-[230px_1fr] gap-3.5 mb-3.5">
-        <div>
+      <div data-testid="dashboard-metrics" className={FEATURES.dashboard.showPulse ? 'grid sm:grid-cols-[230px_1fr] gap-section-content' : 'hidden sm:block'}>
+        {FEATURES.dashboard.showPulse && <div data-testid="dashboard-pulse">
           <PulseBlock pulse={pulse} />
           {/* #7 — actionable next step; board mobile keeps this as the one nudge line. */}
           <Link to={advice.to} className="sm:hidden mt-2 flex items-start gap-1.5 text-[0.76rem] text-ink-mid hover:text-ink px-1">
             <span>{advice.text}</span><ArrowRight size={13} className="text-coral shrink-0 mt-0.5" />
           </Link>
-        </div>
-        <div className="hidden sm:flex flex-col gap-3">
-          <div className="grid grid-cols-3 gap-3">
+        </div>}
+        <div className="hidden sm:flex flex-col gap-group">
+          <div className="grid grid-cols-3 gap-section-content">
             <MetricTile
               to={`/transactions?type=income&month=${mk}`} label={t('monthly-income')}
               spine="hsl(var(--sage))"
@@ -220,18 +233,17 @@ export default function Dashboard() {
             />
           </div>
           {insights.length > 0 && (
-            <motion.div className="grid grid-cols-2 gap-3" variants={staggerContainer} initial="hidden" animate="visible">
+            <motion.div className="grid grid-cols-2 gap-section-content" variants={staggerContainer} initial="hidden" animate="visible">
               {insights.slice(0, 4).map((c, i) => {
                 const tone = c.cls === 'chip-good' ? 'hsl(var(--sage))'
                            : c.cls === 'chip-warn' ? 'hsl(var(--honey))'
                            : c.cls === 'chip-alert' ? 'hsl(var(--terra))'
                            :                          'hsl(var(--denim))';
                 const body = (
-                  <div className="relative rounded-r2 py-3 pr-4 pl-[18px] h-full overflow-hidden"
-                    style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+                  <div className="relative py-2 pr-4 pl-[18px] h-full">
                     <span aria-hidden className="absolute left-0 top-[10px] bottom-[10px] w-[3px] rounded-r" style={{ background: tone }} />
                     <div className="text-[13px] font-medium text-ink leading-snug">{c.icon} {c.text}</div>
-                    {c.detail && <div className="text-[11.5px] text-ink-dim mt-0.5 leading-snug">{c.detail}</div>}
+                    {c.detail && <div className="text-[13px] text-ink-mid mt-2 leading-relaxed">{c.detail}</div>}
                   </div>
                 );
                 return (
@@ -246,7 +258,7 @@ export default function Dashboard() {
       </div>
 
       {/* Panels — board D1 third row is a 3-up (budgets · recent · spending). */}
-      <div className="grid lg:grid-cols-3 gap-3.5 mb-3.5">
+      <div data-testid="dashboard-details" className="grid lg:grid-cols-3 gap-x-section-content gap-y-section">
         <Panel
           title={t('budget-progress')}
           action={<Link to="/budgets" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">{t('view-all')}</Link>}
@@ -255,10 +267,17 @@ export default function Dashboard() {
             <EmptyState icon="◎" message="No budgets yet" />
           ) : (
             <div className="px-4 pt-2.5 pb-1.5">
-              {budgetView.slice(0, 5).map(b => {
+              {/* v10.27.2 — the five most-utilised categories, highest first
+                  (lib/budgetOrdering), not the first five the store returned. */}
+              {sortByUtilisation(
+                budgetView.map(line => ({
+                  b: line,
+                  limitBase: convert(line.limit, line.currency, baseCur, rates),
+                  spent: spend[line.category ?? ''] || 0,
+                })),
+                row => ({ spent: row.spent, limit: row.limitBase, label: getCat(row.b.category ?? '').label }),
+              ).slice(0, 5).map(({ b, limitBase, spent }) => {
                 const cat = getCat(b.category ?? '');
-                const limitBase = convert(b.limit, b.currency, baseCur, rates);
-                const spent = spend[b.category ?? ''] || 0;
                 const pct = limitBase > 0 ? Math.min(100, Math.round(spent / limitBase * 100)) : 0;
                 // Board trough bands: <80 good · 80–99 warn · 100 crit.
                 const color = pct >= 100 ? 'hsl(var(--terra))' : pct >= 80 ? 'hsl(var(--honey))' : 'hsl(var(--sage))';
@@ -299,7 +318,7 @@ export default function Dashboard() {
       </div>
 
       {/* Debt overview. */}
-      <div>
+      {FEATURES.dashboard.showDebtSummary && <div data-testid="dashboard-debt-summary">
         <Panel
           title={t('debt-overview')}
           action={<Link to="/debts" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">View →</Link>}
@@ -318,7 +337,7 @@ export default function Dashboard() {
             </div>
           )}
         </Panel>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -524,7 +543,7 @@ function MetricTile({ label, value, spine, to }: { label: string; value: ReactNo
     <Link to={to} className="relative block rounded-r2 px-4 py-3.5 overflow-hidden"
       style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
       <span aria-hidden className="absolute left-0 right-0 bottom-0 h-[3px]" style={{ background: spine }} />
-      <div className="font-mono text-[8.5px] tracking-[0.15em] uppercase text-ink-dim mb-2">{label}</div>
+      <div className="ui-label mb-related">{label}</div>
       <div className="num font-bold text-[22px] leading-tight text-ink">{value}</div>
     </Link>
   );
@@ -546,8 +565,8 @@ function RecentRow({ txn, onEdit }: { txn: Transaction; onEdit: (t: Transaction)
         {emoji}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="font-semibold text-[13.5px] text-ink truncate">{txn.description || catLabel}</div>
-        <div className="num text-[10px] text-ink-dim">{catLabel} · {when}</div>
+        <div className="font-medium text-[13.5px] text-ink truncate">{txn.description || catLabel}</div>
+        <div className="text-[12px] text-ink-mid">{catLabel} · {when}</div>
       </div>
       <span className={`num font-semibold text-[13.5px] flex-shrink-0 ${isIncome ? 'text-sage' : 'text-ink'}`}>
         {isExpense ? '−' : isIncome ? '+' : ''}<Money amount={txn.split?.isSplit ? txn.split.yourShare : txn.amount} currency={txn.currency} maxChars={9} />

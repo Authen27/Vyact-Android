@@ -10,7 +10,7 @@ import { useStore } from '../../store';
 import PullDownSheet from '../ui/PullDownSheet';
 import { Pip } from './Brand';
 import { NOTIF_META } from '../../lib/notifications';
-import { generateTransaction, advanceSchedule } from '../../lib/recurring';
+import { advanceSchedule } from '../../lib/recurring';
 import type { Notification, NotifActionSpec } from '../../types';
 
 const isToday = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
@@ -33,7 +33,7 @@ export default function NotificationSheet({ open, onClose }: { open: boolean; on
   const markRead = useStore(s => s.markNotificationRead);
   const markAllRead = useStore(s => s.markAllNotificationsRead);
   const dismiss = useStore(s => s.dismissNotification);
-  const upsertTransaction = useStore(s => s.upsertTransaction);
+  const approveRecurring = useStore(s => s.approveRecurring);
   const upsertRecurring = useStore(s => s.upsertRecurring);
   const openAddTxn = useStore(s => s.openAddTxn);
   const debts = useStore(s => s.debts);
@@ -61,11 +61,11 @@ export default function NotificationSheet({ open, onClose }: { open: boolean; on
       case 'approve': {   // recurring_due_confirm — post the txn, advance, stay open
         const s = recurringSchedules.find(x => x.id === n.scheduleId);
         if (s) {
-          void upsertTransaction(generateTransaction(s));
-          void upsertRecurring(advanceSchedule(s));
-          toast('Approved — transaction posted', 'success');
+          void approveRecurring(s.id, n.dueAt ?? s.nextDueDate).then(() => {
+            markRead(n.id);
+            toast('Approved — transaction posted', 'success');
+          }).catch(() => toast('Could not approve this bill. Please retry.', 'error'));
         }
-        markRead(n.id);
         return;
       }
       case 'skip': {      // skip this occurrence: advance without posting, stay open

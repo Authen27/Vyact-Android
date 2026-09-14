@@ -8,7 +8,6 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { pagesForTemplate } from '../../lib/templates';
-import { getMoneyMapMode } from '../../lib/featureFlags';
 import type { TemplateKey } from '../../lib/templates';
 
 export interface NavRoute { to: string; page: string; label: string; icon: LucideIcon }
@@ -48,7 +47,6 @@ export function sectionForPath(pathname: string): string {
 /** Same page-visibility rules the old Sidebar enforced (template + flags). */
 export function visiblePages(template: TemplateKey | undefined): Set<string> {
   const visible = pagesForTemplate(template);
-  ['recurring', 'insights', 'households', 'settings', 'help'].forEach(p => visible.add(p));
-  if (getMoneyMapMode() !== 'off') visible.add('accounts');
+  ['accounts', 'recurring', 'insights', 'households', 'settings', 'help'].forEach(p => visible.add(p));
   return visible;
 }

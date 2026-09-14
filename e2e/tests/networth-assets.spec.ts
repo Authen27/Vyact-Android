@@ -9,7 +9,7 @@ async function fillAssetModal(page: import('@playwright/test').Page, input: {
   currency?: string;
   note?: string;
 }) {
-  const dialog = page.getByRole('dialog', { name: /add asset|edit asset/i });
+  const dialog = page.getByRole('main', { name: /add asset|edit asset/i });
   await expect(dialog).toBeVisible();
   if (input.type !== undefined) await dialog.getByLabel('Type').selectOption(input.type);
   if (input.liquidity !== undefined) await dialog.getByLabel('Liquidity').selectOption(input.liquidity);
@@ -28,7 +28,7 @@ async function fillDebtModal(page: import('@playwright/test').Page, input: {
   interestRate?: number;
   minimumPayment?: number;
 }) {
-  const dialog = page.getByRole('dialog', { name: /add debt|edit debt/i });
+  const dialog = page.getByRole('main', { name: /add debt|edit debt/i });
   await expect(dialog).toBeVisible();
   if (input.type !== undefined) await dialog.getByLabel('Type').selectOption(input.type);
   if (input.name !== undefined) await dialog.getByLabel('Name').fill(input.name);

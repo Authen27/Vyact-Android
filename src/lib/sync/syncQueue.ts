@@ -1,5 +1,8 @@
-// Vyact — the optimistic write queue: persistence + op-validity (TD-26
-// extraction from hybridAdapter.ts). Storage key and semantics are unchanged.
+// Vyact — the LEGACY localStorage queue (TD-26 extraction from
+// hybridAdapter.ts). Audit F6 moved durability to the IndexedDB outbox
+// (./outbox.ts): this module remains for (a) the one-time legacy migration the
+// outbox performs on first use, (b) the shared isQueueOpIdValid predicate, and
+// (c) its pinned unit tests. Do NOT enqueue here — use outbox.enqueueOp.
 import ls from '../localStorageCompat';
 import { unexpected } from '../faults';
 import type { QueueOp } from './types';

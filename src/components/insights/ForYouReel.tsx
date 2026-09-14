@@ -7,9 +7,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { X, ArrowRight, BookOpen, ChevronUp, Share2 } from 'lucide-react';
+import { X, ArrowRight, BookOpen, ChevronUp } from 'lucide-react';
 import type { FeedCard } from '../../lib/insightsFeed';
-import { shareEvergreen, shareApp } from '../../lib/share';
+import EstimatedTag from '../ui/EstimatedTag';
 
 interface Props {
   cards: FeedCard[];
@@ -77,7 +77,7 @@ export default function ForYouReel({ cards, startIndex = 0, onClose, onOpenLearn
       <button
         onClick={onClose}
         aria-label="Close insights"
-        className="absolute top-4 right-4 z-20 w-10 h-10 rounded-full bg-ink/10 hover:bg-ink/20 text-ink flex items-center justify-center backdrop-blur-sm"
+        className="absolute top-4 right-4 z-20 w-11 h-11 rounded-full bg-ink/10 hover:bg-ink/20 text-ink flex items-center justify-center backdrop-blur-sm"
       >
         <X size={20} />
       </button>
@@ -98,8 +98,11 @@ export default function ForYouReel({ cards, startIndex = 0, onClose, onOpenLearn
         {cards.map((c, i) => (
           <section key={c.id} className={`h-full w-full snap-start flex flex-col items-center justify-center px-7 text-center bg-gradient-to-b ${toneBg[c.tone]}`}>
             <div className="text-5xl mb-5" aria-hidden>{c.emoji}</div>
-            <div className="num text-[2.4rem] leading-tight font-semibold text-ink max-w-md">{c.big}</div>
+            {c.period && <p className="text-sm text-ink-dim mb-2">{c.period}</p>}
+            {c.estimated && <EstimatedTag confidence="estimated" title="Projection or unconfirmed inputs. Review the calculation basis." className="mb-3" />}
+            <div className="text-2xl leading-tight font-medium text-ink max-w-md [overflow-wrap:anywhere]">{c.big}</div>
             <p className="text-[1rem] text-ink-mid mt-4 max-w-sm leading-relaxed">{c.line}</p>
+            {c.basis && <p className="text-xs text-ink-dim mt-3 max-w-md leading-relaxed">{c.basis}</p>}
 
             <div className="flex items-center gap-2.5 mt-7">
               {(c.to || c.learnId) && (
@@ -110,15 +113,6 @@ export default function ForYouReel({ cards, startIndex = 0, onClose, onOpenLearn
                   {c.learnId ? <><BookOpen size={15} /> Read the idea</> : <>See the detail <ArrowRight size={15} /></>}
                 </button>
               )}
-              {/* Share — a lesson card shares its public page; a private insight
-                  promotes the app with NO personal numbers (privacy). */}
-              <button
-                onClick={() => { if (c.learnId) shareEvergreen(c.learnId, c.big); else shareApp(); }}
-                aria-label="Share"
-                className="w-11 h-11 rounded-full border border-line bg-bg2 text-ink-mid hover:text-coral hover:border-coral/40 flex items-center justify-center"
-              >
-                <Share2 size={17} />
-              </button>
             </div>
 
             {i === 0 && cards.length > 1 && (

@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import HalfSheet from '../ui/HalfSheet';
-import Chip, { CategoryChip } from '../ui/Chip';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import FormPage from '../ui/FormPage';
+import Chip from '../ui/Chip';
+import { Field, Select } from '../ui/Input';
+import SegmentedControl from '../ui/SegmentedControl';
+import CategoryPicker from '../ui/CategoryPicker';
 import { AmountField } from '../ui/NumericKeypad';
 import { useStore } from '../../store';
 import { normalizeTimeInput, nowTime, uid, today } from '../../lib/format';
@@ -14,14 +17,18 @@ import { buildAccounts, buildAccountsFromStore, resolveAccount, ACCOUNT_REQUIRED
 import TimeDial from '../ui/TimeDial';
 import { getMoneyMapMode } from '../../lib/featureFlags';
 import { FEATURES } from '../../config/features';
-import type { Transaction, TxnType, Recurrence, PartPaymentChoice } from '../../types';
+import { accountValueOf } from '../../lib/accountBalance';
+import { PAYMENT_MODE_LABEL } from '../../lib/accountsView';
+import type { Transaction, TxnType, Recurrence, PartPaymentChoice, PaymentMode } from '../../types';
 
 interface Props {
-  /** Optional override props — when omitted, the modal binds to the global store
-   *  state (txnModalOpen / editingTxn / closeTxnModal). Used at App root. */
+  /** v10.28.0 — rendered as the /transactions/new and /transactions/:id/edit
+   *  pages (pages/FormPages.tsx); a routed page is always open. */
   open?: boolean;
   initial?: Transaction | null;
-  onClose?: () => void;
+  /** v7.4.5 — partial values from Ask Vyact or a notification (router state). */
+  seed?: Partial<Transaction> | null;
+  onClose: () => void;
 }
 
 interface FormState {
@@ -37,6 +44,8 @@ interface FormState {
   paymentMethod: string;
   // v7.0.3 — destination account for transfer + investment tracks.
   paymentMethodTo: string;
+  /** v10.25.0 (R3) — how the paying account was used; '' = not stated. */
+  paymentMode: PaymentMode | '';
   // v9 §4.3 — investment direction ('added' = money in, 'withdrew' = money out).
   direction: 'added' | 'withdrew';
   // v9 §4.1 — the loan an EMI pays (required when category = loan_emi).
@@ -70,13 +79,6 @@ const TYPE_CHIPS: { type: TxnType; label: string; emoji: string }[] = [
   { type: 'investment', label: 'Investment', emoji: '📈' },
 ];
 
-const acctEmoji = (kind?: string) =>
-  kind === 'card' ? '💳' : kind === 'bank' ? '🏦' : kind === 'investment' ? '📈' : '💵';
-
-/* Board M4 member chips are initials ("MR · You"), not full names. */
-const memberInitials = (name: string) =>
-  name.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
-
 const blank = (currency: string, memberId = '', type: TxnType = 'expense'): FormState => ({
   type,
   amount: '',
@@ -89,6 +91,7 @@ const blank = (currency: string, memberId = '', type: TxnType = 'expense'): Form
   memberId,
   paymentMethod: '',
   paymentMethodTo: '',
+  paymentMode: '',
   direction: 'added',
   linkedDebtId: '',
   partPaymentChoice: 'reduce_tenure',
@@ -134,20 +137,17 @@ export default function TransactionFormModal(props: Props) {
   const assets            = useStore(s => s.assets);
   const debts             = useStore(s => s.debts);
   const accountsState     = useStore(s => s.accounts);
-  const transactions      = useStore(s => s.transactions);
   const upsertTransaction = useStore(s => s.upsertTransaction);
+  const recordLoanPayment = useStore(s => s.recordLoanPayment);
   const removeTransaction = useStore(s => s.removeTransaction);
   const toast             = useStore(s => s.toast);
-  const openAddAccount    = useStore(s => s.openAddAccount);
+  // v10.26.0 (R4) — investments live in Net Worth; the empty state adds one there.
+  const openAddAsset      = useStore(s => s.openAddAsset);
 
-  // Bind to the global store unless explicit props are passed
-  const storeOpen     = useStore(s => s.txnModalOpen);
-  const storeInitial  = useStore(s => s.editingTxn);
-  const storeSeed     = useStore(s => s.seedTxn);
-  const storeClose    = useStore(s => s.closeTxnModal);
-  const open          = props.open    ?? storeOpen;
-  const initial       = props.initial ?? storeInitial;
-  const onClose       = props.onClose ?? storeClose;
+  const open          = props.open ?? true;
+  const initial       = props.initial ?? null;
+  const seedProp      = props.seed ?? null;
+  const onClose       = props.onClose;
 
   const defaultMemberId = useMemo(() => {
     if (session?.user?.id) {
@@ -163,7 +163,7 @@ export default function TransactionFormModal(props: Props) {
 
   const [form, setForm]    = useState<FormState>(blank(profile.baseCurrency, defaultMemberId));
   const [saving, setSaving] = useState(false);
-  const [showAllCats, setShowAllCats] = useState(false);   // board M4 "⌕ More" category tile
+  const loanOperation = useRef<string | null>(null);
   const [showTimeDial, setShowTimeDial] = useState(false); // v10.17 — circular 24h picker panel
 
   // Linked spending accounts. With `money_map` flag on (or in shadow) and
@@ -189,10 +189,11 @@ export default function TransactionFormModal(props: Props) {
     [useFirstClassAccounts, accountsState, assets, debts, form.paymentMethod],
   );
   // v9 §4.3 — the Investment form's destination picker shows ONLY
-  // kind='investment' accounts (value = the account uuid).
-  const investmentAccounts = useMemo(
-    () => accountsState.filter(a => a.kind === 'investment' && !a.isArchived),
-    [accountsState],
+  // type='investment' ASSETS (value = the asset id) — v10.26.0 (R4): an
+  // investment moves money between an account and a Net Worth asset.
+  const investmentAssets = useMemo(
+    () => assets.filter(a => a.type === 'investment'),
+    [assets],
   );
   const accountRequired = ACCOUNT_REQUIRED_TYPES.includes(
     form.type as (typeof ACCOUNT_REQUIRED_TYPES)[number],
@@ -200,6 +201,9 @@ export default function TransactionFormModal(props: Props) {
   const isTransfer   = form.type === 'transfer';
   const isInvestment = form.type === 'investment';
   const isIncome     = form.type === 'income';
+  // Context-matched Help & Guide entry for the info icon — transfer/investment
+  // have their own FAQ; expense and income share one ("expense-income").
+  const helpTopicId = isTransfer ? 'transfer' : isInvestment ? 'investment' : 'expense-income';
   const needsToAccount = isTransfer || isInvestment;
   // v10.17 §2 — "Took money out" reorients the pickers: the FROM slot shows
   // the investment account (bound to `paymentMethodTo`) and the destination
@@ -210,9 +214,38 @@ export default function TransactionFormModal(props: Props) {
   // income lands in one, transfer/investment have both sides.
   const accountLabel = needsToAccount ? 'From account' : isIncome ? 'To account' : 'Account';
 
+  // v10.25.0 (R3) — the account the money is paid with (income: paid into) and
+  // the modes it is used with. Only those modes are offered; investments carry none.
+  const payingAccount = useMemo(
+    () => (isInvestment || !form.paymentMethod) ? undefined
+      : accountsState.find(a => a.id === form.paymentMethod || accountValueOf(a) === form.paymentMethod),
+    [isInvestment, form.paymentMethod, accountsState],
+  );
+  const payingModes = useMemo(() => payingAccount?.paymentModes ?? [], [payingAccount]);
+  // A new transaction preselects the account's first mode. An edit never gains a
+  // mode the user did not choose (honest data) — it only loses one the newly
+  // picked account does not use.
+  //
+  // v10.27.0 — the mode is now a dropdown with "Not specified". Preselect only
+  // when the paying ACCOUNT changes; re-applying it whenever the mode is empty
+  // snapped "Not specified" straight back to the first mode.
+  const payingId = payingAccount?.id;
+  const lastPayingId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!open) { lastPayingId.current = undefined; return; }
+    const accountChanged = lastPayingId.current !== payingId;
+    lastPayingId.current = payingId;
+    if (payingModes.length === 0) return;
+    if (form.paymentMode && !payingModes.includes(form.paymentMode)) {
+      setForm(f => ({ ...f, paymentMode: initial ? '' : payingModes[0] }));
+    } else if (accountChanged && !initial && !form.paymentMode) {
+      setForm(f => ({ ...f, paymentMode: payingModes[0] }));
+    }
+  }, [open, initial, payingId, payingModes, form.paymentMode]);
+
   useEffect(() => {
     if (!open) return;
-    setShowAllCats(false);
+    loanOperation.current = null;
     setShowTimeDial(false);
     if (initial) {
       const initialTime = deriveInitialTime(initial);
@@ -226,9 +259,19 @@ export default function TransactionFormModal(props: Props) {
         category: initial.category,
         note: initial.note ?? '',
         memberId: initial.memberId ?? defaultMemberId,
-        paymentMethod: initial.paymentMethod ?? initial.accountId ?? '',
-        paymentMethodTo: initial.toAccountId ?? initial.linkedToAssetId ?? '',
-        direction: 'added',   // edits show the stored from/to as-is
+        // v10.26.0 (R4) — an asset-based investment binds the asset to
+        // paymentMethodTo and the bank/cash side to paymentMethod (encoded like
+        // the picker's chips); a withdrawal reopens on "Took money out".
+        paymentMethod: initial.assetId
+          ? (initial.paymentMethod ?? (() => {
+              const id = initial.accountId ?? initial.toAccountId;
+              const acc = accountsState.find(a => a.id === id);
+              return acc ? accountValueOf(acc) : (id ?? '');
+            })())
+          : (initial.paymentMethod ?? initial.accountId ?? ''),
+        paymentMethodTo: initial.assetId ?? initial.toAccountId ?? initial.linkedToAssetId ?? '',
+        paymentMode: initial.paymentMode ?? '',
+        direction: initial.assetId && initial.toAccountId && !initial.accountId ? 'withdrew' : 'added',
         linkedDebtId: initial.emiSplit?.debt_id ?? initial.linkedDebtId ?? '',
         partPaymentChoice: initial.emiSplit?.partPaymentChoice ?? 'reduce_tenure',
         splitAcrossAccounts: Boolean(initial.accountSplits && initial.accountSplits.length),
@@ -237,9 +280,9 @@ export default function TransactionFormModal(props: Props) {
         excluded: Boolean(initial.excluded),
       });
     } else {
-      // v7.4.5 — `storeSeed` (from Ask Vyact's two-tap flow, or a notification
+      // v7.4.5 — `seed` (from Ask Vyact's two-tap flow, or a notification
       // deep-action like "Record payment") pre-fills the form and names a track.
-      const seed = storeSeed ?? undefined;
+      const seed = seedProp ?? undefined;
       const initialType: TxnType = (seed?.type as TxnType) ?? 'expense';
       const base = blank(profile.baseCurrency, defaultMemberId, initialType);
       const blankForm: FormState = {
@@ -254,7 +297,14 @@ export default function TransactionFormModal(props: Props) {
       };
       setForm(blankForm);
     }
-  }, [open, initial, storeSeed, profile.baseCurrency, defaultMemberId]);
+    // Audit 6.4 — hydrate ONLY on the open event / the row being edited. The
+    // dependency list deliberately EXCLUDES the live `profile.baseCurrency` and
+    // `defaultMemberId` values: a background sync that refreshed those used to
+    // re-run this effect and wipe an in-progress draft. The base-currency /
+    // default-member values are CAPTURED at open (read once, above) and the
+    // form is an explicit editor keyed on what it's editing, not a live mirror.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initial?.id, seedProp]);
 
   function setType(type: TxnType) {
     setForm(f => ({ ...f, type, category: DEFAULT_CAT_BY_TYPE[type] }));
@@ -269,23 +319,6 @@ export default function TransactionFormModal(props: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.type]);
-
-  // Categories ordered recents-first (the 8 most recently-used for this track,
-  // then the rest of the type-scoped set) so the common picks lead.
-  const orderedCats = useMemo(() => {
-    if (isTransfer || isInvestment) return [] as typeof cats;
-    const sorted = [...transactions].sort((a, b) => b.date.localeCompare(a.date));
-    const recent: string[] = [];
-    for (const t of sorted) {
-      if (t.type !== form.type || !t.category) continue;
-      if (!recent.includes(t.category)) recent.push(t.category);
-      if (recent.length >= 8) break;
-    }
-    const byId = new Map(cats.map(c => [c.id, c] as const));
-    const head = recent.map(id => byId.get(id)).filter(Boolean) as typeof cats;
-    const tail = cats.filter(c => !recent.includes(c.id));
-    return [...head, ...tail];
-  }, [transactions, form.type, cats, isTransfer, isInvestment]);
 
   // Reset for a rapid "Save & add another" — keep the track, currency, member,
   // date and account so the next entry only needs an amount.
@@ -361,10 +394,23 @@ export default function TransactionFormModal(props: Props) {
         category: (isTransfer || isInvestment) ? '' : form.category,
         note: form.note.trim() || undefined,
         memberId: form.memberId,
-        paymentMethod: fromEncoded || undefined,
+        // v10.26.0 (R4) — an investment names the asset plus ONE account: the
+        // paying account for a buy, the receiving account for a withdrawal.
+        paymentMethod: isInvestment ? (isWithdraw ? undefined : form.paymentMethod || undefined) : (fromEncoded || undefined),
+        ...(isInvestment ? {
+          assetId: form.paymentMethodTo || undefined,
+          accountId: undefined,
+          toAccountId: isWithdraw ? form.paymentMethod || undefined : undefined,
+        } : {}),
+        // v10.25.0 — undefined when the account's modes are unknown, so an edit
+        // never erases a stored mode it could not display.
+        // An investment only ever CLEARS a mode it already had — sending null on
+        // every investment would name a column a lagging schema does not have yet.
+        paymentMode: isInvestment ? (initial?.paymentMode ? null : undefined)
+          : payingModes.length ? (form.paymentMode || null) : undefined,
         recurring: form.recurring || undefined,
         excluded: form.excluded || undefined,
-        linkedToAssetId: needsToAccount ? toEncoded || undefined : initial?.linkedToAssetId,
+        linkedToAssetId: isInvestment ? undefined : needsToAccount ? toEncoded || undefined : initial?.linkedToAssetId,
         linkedDebtId: (form.category === 'loan_emi' ? form.linkedDebtId : undefined) ?? initial?.linkedDebtId,
         // v9.4.2 — thread part-payment choice so the loan_emi path can re-amortise.
         // Stored transiently on the emiSplit object; the store reads it on create.
@@ -372,7 +418,36 @@ export default function TransactionFormModal(props: Props) {
           _partPaymentChoice: form.partPaymentChoice,
         } : {}),
         linkedTxnId:   initial?.linkedTxnId,
+        // Audit F7 — carry the read version through the edit so the store can
+        // pass it as the optimistic-concurrency precondition. Without this the
+        // edit fell back to last-write-wins.
+        updated_at:    initial?.updated_at,
       };
+
+      // Audit F2 — a NEW loan EMI is an explicit financial command, not a
+      // generic upsert. The store performs the system split (interest expense
+      // + principal transfer) via the atomic record_loan_payment RPC when
+      // online. Edits of an existing EMI leg stay on the plain path — the
+      // store recognises the known id and skips re-decomposition.
+      if (!initial && form.category === 'loan_emi' && form.linkedDebtId) {
+        loanOperation.current ??= uid();
+        await recordLoanPayment({
+          operationId: loanOperation.current,
+          debtId: form.linkedDebtId,
+          fundingAccountId: fromEncoded || undefined,
+          amount,
+          currency: form.currency,
+          date: form.date,
+          description: form.description.trim() || undefined,
+          memberId: form.memberId,
+          partPaymentChoice: form.partPaymentChoice,
+        });
+        // The store surfaces the re-amortisation message itself; no undo —
+        // system-split rows create linked legs and never one-tap-undo.
+        loanOperation.current = null;
+        if (addAnother) resetForNext(); else onClose();
+        return;
+      }
       await upsertTransaction(txn);
 
       // v9.1 §5 — recurrence is authored ONLY in the Recurring section now;
@@ -433,18 +508,18 @@ export default function TransactionFormModal(props: Props) {
   const footer = (
     <div>
       <button type="button" onClick={() => persist(false)} disabled={saving}
-        className="btn-primary w-full h-[50px] text-[15.5px] rounded-[15px] disabled:opacity-60">
+        className="btn-primary w-full disabled:opacity-60">
         {saving ? 'Saving…' : initial ? `Update ${form.type}` : `Save ${form.type}`}
       </button>
       <div className="text-center mt-2">
         {initial ? (
           <button type="button" onClick={del}
-            className="font-mono text-[9px] tracking-[0.15em] uppercase text-terra hover:underline">
+            className="ui-action text-terra hover:underline">
             Delete
           </button>
         ) : (
           <button type="button" onClick={() => persist(true)} disabled={saving}
-            className="font-mono text-[9px] tracking-[0.15em] uppercase text-ink-dim hover:text-ink disabled:opacity-60">
+            className="ui-action text-ink-mid hover:text-ink disabled:opacity-60">
             Save &amp; add another
           </button>
         )}
@@ -453,23 +528,16 @@ export default function TransactionFormModal(props: Props) {
   );
 
   return (
-    <HalfSheet open={open} onClose={onClose} title={modalTitle} footer={footer}>
+    <FormPage open={open} onClose={onClose} title={modalTitle} footer={footer} className="ui-pilot" helpTopicId={helpTopicId}>
+      <div className="ui-form-stack">
       {/* Track chips — centered row per board M4. */}
-      <div className="flex gap-1.5 flex-wrap justify-center mb-3">
-        {TYPE_CHIPS.map(t => (
-          <Chip key={t.type} on={t.type === form.type} onClick={() => !initial && setType(t.type)}
-            testId={`txn-type-${t.type}`}
-            className={initial && t.type !== form.type ? 'opacity-40 pointer-events-none' : ''}>
-            <span aria-hidden>{t.emoji}</span>{t.label}
-          </Chip>
-        ))}
-      </div>
+      <SegmentedControl label="Transaction type" value={form.type} onChange={setType}
+        options={TYPE_CHIPS.map(item => ({ value: item.type, label: item.label,
+          disabled: !!initial && item.type !== form.type, testId: `txn-type-${item.type}` }))} />
 
-      {/* Amount hero — bare on the sheet per board M4 (no field chrome). The
-          caret lands here on a fresh entry (not on edits, where a value already
-          exists) so users stop typing amounts into the description field. */}
+      {/* Amount hero — bare on the sheet per board M4 (no field chrome). */}
       <div className="py-1 mb-1">
-        <AmountField value={form.amount} currencySymbol={currencySymbol} autoFocus={!initial}
+        <AmountField value={form.amount} currencySymbol={currencySymbol}
           onChange={v => setForm(f => ({ ...f, amount: v }))} />
       </div>
 
@@ -477,41 +545,20 @@ export default function TransactionFormModal(props: Props) {
           most recent + a "⌕ More" tile, not a horizontal scroller. The selected
           category is always kept visible in the collapsed set. */}
       {!isTransfer && !isInvestment && (
-        <div className="mt-4">
-          <div className="mono-label mb-1.5">Category</div>
-          <div className="flex gap-1.5 flex-wrap">
-            {(() => {
-              const head = [...(showAllCats ? orderedCats : orderedCats.slice(0, 7))];
-              if (!showAllCats && form.category && !head.some(c => c.id === form.category)) {
-                const sel = orderedCats.find(c => c.id === form.category);
-                if (sel && head.length) head[head.length - 1] = sel;
-              }
-              return head.map(c => (
-                <CategoryChip key={c.id} emoji={c.icon} label={c.label} testId={`txn-cat-${c.id}`}
-                  on={c.id === form.category}
-                  onClick={() => setForm(f => ({ ...f, category: c.id }))} />
-              ));
-            })()}
-            {orderedCats.length > 7 && (
-              <CategoryChip emoji={showAllCats ? '▴' : '⌕'} label={showAllCats ? 'Less' : 'More'}
-                on={false} testId="txn-cat-more"
-                onClick={() => setShowAllCats(s => !s)} />
-            )}
-          </div>
-        </div>
+        <CategoryPicker type={form.type} testId="txn-category" value={form.category}
+          onChange={category => setForm(f => ({ ...f, category }))} />
       )}
 
       {/* v9 §4.1 — loan_emi loan picker (required) */}
       {form.type === 'expense' && form.category === 'loan_emi' && (
         <div className="mt-4">
-          <div className="mono-label mb-1.5">Which loan? <span className="text-terra">·required</span></div>
           {debts.length ? (
-            <div className="flex gap-1.5 flex-wrap">
-              {debts.map(d => (
-                <Chip key={d.id} on={d.id === form.linkedDebtId} testId={`txn-loan-${d.id}`}
-                  onClick={() => setForm(f => ({ ...f, linkedDebtId: d.id }))}>{d.name}</Chip>
-              ))}
-            </div>
+            <Field label="Loan">
+              <Select value={form.linkedDebtId} required onChange={e => setForm(f => ({ ...f, linkedDebtId: e.target.value }))}>
+                <option value="">Choose loan</option>
+                {debts.map(debt => <option key={debt.id} value={debt.id}>{debt.name}</option>)}
+              </Select>
+            </Field>
           ) : (
             <p className="text-[0.72rem] text-ink-dim">No loans yet — add one on the Debts page first.</p>
           )}
@@ -521,31 +568,16 @@ export default function TransactionFormModal(props: Props) {
       {/* v9.4.2 — part-payment strategy (excess over the minimum EMI) */}
       {showPartPayment && (
         <div className="mt-3">
-          <div className="mono-label mb-1.5">Apply excess to</div>
-          <div className="flex gap-1.5 flex-wrap">
-            {(['reduce_tenure', 'reduce_emi', 'apply_advance'] as PartPaymentChoice[]).map(ch => (
-              <Chip key={ch} on={form.partPaymentChoice === ch}
-                onClick={() => setForm(f => ({ ...f, partPaymentChoice: ch }))}>
-                {ch === 'reduce_tenure' ? 'Reduce tenure' : ch === 'reduce_emi' ? 'Reduce EMI' : 'Apply advance'}
-              </Chip>
-            ))}
-          </div>
+          <SegmentedControl label="Apply excess to" value={form.partPaymentChoice}
+            onChange={partPaymentChoice => setForm(f => ({ ...f, partPaymentChoice }))}
+            options={[{ value: 'reduce_tenure', label: 'Reduce tenure' }, { value: 'reduce_emi', label: 'Reduce EMI' }, { value: 'apply_advance', label: 'Apply advance' }]} />
         </div>
       )}
 
       {/* v9 §4.3 — investment direction */}
       {isInvestment && (
-        <div className="mt-4">
-          <div className="mono-label mb-1.5">Direction</div>
-          <div className="flex gap-1.5">
-            {(['added', 'withdrew'] as const).map(d => (
-              <Chip key={d} on={form.direction === d}
-                onClick={() => setForm(f => ({ ...f, direction: d }))}>
-                {d === 'added' ? '↑ Added money' : '↓ Took money out'}
-              </Chip>
-            ))}
-          </div>
-        </div>
+        <SegmentedControl label="Direction" value={form.direction} onChange={direction => setForm(f => ({ ...f, direction }))}
+          options={[{ value: 'added', label: 'Added money' }, { value: 'withdrew', label: 'Took money out' }]} />
       )}
 
       {/* Description — a plain open field (v10.17 item 1: the recent-value
@@ -568,9 +600,7 @@ export default function TransactionFormModal(props: Props) {
           slot (bound to `paymentMethodTo`); every other track puts the
           bank/cash source here (bound to `paymentMethod`, investment walled). */}
       <div className="mt-4">
-        <div className="mono-label mb-1.5">
-          Date · {needsToAccount ? accountLabel.toLowerCase() : isIncome ? 'paid into' : 'paid with'} {accountRequired ? <span className="text-terra">·required</span> : null}
-        </div>
+        <div className="mono-label mb-related">Date and time</div>
         <div className="flex gap-1.5 items-center flex-wrap">
           <Chip on={form.date === todayStr} onClick={() => setForm(f => ({ ...f, date: todayStr }))}>Today</Chip>
           <Chip on={form.date === yStr} onClick={() => setForm(f => ({ ...f, date: yStr }))}>Yesterday</Chip>
@@ -586,24 +616,6 @@ export default function TransactionFormModal(props: Props) {
               <span aria-hidden>🕑</span>{form.time || '--:--'}
             </button>
           </div>
-          {isWithdraw
-            ? investmentAccounts.map(a => (
-                <Chip key={a.id} on={a.id === form.paymentMethodTo} testId={`txn-acct-${a.id}`}
-                  onClick={() => setForm(f => ({ ...f, paymentMethodTo: a.id }))}>
-                  <span aria-hidden>📈</span>{a.name}
-                </Chip>
-              ))
-            : accounts.map(a => (
-                <Chip key={a.value} on={a.value === form.paymentMethod} testId={`txn-acct-${a.value}`}
-                  onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
-                  <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
-                </Chip>
-              ))}
-          {!isWithdraw && form.paymentMethod && !currentInList && (
-            <Chip on onClick={() => { /* keep legacy value selectable */ }}>
-              {currentAccount ? currentAccount.label : form.paymentMethod} (legacy)
-            </Chip>
-          )}
         </div>
         {showTimeDial && (
           <div className="mt-3 flex justify-center rounded-r3 border border-line py-4"
@@ -611,80 +623,53 @@ export default function TransactionFormModal(props: Props) {
             <TimeDial value={form.time || nowTime()} onChange={v => setForm(f => ({ ...f, time: v }))} />
           </div>
         )}
-        {isWithdraw && investmentAccounts.length === 0 && (
-          <div className="mt-1.5">
-            <p className="text-[0.72rem] text-ink-dim leading-snug mb-1.5">No investment accounts yet.</p>
-            <button type="button" onClick={() => { openAddAccount?.(); }} className="btn-ghost btn-sm text-[0.72rem]">
-              + Create investment account
-            </button>
-          </div>
-        )}
-        {!isWithdraw && accountRequired && accounts.length <= 1 && (
-          <p className="mt-1.5 text-[0.7rem] text-ink-dim leading-snug">
-            Tip: add your bank accounts and credit cards on the <strong>Net Worth</strong> page to
-            spend from them here. Only Cash is available until then.
-          </p>
-        )}
       </div>
+
+      <Field label={isWithdraw ? 'Investment' : accountLabel}>
+        <Select data-testid="txn-source" value={isWithdraw ? form.paymentMethodTo : form.paymentMethod}
+          required={accountRequired} onChange={e => setForm(f => isWithdraw
+            ? { ...f, paymentMethodTo: e.target.value } : { ...f, paymentMethod: e.target.value })}>
+          <option value="">{isWithdraw ? 'Choose investment' : 'Choose account'}</option>
+          {isWithdraw
+            ? investmentAssets.map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)
+            : accounts.map(account => <option key={account.value} value={account.value}>{account.label}</option>)}
+          {!isWithdraw && form.paymentMethod && !currentInList &&
+            <option value={form.paymentMethod}>{currentAccount?.label ?? form.paymentMethod} (legacy)</option>}
+        </Select>
+      </Field>
+      {payingModes.length > 0 && <Field label="Payment mode">
+        <Select value={form.paymentMode} onChange={e => setForm(f => ({ ...f, paymentMode: e.target.value as PaymentMode | '' }))}>
+          <option value="">Not specified</option>
+          {payingModes.map(mode => <option key={mode} value={mode}>{PAYMENT_MODE_LABEL[mode]}</option>)}
+        </Select>
+      </Field>}
 
       {/* Destination account (transfer/investment) — required.
           transfer → bank/cash (paymentMethodTo, investment walled);
           investment "added" → the investment account (paymentMethodTo);
           investment "withdrew" → bank/cash destination (paymentMethod). */}
       {needsToAccount && (
-        <div className="mt-4">
-          <div className="mono-label mb-1.5">
-            {isTransfer ? 'To account' : isWithdraw ? 'To account' : 'Investment account'} <span className="text-terra">·required</span>
-          </div>
-          {isInvestment && !isWithdraw && investmentAccounts.length === 0 ? (
-            <div>
-              <p className="text-[0.72rem] text-ink-dim leading-snug mb-1.5">No investment accounts yet.</p>
-              <button type="button" onClick={() => { openAddAccount?.(); }} className="btn-ghost btn-sm text-[0.72rem]">
-                + Create investment account
-              </button>
-            </div>
-          ) : (
-            <div className="flex gap-1.5 flex-wrap">
-              {isWithdraw
-                ? accounts.map(a => (
-                    <Chip key={a.value} on={a.value === form.paymentMethod} testId={`txn-to-${a.value}`}
-                      onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
-                      <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
-                    </Chip>
-                  ))
-                : isInvestment
-                ? investmentAccounts.map(a => (
-                    <Chip key={a.id} on={a.id === form.paymentMethodTo} testId={`txn-to-${a.id}`}
-                      onClick={() => setForm(f => ({ ...f, paymentMethodTo: a.id }))}>
-                      <span aria-hidden>📈</span>{a.name}
-                    </Chip>
-                  ))
-                : accountsTo.map(a => (
-                    <Chip key={a.value} on={a.value === form.paymentMethodTo} testId={`txn-to-${a.value}`}
-                      onClick={() => setForm(f => ({ ...f, paymentMethodTo: a.value }))}>
-                      <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
-                    </Chip>
-                  ))}
-            </div>
-          )}
-        </div>
+        <Field label={isInvestment && !isWithdraw ? 'Investment' : 'To account'}>
+          <Select data-testid="txn-destination" value={isWithdraw ? form.paymentMethod : form.paymentMethodTo} required
+            onChange={e => setForm(f => isWithdraw ? { ...f, paymentMethod: e.target.value } : { ...f, paymentMethodTo: e.target.value })}>
+            <option value="">{isInvestment && !isWithdraw ? 'Choose investment' : 'Choose account'}</option>
+            {isInvestment && !isWithdraw
+              ? investmentAssets.map(asset => <option key={asset.id} value={asset.id}>{asset.name}</option>)
+              : (isWithdraw ? accounts : accountsTo).map(account => <option key={account.value} value={account.value}>{account.label}</option>)}
+          </Select>
+        </Field>
       )}
+      {isInvestment && investmentAssets.length === 0 &&
+        <button type="button" onClick={() => openAddAsset()} className="btn-ghost">Add an investment</button>}
 
       {/* Board M4 — member row lives on the MAIN sheet (initials chips,
           "MR · You" for yourself), not behind the disclosure. */}
-      <div className="mt-4">
-        <div className="mono-label mb-1.5">Member {isTransfer ? <span className="text-ink-dim">·optional</span> : null}</div>
-        <div className="flex gap-1.5 flex-wrap">
-          {isTransfer && (
-            <Chip on={!form.memberId} testId="txn-member-none" onClick={() => setForm(f => ({ ...f, memberId: '' }))}>None</Chip>
-          )}
-          {members.map(m => (
-            <Chip key={m.id} on={m.id === form.memberId} testId={`txn-member-${m.id}`} onClick={() => setForm(f => ({ ...f, memberId: m.id }))}>
-              {memberInitials(m.name)}{m.id === defaultMemberId ? ' · You' : ''}
-            </Chip>
-          ))}
-        </div>
-      </div>
+      <Field label="Member" hint={isTransfer ? 'Optional' : undefined}>
+        <Select data-testid="txn-member" value={form.memberId} onChange={e => setForm(f => ({ ...f, memberId: e.target.value }))}>
+          <option value="">{isTransfer ? 'None' : 'Choose member'}</option>
+          {members.map(member => <option key={member.id} value={member.id}>{member.name}{member.id === defaultMemberId ? ' (You)' : ''}</option>)}
+        </Select>
+      </Field>
 
       {/* Currency selection removed (v10.5.5) — every transaction uses the
           household's base currency. Edits of a legacy foreign-currency row
@@ -705,6 +690,7 @@ export default function TransactionFormModal(props: Props) {
         </label>
       </div>
 
-    </HalfSheet>
+      </div>
+    </FormPage>
   );
 }

@@ -15,6 +15,7 @@ import {
 import WhatsAppLink from '../components/settings/WhatsAppLink';
 import { POLICY_VERSION } from './Privacy';
 import Chip from '../components/ui/Chip';
+import { Select } from '../components/ui/Input';
 import {
   NOTIF_GROUPS, NOTIF_TYPE_LABEL, NOTIF_LOCKED, typeEnabled, requestWebPushPermission,
 } from '../lib/notifications';
@@ -354,13 +355,13 @@ export default function Settings() {
               <input className="input w-full" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
             </div>
             <div>
-              <label className="mono-label mb-1.5 block">Date Format</label>
-              <select className="input w-full" value={profile.dateFormat}
+              <label htmlFor="settings-date-format" className="mono-label mb-1.5 block">Date Format</label>
+              <Select id="settings-date-format" value={profile.dateFormat}
                 onChange={e => updateProfile({ dateFormat: e.target.value as Profile['dateFormat'] })}>
                 {DATE_FORMATS.map(df => (
                   <option key={df.key} value={df.key}>{df.label} — {df.example}</option>
                 ))}
-              </select>
+              </Select>
             </div>
             {cloudEnabled && session && (
               <div className="sm:col-span-2 flex items-center justify-between gap-3 bg-bg3 border border-line rounded-md px-4 py-3">
@@ -531,30 +532,30 @@ export default function Settings() {
             open={openRow === 'language'} onToggle={() => toggleRow('language')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="mono-label mb-1.5 block">Language</label>
-                <select className="input w-full" value={profile.language}
+                <label htmlFor="settings-language" className="mono-label mb-1.5 block">Language</label>
+                <Select id="settings-language" value={profile.language}
                   onChange={e => updateProfile({ language: e.target.value })}>
                   {Object.entries(LOCALES).map(([k, v]) => (
                     <option key={k} value={k}>{v.name}</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div>
-                <label className="mono-label mb-1.5 block">Base Currency</label>
-                <select className="input w-full" value={profile.baseCurrency}
+                <label htmlFor="settings-currency" className="mono-label mb-1.5 block">Base Currency</label>
+                <Select id="settings-currency" value={profile.baseCurrency}
                   onChange={e => updateProfile({ baseCurrency: e.target.value })}>
                   {Object.entries(CURRENCIES).map(([code, meta]) => (
                     <option key={code} value={code}>{meta.symbol} {code} — {meta.name}</option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div className="sm:col-span-2">
-                <label className="mono-label mb-1.5 block">Number System</label>
-                <select className="input w-full" value={profile.numberSystem ?? 'western'}
+                <label htmlFor="settings-number-system" className="mono-label mb-1.5 block">Number System</label>
+                <Select id="settings-number-system" value={profile.numberSystem ?? 'western'}
                   onChange={e => updateProfile({ numberSystem: e.target.value as 'western' | 'indian' })}>
                   <option value="western">Western — K (thousand) · M (million) · B (billion) · T (trillion)</option>
                   <option value="indian">Indian — K (thousand) · L (lakh = 1,00,000) · Cr (crore = 1,00,00,000)</option>
-                </select>
+                </Select>
                 <p className="text-[0.74rem] text-ink-dim mt-1.5">
                   Used when large amounts are compacted (KPI tiles, summary rows, charts).
                 </p>
@@ -571,8 +572,14 @@ export default function Settings() {
               <div className="grid sm:grid-cols-3 gap-2">
                 {Object.entries(CURRENCIES).filter(([c]) => c !== 'USD').map(([code]) => (
                   <div key={code} className="flex items-center gap-2 bg-bg3 border border-line rounded-md px-3 py-2">
-                    <span className="font-mono text-[0.7rem] text-ink-dim w-8 flex-shrink-0">{code}</span>
+                    <span className="font-mono text-[0.7rem] text-ink-dim w-8 flex-shrink-0" aria-hidden="true">{code}</span>
                     <input
+                      // v10.22.3 — these inputs had NO accessible name. The
+                      // currency was only in an adjacent <span>, so a screen
+                      // reader announced twenty-odd identical "edit text" fields
+                      // with nothing to tell them apart. The span is decorative
+                      // now and the name lives on the control itself.
+                      aria-label={`${code} rate`}
                       className="input flex-1 text-right text-sm py-1 px-2"
                       value={rateEdits[code] ?? String(rates[code] ?? DEFAULT_RATES[code] ?? '')}
                       onChange={e => setRateEdits(r => ({ ...r, [code]: e.target.value }))}
@@ -595,12 +602,12 @@ export default function Settings() {
             open={openRow === 'debt'} onToggle={() => toggleRow('debt')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="mono-label mb-1.5 block">Payoff Strategy</label>
-                <select className="input w-full" value={profile.payoffStrategy}
+                <label htmlFor="settings-payoff" className="mono-label mb-1.5 block">Payoff Strategy</label>
+                <Select id="settings-payoff" value={profile.payoffStrategy}
                   onChange={e => updateProfile({ payoffStrategy: e.target.value as Profile['payoffStrategy'] })}>
                   <option value="avalanche">Avalanche — highest APR first (saves money)</option>
                   <option value="snowball">Snowball — smallest balance first (motivation)</option>
-                </select>
+                </Select>
               </div>
               <div>
                 <label className="mono-label mb-1.5 block">Monthly Extra Payment ({profile.baseCurrency})</label>

@@ -18,9 +18,8 @@ test.describe('§20 ONB-FC · onboarding and templates', () => {
     }),
   });
 
-  test('ONB-FC-004 · fresh local users land on the dashboard without a forced onboarding redirect', async ({ page }) => {
-    await page.goto('/');
-    await page.waitForURL('**/dashboard');
+  test('ONB-FC-004 · fresh local users land on the dashboard without a forced onboarding redirect', async ({ page, dashboard }) => {
+    await dashboard.goto();
 
     await expect(page).not.toHaveURL(/\/onboarding$/);
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();

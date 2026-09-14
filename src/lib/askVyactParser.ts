@@ -29,7 +29,16 @@ export interface ExtractedEntities {
   amount?: number;
   /** Best-guess category id (from KEYWORD_MAP), undefined when none matched. */
   category?: string;
-  /** A merchant/source token the user named (kept on-device; never sent). */
+  /**
+   * A merchant/source token the user named.
+   *
+   * v10.20 — this used to say "kept on-device; never sent", which is no longer
+   * true in either direction. The user's question is sent verbatim to classify
+   * it, so a merchant they typed goes with it; and in the model-backed path
+   * this field is FILLED BY the model's extraction rather than by the regex
+   * below. It is never trusted for money — `resolve()` re-derives every figure
+   * from the household's own data regardless of what came back.
+   */
   merchant?: string;
   /** Number of people in a split ("4 ways" → 4, "me and 2 friends" → 3). */
   participantCount?: number;
@@ -52,8 +61,8 @@ const KEYWORD_MAP: Record<string, string> = {
   // groceries (its own category in v9)
   groceries: 'groceries', grocery: 'groceries', supermarket: 'groceries',
   // transport
-  fuel: 'transport', petrol: 'transport', gas: 'transport', uber: 'transport', taxi: 'transport',
-  cab: 'transport', ola: 'transport', train: 'transport', bus: 'transport', parking: 'transport',
+  fuel: 'travel', petrol: 'travel', gas: 'travel', uber: 'travel', taxi: 'travel',
+  cab: 'travel', ola: 'travel', train: 'travel', bus: 'travel', parking: 'travel',
   // shopping
   amazon: 'shopping', shopping: 'shopping', clothes: 'shopping', shoes: 'shopping', flipkart: 'shopping',
   // entertainment / subscriptions

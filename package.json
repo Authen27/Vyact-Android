@@ -1,7 +1,7 @@
 {
   "name": "vyact-react",
   "private": true,
-  "version": "10.18.1",
+  "version": "10.36.0",
   "type": "module",
   "description": "Vyact — Family Finance OS · React + TypeScript + Recharts",
   "scripts": {
@@ -10,16 +10,20 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "typecheck:e2e": "tsc -p tsconfig.e2e.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:live": "vitest run --config vitest.live.config.ts",
     "e2e": "playwright test",
     "e2e:stability": "node e2e/run-stability.cjs",
     "e2e:capture": "node e2e/run-and-capture.cjs",
+    "e2e:lane-b": "playwright test --config=playwright.lane-b.config.ts",
     "e2e:ui": "playwright test --ui",
     "e2e:report": "playwright show-report"
   },
   "dependencies": {
     "@dinero.js/currencies": "^2.0.0-alpha.14",
+    "@radix-ui/react-dialog": "^1.1.23",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.105.4",
     "@tanstack/react-virtual": "^3.13.25",
@@ -36,6 +40,7 @@
     "zustand": "^5.0.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@eslint/js": "^9.13.0",
     "@playwright/test": "^1.60.0",
     "@types/react": "^18.3.12",
@@ -44,6 +49,7 @@
     "autoprefixer": "^10.4.20",
     "eslint": "^9.13.0",
     "eslint-plugin-react-hooks": "^5.0.0",
+    "fake-indexeddb": "^6.2.5",
     "gifenc": "^1.0.3",
     "globals": "^15.11.0",
     "pngjs": "^7.0.0",

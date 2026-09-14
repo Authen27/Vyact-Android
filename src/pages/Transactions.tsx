@@ -10,12 +10,13 @@ import EmptyState from '../components/ui/EmptyState';
 import { Input } from '../components/ui/Input';
 import HalfSheet from '../components/ui/HalfSheet';
 import Chip from '../components/ui/Chip';
+import CategoryPicker from '../components/ui/CategoryPicker';
 import TxnRow from '../components/transactions/TxnRow';
 import TxnCalendar from '../components/transactions/TxnCalendar';
 import SavedViewsBar from '../components/savedViews/SavedViewsBar';
 import { ALL_CATEGORIES } from '../constants';
-import { getMonthKey, monthName, formatDate, nowMonthKey, today, transactionSortValue, fmt } from '../lib/format';
-import { monthlyData } from '../lib/calculations';
+import { getMonthKey, monthName, formatDate, nowMonthKey, today, compareTxnRecency, fmt } from '../lib/format';
+import { monthlyData, effectiveAmount } from '../lib/calculations';
 import { projectRecurringTransactionsForDate } from '../lib/recurring';
 import type { Transaction, TxnType } from '../types';
 
@@ -55,6 +56,7 @@ export default function Transactions() {
   const budgets     = useStore(s => s.budgets);
   const budgetAllocations = useStore(s => s.budgetAllocations);
   const debts       = useStore(s => s.debts);
+  const accountsList = useStore(s => s.accounts);
 
   // v7.4.4 — deep-link from Dashboard cards (?type=income/expense, ?cat=foo).
   const [searchParams, setSearchParams] = useSearchParams();
@@ -74,6 +76,10 @@ export default function Transactions() {
   const [showFilters, setShowFilters] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    if (type === 'transfer' || type === 'investment') setCat('all');
+  }, [type]);
+
   // `/` focuses the search box. The `n` add-transaction shortcut is now
   // registered app-wide in Layout (v7.4.4) so it works on every page.
   useShortcuts({
@@ -84,7 +90,7 @@ export default function Transactions() {
   // user changes — but ONLY when no v9.1 §8 context param is present (budgetId /
   // debtId / month / from / to drive a live context chip and must persist).
   useEffect(() => {
-    const hasCtx = ['budgetId','debtId','month','from','to'].some(k => searchParams.get(k));
+    const hasCtx = ['budgetId','debtId','accountId','month','from','to'].some(k => searchParams.get(k));
     if (!hasCtx && (searchParams.get('type') || searchParams.get('cat'))) {
       const next = new URLSearchParams(searchParams);
       next.delete('type'); next.delete('cat');
@@ -130,8 +136,16 @@ export default function Transactions() {
     } else if (from || to) {
       label = `${from ?? '…'} → ${to ?? '…'}`;
     }
-    return { budgetId, debtId, from, to, cats, label };
-  }, [searchParams, budgets, budgetAllocations, debts]);
+    // v10.24.0 (R2) — ?accountId=… is the reconcile sheet's "let me find the
+    // missing spend": that account's transactions, optionally narrowed to a card's
+    // statement window by from/to. It composes with a date range.
+    const accountId = searchParams.get('accountId');
+    if (accountId) {
+      const name = accountsList.find(a => a.id === accountId)?.name ?? 'account';
+      label = `Account: ${name}${from || to ? ` · ${from ?? '…'} → ${to ?? '…'}` : ''}`;
+    }
+    return { budgetId, debtId, accountId, from, to, cats, label };
+  }, [searchParams, budgets, budgetAllocations, debts, accountsList]);
 
   const filtered = useMemo<TransactionListItem[]>(() => {
     let f = [...txns];
@@ -146,6 +160,7 @@ export default function Transactions() {
     if (ctx.cats) f = f.filter(t => ctx.cats!.has(t.category));
     if (ctx.debtId) f = f.filter(t =>
       t.debtId === ctx.debtId || t.emiSplit?.debt_id === ctx.debtId || t.linkedDebtId === ctx.debtId);
+    if (ctx.accountId) f = f.filter(t => t.accountId === ctx.accountId || t.toAccountId === ctx.accountId);
     if (search) {
       const q = search.toLowerCase();
       f = f.filter(t =>
@@ -183,7 +198,7 @@ export default function Transactions() {
       rows.push(...projected);
     }
 
-    return rows.sort((a, b) => transactionSortValue(b.txn) - transactionSortValue(a.txn) || b.txn.id.localeCompare(a.txn.id));
+    return rows.sort((a, b) => compareTxnRecency(a.txn, b.txn));
   }, [txns, schedules, search, type, cat, month, memberId, selectedDate, ctx]);
 
   // v9.6 — group the (already date-sorted desc) list into month+year sections
@@ -205,15 +220,19 @@ export default function Transactions() {
       let net = 0;
       for (const it of items) {
         if (it.projected) continue;
-        if (it.txn.type === 'income') net += it.txn.amount;
-        else if (it.txn.type === 'expense') net -= it.txn.amount;
+        // Audit F4 — convert EACH row into the household base currency via the
+        // one central path (effectiveAmount → dinero). The old code summed raw
+        // `txn.amount` across currencies (USD 100 + INR 100 = 200 "base").
+        const amt = effectiveAmount(it.txn, profile.baseCurrency, rates);
+        if (it.txn.type === 'income') net += amt;
+        else if (it.txn.type === 'expense') net -= amt;
       }
       groups.push({ key, label: monthName(key), items, net });
     }
     // Guard against Map insertion order surprises — pin to descending month key.
     groups.sort((a, b) => b.key.localeCompare(a.key));
     return groups;
-  }, [filtered]);
+  }, [filtered, profile.baseCurrency, rates]);
 
   // Pagination — reveal MONTHS_PER_PAGE months, "Load previous" adds another page.
   const [visibleMonths, setVisibleMonths] = useState(MONTHS_PER_PAGE);
@@ -273,20 +292,30 @@ export default function Transactions() {
     let net = 0;
     for (const item of filtered) {
       if (item.projected) continue;
-      if (item.txn.type === 'income') net += item.txn.amount;
-      else if (item.txn.type === 'expense') net -= item.txn.amount;
+      // Audit F4 — per-row FX conversion (see month groups above).
+      const amt = effectiveAmount(item.txn, profile.baseCurrency, rates);
+      if (item.txn.type === 'income') net += amt;
+      else if (item.txn.type === 'expense') net -= amt;
     }
     return net;
-  }, [filtered]);
+  }, [filtered, profile.baseCurrency, rates]);
 
   return (
+<<<<<<< ANDROID
     <div>
       {/* Stack on small screens so the title never collides with the Add button
           (at ~320px the row layout truncated "Transactions" under the button). */}
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start sm:gap-4 mb-5">
+||||||| UPSTREAM-BASE
+    <div>
+      <div className="flex justify-between items-start mb-5 gap-4">
+=======
+    <div className="ui-pilot">
+      <div className="flex justify-between items-start mb-section gap-4 flex-wrap">
+>>>>>>> UPSTREAM
         <div className="min-w-0">
           <h1 className="display-italic text-4xl text-ink mb-1.5">{t('transactions')}</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
+          <p className="ui-label">
             All household income, expenses, investments &amp; transfers
           </p>
         </div>
@@ -607,15 +636,7 @@ export default function Transactions() {
               ))}
             </div>
           </div>
-          <div>
-            <div className="mono-label mb-1.5">Category</div>
-            <div className="flex gap-1.5 flex-wrap max-h-[168px] overflow-y-auto">
-              <Chip on={cat === 'all'} onClick={() => setCat('all')}>All</Chip>
-              {ALL_CATEGORIES.map(c => (
-                <Chip key={c.id} on={cat === c.id} onClick={() => setCat(c.id)}>{c.icon} {c.label}</Chip>
-              ))}
-            </div>
-          </div>
+          <CategoryPicker type={type} value={cat} includeAll onChange={setCat} />
           {months.length > 0 && (
             <div>
               <div className="mono-label mb-1.5">Month</div>

@@ -13,7 +13,13 @@ export class DashboardPage {
   }
 
   async goto() {
-    await this.page.goto('/');
+    // "/" now renders the public Landing page (vyact.app domain cutover), so
+    // this helper navigates straight to "/dashboard" rather than relying on a
+    // redirect that no longer happens. Direct navigation resolves `waitForURL`
+    // faster than the old client-side redirect did (which gave the SPA extra
+    // render time before the URL settled), so also wait for the shell itself.
+    await this.page.goto('/dashboard');
     await this.page.waitForURL('**/dashboard');
+    await this.logoLink.waitFor({ state: 'visible' });
   }
 }

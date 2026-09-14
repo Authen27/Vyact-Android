@@ -5,6 +5,9 @@ import {
   projectRecurringTransactionsForDate,
   scheduleFiresOnDate,
   recurringInstanceId,
+  firstDueOnOrAfter,
+  nextDueAfterSave,
+  isStaleOccurrence,
 } from '../recurring';
 
 function makeSchedule(overrides: Partial<RecurringSchedule> = {}): RecurringSchedule {
@@ -126,5 +129,58 @@ describe('recurringInstanceId · R2 idempotency', () => {
     expect(a1).not.toBe(b);          // different occurrence-date → different id
     expect(a1).not.toBe(c);          // different schedule → different id
     expect(a1).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
+
+// CON-UNIT-092..096 — the occurrence calculus.
+//
+// Reported 2026-09-08: "the newly added recurring schedule for a different time
+// now appears as transaction for current day". Root cause was NOT the engine —
+// it was the date the form saved. Recurring.tsx called
+// \`computeNextDueDate(freq, startDate, undefined, dom)\`, which always steps ONE
+// period on from its base, so editing a schedule that started 2026-05-22 set
+// nextDueDate to 2026-06-02 — three months in the PAST. dueSchedules then
+// matched it and the engine materialised a back-dated transaction per refresh.
+describe('occurrence calculus · a schedule must never be born overdue', () => {
+  it('CON-UNIT-092 · CREATE on the 8th for the 20th falls due THIS month', () => {
+    // The old computeNextDueDate returned 2026-10-20, silently skipping a month.
+    expect(nextDueAfterSave('monthly', { startDate: '2026-09-08', dayOfMonth: 20 }, '2026-09-08'))
+      .toBe('2026-09-20');
+  });
+
+  it('CON-UNIT-093 · CREATE on the 8th for the 2nd rolls to next month', () => {
+    // The 2nd has already passed, so next month is correct here.
+    expect(nextDueAfterSave('monthly', { startDate: '2026-09-08', dayOfMonth: 2 }, '2026-09-08'))
+      .toBe('2026-10-02');
+  });
+
+  it('CON-UNIT-094 · EDIT never moves the due date into the past', () => {
+    // THE REPORTED BUG. Original start months ago; the user edits day-of-month.
+    const next = nextDueAfterSave(
+      'monthly',
+      { startDate: '2026-05-22', dayOfMonth: 2, lastGenerated: '2026-09-02' },
+      '2026-09-08',
+    );
+    expect(next > "2026-09-08", next + " must be in the future").toBe(true);
+    expect(next).toBe('2026-10-02');
+
+    // And with no generation history it still must not reach backwards.
+    const virgin = nextDueAfterSave(
+      'monthly', { startDate: '2026-05-22', dayOfMonth: 2 }, '2026-09-08',
+    );
+    expect(virgin >= '2026-09-08').toBe(true);
+  });
+
+  it('CON-UNIT-095 · a 31st clamps to short months instead of rolling over', () => {
+    // Feb has no 31st. Rolling into March would move the bill a whole month.
+    expect(firstDueOnOrAfter('2026-02-01', 'monthly', { dayOfMonth: 31 })).toBe('2026-02-28');
+    expect(firstDueOnOrAfter('2026-04-01', 'monthly', { dayOfMonth: 31 })).toBe('2026-04-30');
+  });
+
+  it('CON-UNIT-096 · the engine refuses to invent months of history', () => {
+    // Defence in depth for schedules already carrying a corrupt date on device.
+    expect(isStaleOccurrence('2026-06-02', '2026-09-08')).toBe(true);
+    // A genuine offline gap still catches up.
+    expect(isStaleOccurrence('2026-09-01', '2026-09-08')).toBe(false);
   });
 });

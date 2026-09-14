@@ -184,77 +184,154 @@ export function advanceSchedule(schedule: RecurringSchedule): RecurringSchedule 
   };
 }
 
-// v7.3 — Backfill RecurringSchedule rows from legacy transactions whose
-// `recurring` field is set but never produced a schedule (e.g. txns added
-// before v7.0 mirrored every recurring row into a schedule, or rows
-// imported from another tool). The Recurring page and the Transactions
-// calendar both read from `recurringSchedules`, not `transaction.recurring`,
-// so without this backfill those legacy rows show up nowhere as future cost.
-export interface BackfillResult {
-  schedules: RecurringSchedule[];
-  added: number;
+// ── Retired writers (v10.22.2) ──────────────────────────────────────────────
+//
+// `backfillSchedulesFromTransactions` (v7.3) and `rekeyLegacyRecurringIds`
+// (v10.20.5) were DELETED here, not merely unwired.
+//
+// The backfill recreated a schedule from any transaction carrying a legacy
+// `recurring` field, which meant it could not tell a deliberate deletion from
+// a legacy gap: deleting a recurring schedule and reloading brought it back,
+// for roughly two years. It was unwired in v10.20.7 and its tests were removed
+// on 2026-09-09 — but it stayed exported, so nothing stopped a future caller
+// from importing a resurrection writer that no longer had a single test
+// holding it to its contract. An exported writer with no tests and no callers
+// is worse than either keeping it tested or deleting it.
+//
+// The re-key is retired for the same reason: it rewrote primary keys, and
+// shipping it without eviction is what produced the v10.20.5 duplicate rows.
+// Both migrations have long since run on every live device.
+//
+// A delete is final. Do not reintroduce either function, and never add a
+// migration that RECREATES rows from other rows.
+
+// ── Occurrence calculus (v10.20.6) ──────────────────────────────────────────
+//
+// `computeNextDueDate` answers a different question than the UI needs: it always
+// steps ONE period on from its base. That is right after generating an
+// occurrence, and wrong everywhere else:
+//
+//   • CREATE — picking "the 20th" on the 8th gave 2026-10-20. The 20th of THIS
+//     month had not happened yet, so the first bill silently skipped a month.
+//
+//   • EDIT — Recurring.tsx passed `lastGenerated: undefined`, so the base was
+//     the schedule's ORIGINAL startDate. Editing a schedule that began
+//     2026-05-22 produced nextDueDate 2026-06-02 — three months in the PAST.
+//     `dueSchedules` then saw it as due and the engine materialised a
+//     back-dated transaction, advancing one month per page refresh:
+//     2026-06-02, 2026-07-02, 2026-08-02, 2026-09-02. That is the reported
+//     "recurring schedule appears as a transaction for the current day".
+//
+// The question both paths actually ask is "when does this NEXT fall due, on or
+// after some anchor date?" — which is what this function answers. All maths is
+// in UTC: the app stores plain YYYY-MM-DD, and local-time `setDate`/`setMonth`
+// on a UTC-parsed date drifts a day either side of the date line.
+
+const isoOf = (d: Date): string => d.toISOString().split('T')[0];
+const parseISO = (iso: string): Date => new Date(`${iso}T00:00:00.000Z`);
+/** Last day of the given (year, zero-based month) — 31 → 28/29/30 as needed. */
+const lastDayOfMonth = (y: number, m0: number): number =>
+  new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
+
+export function addDaysISO(iso: string, days: number): string {
+  const d = parseISO(iso);
+  d.setUTCDate(d.getUTCDate() + days);
+  return isoOf(d);
 }
 
-export function backfillSchedulesFromTransactions(
-  transactions: Transaction[],
-  existing: RecurringSchedule[],
-  now = today(),
-): BackfillResult {
-  const sigOf = (t: { type?: string; description?: string; recurring?: string; currency?: string }) =>
-    `${t.type ?? ''}|${(t.description ?? '').trim().toLowerCase()}|${t.recurring ?? ''}|${t.currency ?? ''}`;
+/** The later of two ISO dates. */
+export const maxISO = (a: string, b: string): string => (a >= b ? a : b);
 
-  const seen = new Set<string>();
-  for (const s of existing) {
-    seen.add(sigOf({
-      type: s.transactionTemplate.type,
-      description: s.transactionTemplate.description,
-      recurring: s.frequency === 'custom_day' ? 'monthly' : s.frequency,
-      currency: s.transactionTemplate.currency,
-    }));
-  }
+/**
+ * The first occurrence of this recurrence on or after `from` (inclusive).
+ *
+ * Pure and total: it never returns a date before `from`, which is the property
+ * that stops a schedule from being born overdue.
+ */
+export function firstDueOnOrAfter(
+  from: string,
+  freq: RecurrenceFreq,
+  opts: { startDate?: string; dayOfMonth?: number; weekday?: number } = {},
+): string {
+  // A schedule cannot fire before it starts.
+  const anchor = opts.startDate ? maxISO(from, opts.startDate) : from;
+  const d = parseISO(anchor);
 
-  const buckets = new Map<string, Transaction[]>();
-  for (const t of transactions) {
-    if (!t.recurring) continue;
-    if (t.split?.isSplit) continue;
-    if (t.category === 'transfer') continue;
-    const sig = sigOf(t);
-    if (seen.has(sig)) continue;
-    const arr = buckets.get(sig) ?? [];
-    arr.push(t);
-    buckets.set(sig, arr);
-  }
+  switch (freq) {
+    case 'daily':
+      return anchor;
 
-  const added: RecurringSchedule[] = [];
-  for (const [, group] of buckets) {
-    const sorted = [...group].sort((a, b) => a.date.localeCompare(b.date));
-    const earliest = sorted[0];
-    const latest = sorted[sorted.length - 1];
-    const freq = earliest.recurring as RecurrenceFreq;
-    if (freq !== 'weekly' && freq !== 'monthly' && freq !== 'yearly') continue;
-
-    const [, , dd] = earliest.date.split('-').map(Number);
-    const dayOfMonth = freq === 'monthly' ? dd : undefined;
-    let nextDue = computeNextDueDate(freq, earliest.date, latest.date, dayOfMonth);
-    while (nextDue <= now) {
-      nextDue = computeNextDueDate(freq, earliest.date, nextDue, dayOfMonth);
+    case 'weekly': {
+      if (opts.weekday === undefined) return anchor;
+      const diff = (opts.weekday - d.getUTCDay() + 7) % 7;   // 0 => today counts
+      return addDaysISO(anchor, diff);
     }
 
-    const { id: _id, date: _date, ...template } = earliest;
-    void _id; void _date;
-    added.push({
-      id: `bf-${earliest.id}`,
-      transactionTemplate: template,
-      frequency: freq,
-      dayOfMonth,
-      startDate: earliest.date,
-      nextDueDate: nextDue,
-      lastGenerated: latest.date,
-      autoConfirm: true,
-      active: true,
-      reminderLeadDays: 3,
-    });
-  }
+    case 'yearly': {
+      // Same month/day as the start date, this year or next.
+      const start = parseISO(opts.startDate ?? anchor);
+      const candidate = isoOf(new Date(Date.UTC(
+        d.getUTCFullYear(),
+        start.getUTCMonth(),
+        Math.min(start.getUTCDate(), lastDayOfMonth(d.getUTCFullYear(), start.getUTCMonth())),
+      )));
+      if (candidate >= anchor) return candidate;
+      const y = d.getUTCFullYear() + 1;
+      return isoOf(new Date(Date.UTC(
+        y, start.getUTCMonth(),
+        Math.min(start.getUTCDate(), lastDayOfMonth(y, start.getUTCMonth())),
+      )));
+    }
 
-  return { schedules: [...existing, ...added], added: added.length };
+    case 'monthly':
+    case 'custom_day':
+    default: {
+      const dom = opts.dayOfMonth ?? parseISO(opts.startDate ?? anchor).getUTCDate();
+      const y = d.getUTCFullYear();
+      const m = d.getUTCMonth();
+      // This month first — the case the old code could not express. A 31st in a
+      // 30-day month clamps to the last day rather than rolling into the next.
+      const thisMonth = isoOf(new Date(Date.UTC(y, m, Math.min(dom, lastDayOfMonth(y, m)))));
+      if (thisMonth >= anchor) return thisMonth;
+      const ny = m === 11 ? y + 1 : y;
+      const nm = (m + 1) % 12;
+      return isoOf(new Date(Date.UTC(ny, nm, Math.min(dom, lastDayOfMonth(ny, nm)))));
+    }
+  }
+}
+
+/**
+ * The nextDueDate a schedule should carry after the user saves the form.
+ *
+ * Never in the past, and never on or before an occurrence already generated —
+ * so editing a schedule cannot re-materialise history.
+ */
+export function nextDueAfterSave(
+  freq: RecurrenceFreq,
+  opts: { startDate: string; dayOfMonth?: number; weekday?: number; lastGenerated?: string },
+  now: string = today(),
+): string {
+  const floor = opts.lastGenerated
+    ? maxISO(now, addDaysISO(opts.lastGenerated, 1))
+    : now;
+  return firstDueOnOrAfter(maxISO(floor, opts.startDate), freq, opts);
+}
+
+/**
+ * How far back the engine will still materialise a missed occurrence.
+ *
+ * A device offline for a few weeks SHOULD catch up — that is the feature. But a
+ * schedule carrying a nextDueDate months in the past is corrupt data, not a
+ * backlog, and silently inventing half a year of expenses would misstate every
+ * month it touches. Past this horizon the engine fast-forwards WITHOUT writing.
+ */
+export const MAX_CATCHUP_DAYS = 45;
+
+/** True when this occurrence is too old to materialise honestly. */
+export function isStaleOccurrence(
+  occurrence: string,
+  now: string = today(),
+  maxDays: number = MAX_CATCHUP_DAYS,
+): boolean {
+  return (Date.parse(now) - Date.parse(occurrence)) / DAY_MS > maxDays;
 }

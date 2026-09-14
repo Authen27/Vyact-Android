@@ -5,7 +5,22 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "strict": true
+    "strict": true,
+    // 🔴 KEEP EMIT OUT OF THE PROJECT DIRECTORY.
+    //
+    // `composite: true` forces emit (TypeScript refuses `noEmit` on a composite
+    // project), and this project's only input is vite.config.ts. Without an
+    // outDir, `tsc -b` wrote the compiled `vite.config.js` NEXT TO the source —
+    // and Vite resolves `vite.config.js` BEFORE `vite.config.ts`, so the build
+    // silently ran off a stale compiled snapshot instead of the maintained
+    // TypeScript. That artifact was committed in 51b9c5a; it also carried the
+    // only two ESLint errors in the consumer app.
+    //
+    // Verified by replacing the artifact with a `throw` and running the build:
+    // the error fired, proving Vite loaded the .js. Emitting into node_modules
+    // keeps the build honest — there is only ever one config file on disk.
+    "outDir": "./node_modules/.tmp/tsconfig-node",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig-node/.tsbuildinfo"
   },
   "include": ["vite.config.ts"]
 }

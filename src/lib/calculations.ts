@@ -118,6 +118,45 @@ export function budgetLines(budgets: Budget[], allocations: BudgetAllocation[]):
   return lines;
 }
 
+/**
+ * The budget lines that apply to ONE month — a monthly budget for exactly that
+ * month, or an annual budget covering the year.
+ *
+ * 🔴 `budgetLines` above flattens EVERY budget the household has ever had, in
+ * whatever order the adapter returned them. The dashboard called it directly and
+ * then took `.slice(0, 5)`, so which month you were looking at was decided by
+ * array position. In September it showed August's budget, because August's lines
+ * happened to come first. Nothing in the UI said which month it was.
+ *
+ * The bug was masked for as long as the array order happened to be favourable;
+ * clearing the local cache in v10.20.7 changed the order and exposed it. Order
+ * is not a contract — this filters on the budget's declared identity instead.
+ *
+ * Kept separate from `budgetLines` on purpose: that function is pinned by a
+ * parity test against the Deno `_shared` port, and changing its shape would
+ * break the port without cause.
+ */
+export function budgetLinesForMonth(
+  budgets: Budget[], allocations: BudgetAllocation[], monthKey: string,
+): Budget[] {
+  const [y, m] = monthKey.split('-').map(Number);
+  return budgetLines(budgets, allocations).filter((b) => {
+    if (b.scope === 'annual') return b.periodYear === y;
+    if (b.periodYear != null && b.periodMonth != null) {
+      return b.periodYear === y && b.periodMonth === m;
+    }
+    // Legacy rows carry an explicit window rather than a scope identity.
+    if (b.periodStart && b.periodEnd) {
+      return b.periodStart <= `${monthKey}-31` && b.periodEnd >= `${monthKey}-01`;
+    }
+    // Audit F5 — a LEGACY budget (a category + limit, no scope/period/window,
+    // the pre-container shape) is a rolling monthly budget: it applies to every
+    // month. Without this branch the container-model switch would have made
+    // every legacy budget invisible to Pulse and Ask Vyact.
+    return !!b.category;
+  });
+}
+
 // v9.1 §4 — resolve a budget's scope+identity into a concrete [start, end] range.
 //   month  → first..last day of (year, month)
 //   annual → Jan 1 .. Dec 31 of year
@@ -378,19 +417,28 @@ export interface PulseScore {
 export function computePulseScore(
   transactions: Transaction[], budgets: Budget[], _goals: Goal[], debts: Debt[],
   baseCurrency: string, rates: ExchangeRates,
+  allocations: BudgetAllocation[] = [],
 ): PulseScore {
   const mk = nowMonthKey();
   const { income, expense } = monthlyData(transactions, mk, baseCurrency, rates);
 
-  // 1. Budget compliance — applicable only if budgets exist
-  const budgetApplicable = budgets.length > 0;
+  // 1. Budget compliance — applicable only if budgets exist.
+  //    Audit F5: compliance reads the CURRENT month's allocation-derived
+  //    category lines (budgetLinesForMonth), never raw container budgets — a
+  //    container with no category used to look like zero spending and perfect
+  //    compliance. And "on budget" means spending UP TO the plan: ≤100% is a
+  //    full score; only overspend degrades it (the old formula decayed toward
+  //    zero as the budget was consumed, so spending exactly the plan scored 0).
+  const lines = budgetLinesForMonth(budgets, allocations, mk);
+  const budgetApplicable = lines.length > 0;
   let budgetScore = 0;
   if (budgetApplicable) {
     const spend = spendByCategory(transactions, mk, baseCurrency, rates);
-    const compliance = budgets.map(b => {
+    const compliance = lines.map(b => {
       const limitBase = convert(b.limit, b.currency, baseCurrency, rates);
       const pct = limitBase > 0 ? (spend[b.category ?? ''] || 0) / limitBase * 100 : 0;
-      return clamp(100 - pct, 0, 100);
+      if (pct <= 100) return 100;                     // on/under budget: full
+      return clamp(200 - pct, 0, 100);                // overspend degrades
     });
     budgetScore = compliance.reduce((s, v) => s + v, 0) / compliance.length;
   }
