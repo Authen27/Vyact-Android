@@ -32,7 +32,7 @@ const CHIP_CATEGORY: Record<string, string> = {
   utilities: 'utilities',
   phone: 'utilities',
   subscriptions: 'entertainment',
-  transport: 'transport',
+  transport: 'travel',      // v10.21 — the category merged; the bill key did not
   childcare: 'childcare',
   groceries: 'groceries',
   insurance: 'insurance',
@@ -53,11 +53,16 @@ const iso = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pa
 
 /**
  * The next calendar date landing on `dayOfMonth`, STRICTLY AFTER `from`. Used so
- * an onboarding schedule's first occurrence is always in the future — which both
- * (a) prevents `upsertRecurring` from seeding an immediate transaction (its seed
- * guard is `startDate <= today`), and (b) means nothing posts until the real
- * date arrives and the user approves it. Clamps to the month's last day for
- * short months (e.g. day 31 in February → the 28th/29th).
+ * an onboarding schedule's first occurrence is always in the future, meaning
+ * nothing posts until the real date arrives and the user approves it. Clamps to
+ * the month's last day for short months (e.g. day 31 in February → the 28th/29th).
+ *
+ * This also used to be load-bearing for a second reason: `upsertRecurring`
+ * seeded an immediate transaction whenever `startDate <= today`, and a future
+ * start was how onboarding dodged it. That seeding was REMOVED in v10.20.6 —
+ * creating a schedule no longer posts anything — so this function now serves
+ * only its stated purpose. (The workaround existing at all was a good sign the
+ * seeding was wrong; it took a user report to act on it.)
  */
 export function nextMonthlyDate(dayOfMonth: number, from: Date): string {
   const y = from.getUTCFullYear();

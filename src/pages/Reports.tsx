@@ -1,26 +1,35 @@
-import { useState, useMemo, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import EmptyState from '../components/ui/EmptyState';
+import EstimatedTag from '../components/ui/EstimatedTag';
+import { Input, Select } from '../components/ui/Input';
 import { CategoryDonut } from '../components/charts/DonutCharts';
 import {
-  IncomeExpenseArea, NetBarChart, CategoryBars,
+  IncomeExpenseArea, NetBarChart, CategoryBars, BudgetActualBars,
 } from '../components/charts/ReportCharts';
 import {
-  reportableTxns, effectiveAmount,
+  reportableTxns, effectiveAmount, monthlyData, totalMonthlyDebtPayment,
 } from '../lib/calculations';
-import { fmt, getMonthKey, nowMonthKey } from '../lib/format';
+import { fmt, fmtSigned, getMonthKey, nowMonthKey, today } from '../lib/format';
 import { useCategoryClassifications } from '../lib/categorization';
-import { getMoneyMapMode } from '../lib/featureFlags';
+import { computeNetWorth } from '../lib/netWorth';
+import { reportAccountId, type ReportPeriod } from '../lib/reportsModel';
+import {
+  GROUPINGS, RANGE_PRESETS, effectiveGrouping, firstReportableDate, groupingFromParam, inRange, rangeBuckets,
+  rangeFromParams, rangeLabel, resolveRange, writeRangeParams, type RangePreset,
+} from '../lib/reportRange';
+import { budgetTrends, type BudgetTrendRow } from '../lib/budgetTrends';
+import { baselineLabel, essentialRunway, RUNWAY_BASELINE_MONTHS } from '../lib/essentialRunway';
 import Money from '../components/ui/Money';
-import type { Transaction } from '../types';
 import SavedViewsBar from '../components/savedViews/SavedViewsBar';
 
-type Period = 'day' | 'week' | 'month' | 'quarter' | 'year';
+type Period = ReportPeriod;
 const PERIOD_LABELS: Record<Period, string> = { day: 'Day', week: 'Week', month: 'Month', quarter: 'Quarter', year: 'Year' };
 const PERIOD_TITLE: Record<Period, string>  = { day: 'Daily', week: 'Weekly', month: 'Monthly', quarter: 'Quarterly', year: 'Annual' };
+const TREND_STATUS: Record<BudgetTrendRow['status'], string> = { under: 'Under', on: 'On budget', over: 'Over', 'in-progress': 'In progress' };
 
 export default function Reports() {
   const { t } = useTranslation();
@@ -29,11 +38,29 @@ export default function Reports() {
   const rates = useStore(s => s.rates);
   const members = useStore(s => s.members);
   const accounts = useStore(s => s.accounts);
+  const assets = useStore(s => s.assets);
+  const debts = useStore(s => s.debts);
+  const budgets = useStore(s => s.budgets);
+  const budgetAllocations = useStore(s => s.budgetAllocations);
   const baseCur = profile.baseCurrency;
   const classifications = useCategoryClassifications();
-  const [period, setPeriod] = useState<Period>('month');
   const [searchParams, setSearchParams] = useSearchParams();
   const fromSavings = searchParams.get('from') === 'savings';
+
+  // v10.31.0 — ONE date range drives every flow view below (lib/reportRange.ts).
+  // It lives in the URL, so a reload or a shared link shows the same window.
+  const firstDate = useMemo(() => firstReportableDate(txns), [txns]);
+  const range = useMemo(() => rangeFromParams(searchParams, firstDate), [searchParams, firstDate]);
+  const requestedGrouping = groupingFromParam(searchParams.get('group'));
+  const { grouping: period, coarsened } = useMemo(() => effectiveGrouping(range, requestedGrouping), [range, requestedGrouping]);
+
+  function applyRange(preset: RangePreset, from: string, to: string, grouping: Period = requestedGrouping) {
+    const next = resolveRange({ preset, from, to }, firstDate);
+    // An in-progress custom edit (e.g. a start after the end) keeps the current window.
+    if (preset === 'custom' && next.preset !== 'custom') return;
+    setSearchParams(writeRangeParams(searchParams, next, grouping), { replace: true });
+  }
+
   // Savings banner: compute current-month income/expense for the formula display.
   const currentMk = nowMonthKey();
   const savingsIncome = useMemo(() =>
@@ -45,98 +72,45 @@ export default function Reports() {
       .reduce((s, t) => s + effectiveAmount(t, baseCur, rates), 0),
     [txns, baseCur, rates, currentMk]);
   const savingsRate = savingsIncome > 0 ? Math.round((savingsIncome - savingsExpense) / savingsIncome * 100) : 0;
-  // R6 (g) — By-member / By-account breakouts are now a permanent part of Reports
-  // (the money model is permanent). They fold over `reportableTxns`, so transfers
-  // and balance adjustments are excluded and never skew the breakdowns.
-  const showBreakouts = true;
+  const position = useMemo(() => computeNetWorth({ assets, accounts, debts, transactions: txns }, baseCur, rates), [assets, accounts, debts, txns, baseCur, rates]);
+  const month = useMemo(() => monthlyData(txns, currentMk, baseCur, rates), [txns, currentMk, baseCur, rates]);
+  const minimumPayments = totalMonthlyDebtPayment(debts, baseCur, rates);
+  const runway = useMemo(() => essentialRunway({
+    transactions: txns, classifications, liquidAssets: position.liquidAssets, baseCurrency: baseCur, rates,
+  }), [txns, classifications, position.liquidAssets, baseCur, rates]);
 
-  // Build period buckets
-  const data = useMemo(() => buildPeriodData(period, txns, baseCur, rates), [period, txns, baseCur, rates]);
+  // Flow views: every one of these reads the same range.
+  const data = useMemo(() => rangeBuckets(txns, range, period, baseCur, rates), [txns, range, period, baseCur, rates]);
+  const rangeRows = useMemo(() => inRange(txns, range), [txns, range]);
 
-  const allInc = reportableTxns(txns).filter(t => t.type === 'income').reduce((s, t) => s + effectiveAmount(t, baseCur, rates), 0);
-  const allExp = reportableTxns(txns).filter(t => t.type === 'expense').reduce((s, t) => s + effectiveAmount(t, baseCur, rates), 0);
+  const allInc = rangeRows.filter(t => t.type === 'income').reduce((s, t) => s + effectiveAmount(t, baseCur, rates), 0);
+  const allExp = rangeRows.filter(t => t.type === 'expense').reduce((s, t) => s + effectiveAmount(t, baseCur, rates), 0);
   const avgNet = data.length ? data.reduce((s, d) => s + d.net, 0) / data.length : 0;
 
-  // Donut: aggregate spend across the period range
-  const start = data[0]?.start || '0000-00-00';
-  const end   = data[data.length - 1]?.end || '9999-12-31';
   const donutData = useMemo(() => {
     const by: Record<string, number> = {};
-    txns.filter(t => t.type === 'expense' && !t.excluded && t.date >= start && t.date <= end)
-        .forEach(t => { by[t.category] = (by[t.category] || 0) + effectiveAmount(t, baseCur, rates); });
+    rangeRows.filter(t => t.type === 'expense')
+      .forEach(t => { by[t.category] = (by[t.category] || 0) + effectiveAmount(t, baseCur, rates); });
     return Object.entries(by).sort(([, a], [, b]) => b - a).map(([catId, amount]) => ({ catId, amount }));
-  }, [txns, start, end, baseCur, rates]);
+  }, [rangeRows, baseCur, rates]);
 
-  // Needs vs Wants breakdown for this period
+  // Needs vs Wants breakdown for the range
   const needsWants = useMemo(() => {
-    let needs = 0, wants = 0;
+    let needs = 0, wants = 0, unclassified = 0;
     donutData.forEach(({ catId, amount }) => {
       const tag = classifications[catId];
       if (tag === 'need') needs += amount;
       else if (tag === 'want') wants += amount;
+      else unclassified += amount;
     });
-    return { needs, wants };
+    return { needs, wants, unclassified };
   }, [donutData, classifications]);
 
-  // Top expense categories all-time
-  const topCats = useMemo(() => {
-    const by: Record<string, number> = {};
-    reportableTxns(txns).filter(t => t.type === 'expense').forEach(t => {
-      by[t.category] = (by[t.category] || 0) + effectiveAmount(t, baseCur, rates);
-    });
-    return Object.entries(by).sort(([, a], [, b]) => b - a).slice(0, 8).map(([catId, amount]) => ({ catId, amount }));
-  }, [txns, baseCur, rates]);
-
-  // v7.2 — By-member / By-account breakouts (Money Map item #8). When the
-  // flag is `on` AND the cloud adapter exposes pre-aggregated `v_txn_by_*`
-  // views we use them (saves downloading every txn). Otherwise we fold
-  // client-side over `reportableTxns` — still the correctness baseline.
-  const adapter = useStore(s => s.adapter);
-  const currentHouseholdId = useStore(s => s.currentHouseholdId);
-  const useCloudBreakouts = getMoneyMapMode() === 'on';
-  const [cloudByMember, setCloudByMember] = useState<Array<{ member_id: string | null; type: string; currency: string; total: number; n: number }> | null>(null);
-  const [cloudByAccount, setCloudByAccount] = useState<Array<{ account_id: string | null; type: string; currency: string; total: number; n: number }> | null>(null);
-  useEffect(() => {
-    if (!useCloudBreakouts || !showBreakouts) { setCloudByMember(null); setCloudByAccount(null); return; }
-    let alive = true;
-    void (async () => {
-      const [m, a] = await Promise.all([
-        adapter.queryTxnByMember?.(currentHouseholdId),
-        adapter.queryTxnByAccount?.(currentHouseholdId),
-      ]);
-      if (!alive) return;
-      setCloudByMember(m ?? null);
-      setCloudByAccount(a ?? null);
-    })();
-    return () => { alive = false; };
-  }, [adapter, currentHouseholdId, useCloudBreakouts, showBreakouts, txns.length]);
+  const topCats = useMemo(() => donutData.slice(0, 8), [donutData]);
 
   const byMember = useMemo(() => {
-    if (!showBreakouts) return [] as { id: string; name: string; income: number; expense: number; net: number }[];
-    if (cloudByMember) {
-      const map = new Map<string, { income: number; expense: number }>();
-      cloudByMember.forEach(r => {
-        const id = r.member_id || '';
-        const cur = map.get(id) || { income: 0, expense: 0 };
-        // Pre-agg view stores native-currency totals. Convert via rates so we
-        // can compare to the headline numbers, which are also rates-converted.
-        const amt = r.currency === baseCur ? r.total : r.total * (rates[r.currency] || 1) / (rates[baseCur] || 1);
-        if (r.type === 'income') cur.income += amt;
-        else if (r.type === 'expense') cur.expense += amt;
-        map.set(id, cur);
-      });
-      const rows = [...map.entries()].map(([id, v]) => ({
-        id,
-        name: members.find(m => m.id === id)?.name || (id ? '—' : 'Unassigned'),
-        income: v.income,
-        expense: v.expense,
-        net: v.income - v.expense,
-      }));
-      rows.sort((a, b) => b.expense - a.expense);
-      return rows;
-    }
     const map = new Map<string, { income: number; expense: number }>();
-    reportableTxns(txns).forEach(tx => {
+    rangeRows.forEach(tx => {
       const key = tx.initiatedBy || tx.memberId || '';
       const cur = map.get(key) || { income: 0, expense: 0 };
       const amt = effectiveAmount(tx, baseCur, rates);
@@ -153,36 +127,12 @@ export default function Reports() {
     }));
     rows.sort((a, b) => b.expense - a.expense);
     return rows;
-  }, [txns, baseCur, rates, members, showBreakouts, cloudByMember]);
+  }, [rangeRows, baseCur, rates, members]);
 
   const byAccount = useMemo(() => {
-    if (!showBreakouts) return [] as { id: string; name: string; income: number; expense: number; net: number }[];
-    if (cloudByAccount) {
-      const map = new Map<string, { income: number; expense: number }>();
-      cloudByAccount.forEach(r => {
-        const id = r.account_id || '';
-        const cur = map.get(id) || { income: 0, expense: 0 };
-        const amt = r.currency === baseCur ? r.total : r.total * (rates[r.currency] || 1) / (rates[baseCur] || 1);
-        if (r.type === 'income') cur.income += amt;
-        else if (r.type === 'expense') cur.expense += amt;
-        map.set(id, cur);
-      });
-      const rows = [...map.entries()].map(([id, v]) => {
-        const acc = accounts.find(a => a.id === id);
-        return {
-          id,
-          name: acc?.name || (id ? '—' : 'No account'),
-          income: v.income,
-          expense: v.expense,
-          net: v.income - v.expense,
-        };
-      });
-      rows.sort((a, b) => b.expense - a.expense);
-      return rows;
-    }
     const map = new Map<string, { income: number; expense: number }>();
-    reportableTxns(txns).forEach(tx => {
-      const key = tx.accountId || tx.linkedAssetId || '';
+    rangeRows.forEach(tx => {
+      const key = reportAccountId(tx, accounts);
       const cur = map.get(key) || { income: 0, expense: 0 };
       const amt = effectiveAmount(tx, baseCur, rates);
       if (tx.type === 'income') cur.income += amt;
@@ -201,10 +151,19 @@ export default function Reports() {
     });
     rows.sort((a, b) => b.expense - a.expense);
     return rows;
-  }, [txns, baseCur, rates, accounts, showBreakouts, cloudByAccount]);
+  }, [rangeRows, baseCur, rates, accounts]);
+
+  const trends = useMemo(() => budgetTrends({
+    budgets, allocations: budgetAllocations, transactions: txns, baseCurrency: baseCur, rates, range,
+  }), [budgets, budgetAllocations, txns, baseCur, rates, range]);
+  const trendRows = [...trends.monthly, ...trends.annual];
+
+  // Saved views drop any value of 'all' when sanitising, so "All time" is stored as 'all-time'.
+  const savedFilters: Record<string, unknown> = { period: requestedGrouping, range: range.preset === 'all' ? 'all-time' : range.preset,
+    ...(range.preset === 'custom' ? { start: range.from, end: range.to } : {}) };
 
   return (
-    <div>
+    <div className="ui-pilot min-w-0" data-testid="reports-page">
       <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
         <div>
           <h1 className="display-italic text-4xl text-ink mb-1.5">{t('reports')}</h1>
@@ -212,6 +171,7 @@ export default function Reports() {
             Financial performance over time
           </p>
         </div>
+<<<<<<< ANDROID
         {/* Board D M1 §.srail — the period selector is an inset SEGMENTED rail
             (one sunken pill; the active segment is a raised accent-tinted chip),
             matching the Transactions type rail. Horizontally scrollable so it
@@ -234,17 +194,142 @@ export default function Reports() {
               {PERIOD_LABELS[p]}
             </button>
           ))}
+||||||| UPSTREAM-BASE
+        {/* Board D M1 §.srail — the period selector is an inset SEGMENTED rail
+            (one sunken pill; the active segment is a raised accent-tinted chip),
+            matching the Transactions type rail. */}
+        <div
+          className="inline-flex max-w-full gap-1 p-1 rounded-pill overflow-x-auto [&::-webkit-scrollbar]:hidden"
+          style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)', scrollbarWidth: 'none' }}
+          role="tablist" aria-label="Report period"
+        >
+          {(['day','week','month','quarter','year'] as Period[]).map(p => (
+            <button
+              key={p}
+              role="tab" aria-selected={period === p}
+              onClick={() => setPeriod(p)}
+              className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] whitespace-nowrap flex-shrink-0"
+              style={period === p
+                ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
+                : { color: 'var(--ff-ink-3)', background: 'transparent' }}
+            >
+              {PERIOD_LABELS[p]}
+            </button>
+          ))}
+=======
+        <div className="flex flex-col gap-2 w-full sm:w-auto sm:items-end min-w-0">
+          <div className="flex flex-wrap items-end gap-2 min-w-0">
+            <label className="min-w-[10rem] text-xs text-ink-dim">
+              <span className="block mb-1">Date range</span>
+              <Select value={range.preset} className="min-h-[44px]"
+                onChange={event => applyRange(event.target.value as RangePreset, range.from, range.to)}>
+                {RANGE_PRESETS.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </Select>
+            </label>
+            {range.preset === 'custom' && (
+              <>
+                <label className="text-xs text-ink-dim">
+                  <span className="block mb-1">From</span>
+                  <Input type="date" value={range.from} max={range.to} className="min-h-[44px]"
+                    onChange={event => applyRange('custom', event.target.value, range.to)} />
+                </label>
+                <label className="text-xs text-ink-dim">
+                  <span className="block mb-1">To</span>
+                  <Input type="date" value={range.to} min={range.from} max={today()} className="min-h-[44px]"
+                    onChange={event => applyRange('custom', range.from, event.target.value)} />
+                </label>
+              </>
+            )}
+          </div>
+          {/* Board D M1 §.srail — the grouping selector is an inset SEGMENTED rail
+              (one sunken pill; the active segment is a raised accent-tinted chip). */}
+          <div
+            className="inline-flex max-w-full gap-1 p-1 rounded-pill overflow-x-auto [&::-webkit-scrollbar]:hidden"
+            style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)', scrollbarWidth: 'none' }}
+            role="tablist" aria-label="Report period"
+          >
+            {GROUPINGS.map(p => (
+              <button
+                key={p}
+                role="tab" aria-selected={period === p}
+                onClick={() => applyRange(range.preset, range.from, range.to, p)}
+                className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] whitespace-nowrap flex-shrink-0"
+                style={period === p
+                  ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
+                  : { color: 'var(--ff-ink-3)', background: 'transparent' }}
+              >
+                {PERIOD_LABELS[p]}
+              </button>
+            ))}
+          </div>
+>>>>>>> UPSTREAM
         </div>
       </div>
+
+      <section aria-label="Household position" className="mb-section border-y border-line py-5">
+        <h2 className="text-xl font-display font-medium text-ink mb-4">Household position</h2>
+        <dl className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+          {[
+            { label: 'Net worth', value: position.netWorth },
+            { label: 'Assets', value: position.totalAssets },
+            { label: 'Liabilities', value: position.totalLiabilities },
+            { label: 'Liquid assets', value: position.liquidAssets },
+          ].map(item => <div key={item.label} className="min-w-0"><dt className="text-sm text-ink-dim">{item.label}</dt><dd className="num text-lg text-ink mt-1 [overflow-wrap:anywhere]">{item.value < 0 ? fmtSigned(item.value, baseCur) : fmt(item.value, baseCur)}</dd></div>)}
+        </dl>
+        <p className="text-xs text-ink-dim mt-3">Current ledger position, not a historical valuation chart. Liquid assets are not automatically spare cash.</p>
+        <h3 className="text-base font-medium text-ink mt-5 mb-3">This month · {currentMk}</h3>
+        <dl className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+          <div className="min-w-0"><dt className="text-sm text-ink-dim">Income</dt><dd className="num [overflow-wrap:anywhere]">{fmt(month.income, baseCur)}</dd></div>
+          <div className="min-w-0"><dt className="text-sm text-ink-dim">Spending</dt><dd className="num [overflow-wrap:anywhere]">{fmt(month.expense, baseCur)}</dd></div>
+          <div className="min-w-0"><dt className="text-sm text-ink-dim">Income retained</dt><dd className="num">{month.income > 0 ? `${savingsRate}%` : 'Not available'}</dd></div>
+          <div className="min-w-0"><dt className="text-sm text-ink-dim">Tracked minimum debt payments / month</dt><dd className="num [overflow-wrap:anywhere]">{fmt(minimumPayments, baseCur)}</dd></div>
+        </dl>
+        <p className="text-xs text-ink-dim mt-3">Month still in progress. Payment commitments use recorded debt terms; untracked bills and card payments are not included.</p>
+
+        {/* v10.31.0 — essential-spend runway with a STATED completed-month baseline (lib/essentialRunway.ts). */}
+        <section aria-label="Essential-spend runway" className="mt-5 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-2">
+            <h3 className="text-base font-medium text-ink">Essential-spend runway</h3>
+            <EstimatedTag confidence="estimated" title="An estimate from recorded spending. Review the calculation basis." />
+          </div>
+          {runway.status === 'ready' ? (
+            <p className="text-sm text-ink-mid [overflow-wrap:anywhere]">
+              <span className="num text-lg text-ink">{(runway.months ?? 0).toFixed(1)} months</span>{' '}
+              of essential spending covered by liquid assets ({runway.liquidAssets < 0 ? fmtSigned(runway.liquidAssets, baseCur) : fmt(runway.liquidAssets, baseCur)} against {fmt(runway.averageEssential ?? 0, baseCur)} a month).
+            </p>
+          ) : runway.status === 'no-baseline' ? (
+            <p className="text-sm text-ink-mid">Needs at least one completed month of recorded spending.</p>
+          ) : (
+            <p className="text-sm text-ink-mid">Not available: no essential spending was recorded in {baselineLabel(runway.baselineMonths)}.</p>
+          )}
+          <details className="mt-1 text-xs text-ink-dim">
+            <summary className="cursor-pointer min-h-[44px] flex items-center">Calculation basis</summary>
+            <ul className="list-disc pl-4 space-y-1.5 leading-relaxed">
+              <li>If income stopped and only essential spending continued. An estimate, not advice or a financial-health score.</li>
+              <li>{runway.baselineMonths.length
+                ? `Based on ${runway.baselineMonths.length} completed month${runway.baselineMonths.length === 1 ? '' : 's'} with recorded spending: ${baselineLabel(runway.baselineMonths)}.`
+                : `Uses up to ${RUNWAY_BASELINE_MONTHS} completed months with recorded spending.`} The current month is never included.</li>
+              <li>Essential spending is reportable spending in categories classified as needs. Wants, transfers, investments and private entries are excluded, and so are bills or minimum payments that are not recorded as expenses.</li>
+              <li>Liquid assets are cash, bank accounts and liquid assets from the household position; credit limits and investments are not counted.</li>
+            </ul>
+          </details>
+        </section>
+
+        <nav aria-label="Household planning details" className="flex flex-wrap gap-x-5 gap-y-2 mt-3 text-sm text-coral">
+          <Link to="/budgets" className="py-2">Budgets</Link><Link to="/recurring" className="py-2">Upcoming bills</Link><Link to="/debts" className="py-2">Debt payoff</Link><Link to="/networth" className="py-2">Assets and liabilities</Link>
+        </nav>
+      </section>
 
       <div className="mb-3 flex justify-end">
         <SavedViewsBar
           page="reports"
-          filters={{ period }}
+          filters={savedFilters}
           onApply={f => {
-            if (typeof f.period === 'string' && ['day','week','month','quarter','year'].includes(f.period)) {
-              setPeriod(f.period as Period);
-            }
+            const saved = typeof f.range === 'string' ? (f.range === 'all-time' ? 'all' : f.range) : range.preset;
+            const preset = saved as RangePreset;
+            const next = resolveRange({ preset, from: typeof f.start === 'string' ? f.start : null, to: typeof f.end === 'string' ? f.end : null }, firstDate);
+            const grouping = groupingFromParam(typeof f.period === 'string' ? f.period : null, requestedGrouping);
+            setSearchParams(writeRangeParams(searchParams, next, grouping), { replace: true });
           }}
         />
       </div>
@@ -257,7 +342,7 @@ export default function Reports() {
             <span className="font-semibold text-ink">Savings rate {savingsRate}%</span>
             {' — '}
             {savingsIncome > 0
-              ? `You kept ${fmt(savingsIncome - savingsExpense, baseCur)} of ${fmt(savingsIncome, baseCur)} income this month.`
+              ? `Income minus spending: ${fmtSigned(savingsIncome - savingsExpense, baseCur)} from ${fmt(savingsIncome, baseCur)} income this month.`
               : 'No income recorded this month.'}
             <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim mt-1">
               Formula: (Income − Expenses) ÷ Income × 100
@@ -271,6 +356,13 @@ export default function Reports() {
         </div>
       )}
 
+      {/* Chart window first: every panel below reads this one range. */}
+      <p className="text-sm text-ink-dim mb-3">
+        Chart window: {rangeLabel(range)}. Grouped by {PERIOD_LABELS[period].toLowerCase()}
+        {coarsened ? ` (a ${PERIOD_LABELS[requestedGrouping].toLowerCase()} view would draw more than 60 bars)` : ''}; the first and last intervals may be partial.
+        Every panel below uses this range; the household position and this month above stay current.
+      </p>
+
       {/* Board D M1 §.stat — neu stat tiles with a delta subline, scrolling as a
           carousel on phones and settling into a row on wider screens.
           "Accidental Wealth" rule: expenses are INFORMATION, so the total spent
@@ -281,9 +373,9 @@ export default function Reports() {
         const avgExpense = data.length ? data.reduce((s, d) => s + d.expense, 0) / data.length : 0;
         const per = PERIOD_LABELS[period].toLowerCase();
         const tiles: { lbl: string; value: React.ReactNode; delta: string }[] = [
-          { lbl: 'Income · all time',   value: <Money amount={allInc} currency={baseCur} className="num font-bold text-[21px] leading-none text-sage" maxChars={9} />, delta: `avg ${fmt(Math.round(avgIncome), baseCur)}/${per}` },
-          { lbl: 'Expenses · all time', value: <Money amount={allExp} currency={baseCur} className="num font-bold text-[21px] leading-none text-ink"  maxChars={9} />, delta: `avg ${fmt(Math.round(avgExpense), baseCur)}/${per}` },
-          { lbl: 'Net flow',            value: <Money amount={allInc - allExp} currency={baseCur} className={`num font-bold text-[21px] leading-none ${allInc - allExp >= 0 ? 'text-sage' : 'text-terra'}`} maxChars={9} />, delta: allInc > 0 ? `kept ${kept}%` : 'no income yet' },
+          { lbl: 'Income · in range',   value: <Money amount={allInc} currency={baseCur} className="num font-bold text-[21px] leading-none text-sage" maxChars={9} />, delta: `avg ${fmt(Math.round(avgIncome), baseCur)}/${per}` },
+          { lbl: 'Expenses · in range', value: <Money amount={allExp} currency={baseCur} className="num font-bold text-[21px] leading-none text-ink"  maxChars={9} />, delta: `avg ${fmt(Math.round(avgExpense), baseCur)}/${per}` },
+          { lbl: 'Net flow',            value: <Money amount={allInc - allExp} currency={baseCur} className={`num font-bold text-[21px] leading-none ${allInc - allExp >= 0 ? 'text-sage' : 'text-terra'}`} maxChars={9} />, delta: allInc > 0 ? `kept ${kept}%` : 'no income in range' },
           { lbl: `Avg ${PERIOD_TITLE[period]} net`, value: <Money amount={avgNet} currency={baseCur} className={`num font-bold text-[21px] leading-none ${avgNet >= 0 ? 'text-sage' : 'text-terra'}`} maxChars={9} />, delta: `over ${data.length} ${per}${data.length === 1 ? '' : 's'}` },
         ];
         return (
@@ -301,46 +393,39 @@ export default function Reports() {
         );
       })()}
 
-      {/* Income vs Expense area chart (Recharts) */}
-      <Panel title="Income vs Expenses Trend" sub={PERIOD_TITLE[period]} className="mb-3.5">
+      <Panel title="Income vs Expenses Trend" sub={PERIOD_TITLE[period]} className="mb-3.5 min-w-0">
         {data.length === 0 || data.every(d => d.income === 0 && d.expense === 0)
           ? <EmptyState icon="📊" message="No data for this period" />
           : <IncomeExpenseArea data={data} currency={baseCur} />
         }
       </Panel>
 
-      <div className="grid lg:grid-cols-2 gap-3.5 mb-3.5">
-        <Panel title="Saved vs Overspent" sub={`Did you end each ${period} ahead or behind?`}>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 mb-3.5 min-w-0">
+        <Panel title="Cash Flow Surplus / Shortfall" sub={`Income minus spending per ${period}; not a bank balance`} className="min-w-0">
           {data.length === 0
             ? <EmptyState icon="📊" message="No data" />
             : <NetBarChart data={data} currency={baseCur} />
           }
         </Panel>
-        <Panel title="Category Breakdown" sub="This period">
-          <CategoryDonut data={donutData} currency={baseCur} />
+        <Panel title="Category Breakdown" sub="Chart date range" className="min-w-0">
+          <CategoryDonut data={donutData} currency={baseCur} animate={false} />
           {/* Board D — needs-vs-wants verdict split bar. Both segments round
               their OWN outer corner (rather than relying solely on the
               container's overflow-hidden to clip square corners into shape)
               and the wants segment fills via flex-1 instead of an explicit
               percent width, so independent per-child pixel rounding can never
               leave a 1px gap/seam or bleed past the pill's rounded ends. */}
-          {(needsWants.needs > 0 || needsWants.wants > 0) && (() => {
+          {(needsWants.needs > 0 || needsWants.wants > 0 || needsWants.unclassified > 0) && (() => {
             const total = needsWants.needs + needsWants.wants || 1;
             const nPct = (needsWants.needs / total) * 100;
             const wPct = (needsWants.wants / total) * 100;
             const bothVisible = needsWants.needs > 0 && needsWants.wants > 0;
-            // Board D M2 — the bar carries a plain-language verdict, not just
-            // percentages. Thresholds are descriptive, never scolding.
-            const verdict = nPct >= 70 ? { text: 'solid',        cls: 'text-sage' }
-                          : nPct >= 50 ? { text: 'balanced',     cls: 'text-sage' }
-                          : nPct >= 35 ? { text: 'wants-leaning', cls: 'text-honey' }
-                          :              { text: 'mostly wants', cls: 'text-honey' };
             return (
-              <div className="mt-4">
-                <div className="flex items-center justify-between mb-1.5">
+              <section aria-label="Needs vs Wants" className="mt-4 px-4 pb-4 min-w-0 max-w-full">
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-1.5">
                   <span className="mono-label">Needs vs Wants</span>
-                  <span className={`text-[11.5px] font-semibold ${verdict.cls}`}>
-                    {Math.round(nPct)}% needs — {verdict.text}
+                  <span className="text-sm text-ink-mid">
+                    {needsWants.needs + needsWants.wants > 0 ? `${Math.round(nPct)}% needs` : 'No classified spending'}
                   </span>
                 </div>
                 <div className="flex h-8 rounded-full overflow-hidden" style={{ boxShadow: 'var(--neu-inset)' }} aria-hidden>
@@ -353,17 +438,19 @@ export default function Reports() {
                       style={{ background: 'hsl(var(--honey))', color: 'var(--accent-ink)' }}>{wPct >= 16 ? `Wants ${Math.round(wPct)}%` : ''}</div>
                   )}
                 </div>
-                <div className="flex justify-between mt-1.5 mono-label">
-                  <span className="text-sage">Needs {fmt(needsWants.needs, baseCur)}</span>
-                  <span className="text-honey">Wants {fmt(needsWants.wants, baseCur)}</span>
-                </div>
-              </div>
+                <dl className="grid grid-cols-2 gap-3 mt-3 text-sm">
+                  <div className="min-w-0"><dt className="text-ink-dim">Needs</dt><dd className="num text-sage whitespace-normal [overflow-wrap:anywhere]">{fmt(needsWants.needs, baseCur)}</dd></div>
+                  <div className="min-w-0 text-right"><dt className="text-ink-dim">Wants</dt><dd className="num text-honey whitespace-normal [overflow-wrap:anywhere]">{fmt(needsWants.wants, baseCur)}</dd></div>
+                </dl>
+                {needsWants.unclassified > 0 && <p className="text-sm text-ink-mid mt-2 [overflow-wrap:anywhere]">Unclassified: {fmt(needsWants.unclassified, baseCur)}</p>}
+                <p className="text-xs text-ink-dim mt-2 leading-relaxed">Share of classified spending, not a financial-health score.</p>
+              </section>
             );
           })()}
         </Panel>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-3.5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 min-w-0">
         <Panel title="Period Summary">
           {data.length === 0
             ? <EmptyState icon="📊" message="No data" />
@@ -374,7 +461,7 @@ export default function Reports() {
                 </div>
                 {[...data].reverse().map((d, i) => (
                   <div key={i} className="grid grid-cols-4 gap-2 px-4 py-2 border-b border-line last:border-b-0 text-[0.78rem]">
-                    <div className="truncate min-w-0">{d.label}</div>
+                    <div className="truncate min-w-0" title={`${d.start} to ${d.end}`}>{d.label}{d.partial ? ' (partial)' : ''}</div>
                     <div className="text-right min-w-0"><Money amount={d.income} currency={baseCur} maxChars={8} className="text-sage" /></div>
                     <div className="text-right min-w-0"><Money amount={d.expense} currency={baseCur} maxChars={8} className="text-terra" /></div>
                     <div className="text-right min-w-0"><Money amount={d.net} currency={baseCur} maxChars={8} signed className={d.net >= 0 ? 'text-sage' : 'text-terra'} /></div>
@@ -384,18 +471,69 @@ export default function Reports() {
             )
           }
         </Panel>
-        <Panel title="Top Expense Categories">
-          <CategoryBars data={topCats} currency={baseCur} />
+        <Panel title="Top Expense Categories" sub="In range, reportable" className="min-w-0">
+          <section aria-label="Top expense categories" className="min-w-0">
+            <CategoryBars data={topCats} currency={baseCur} />
+          </section>
         </Panel>
       </div>
 
-      {/* v7.2 Money Map — By member / By account breakouts. Flag-gated. */}
-      {showBreakouts && (byMember.length > 0 || byAccount.length > 0) && (
-        <div className="grid lg:grid-cols-2 gap-3.5 mt-3.5">
-          <Panel title="By member" sub="All-time, reportable">
+      {/* v10.31.0 — budget vs actual by MATCHING SCOPE (lib/budgetTrends.ts). */}
+      <Panel title="Budget vs actual" sub="Each budget over its own full period" className="mt-3.5 min-w-0">
+        <section aria-label="Budget vs actual" className="min-w-0">
+          {trendRows.length === 0 ? (
+            <p className="px-4 py-6 text-sm text-ink-mid">
+              No budgets with category allocations overlap this range. <Link to="/budgets" className="text-coral">Open Budgets</Link>
+            </p>
+          ) : (
+            <>
+              {trends.monthly.length > 0 && <BudgetActualBars data={trends.monthly} currency={baseCur} />}
+              <div className="overflow-x-auto">
+                {/* Phones: Status folds under Difference so all figures stay in view. */}
+                <table className="w-full text-[0.8rem]">
+                  <thead>
+                    <tr className="bg-bg3 border-b border-line2 font-mono text-[0.56rem] tracking-[0.1em] uppercase text-ink-dim">
+                      <th scope="col" className="text-left font-normal px-3 sm:px-4 py-2.5">Period</th>
+                      <th scope="col" className="text-right font-normal px-3 sm:px-4 py-2.5">Budgeted</th>
+                      <th scope="col" className="text-right font-normal px-3 sm:px-4 py-2.5">Actual</th>
+                      <th scope="col" className="text-right font-normal px-3 sm:px-4 py-2.5">Difference</th>
+                      <th scope="col" className="hidden sm:table-cell text-right font-normal px-4 py-2.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trendRows.map(row => (
+                      <tr key={row.budgetId} className="border-b border-line last:border-b-0">
+                        <th scope="row" className="text-left font-normal px-3 sm:px-4 py-2">{row.label}{row.scope === 'annual' ? ' · annual' : ''}</th>
+                        <td className="num text-right px-3 sm:px-4 py-2">{fmt(row.budgeted, baseCur)}</td>
+                        <td className="num text-right px-3 sm:px-4 py-2">{fmt(row.actual, baseCur)}</td>
+                        <td className={`num text-right px-3 sm:px-4 py-2 ${row.difference < 0 && row.status !== 'in-progress' ? 'text-terra' : ''}`}>
+                          {row.difference < 0 ? `${fmt(-row.difference, baseCur)} over` : `${fmt(row.difference, baseCur)} left`}
+                          <span className="block sm:hidden font-ui text-[0.7rem] text-ink-dim">{TREND_STATUS[row.status]}</span>
+                        </td>
+                        <td className="hidden sm:table-cell text-right px-4 py-2">{TREND_STATUS[row.status]}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="px-4 py-3 text-xs text-ink-dim leading-relaxed">
+                Monthly budgets are compared per month and annual budgets per year, in their allocated categories only.
+                {` Completed: ${trends.completedOver} over, ${trends.completedUnder} under.`}
+                {' '}The current period is in progress, so it is not counted as over or under.
+                {trends.unallocated > 0 ? ` ${trends.unallocated} budget${trends.unallocated === 1 ? '' : 's'} without category allocations ${trends.unallocated === 1 ? 'is' : 'are'} not compared.` : ''}
+              </p>
+            </>
+          )}
+        </section>
+      </Panel>
+
+      {/* v7.2 Money Map — By member / By account breakouts. */}
+      {(byMember.length > 0 || byAccount.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5 mt-3.5 min-w-0">
+          <Panel title="By member" sub="In range, reportable">
             <BreakoutTable rows={byMember} currency={baseCur} />
           </Panel>
-          <Panel title="By account" sub="All-time, reportable">
+          <Panel title="By account" sub="In range, reportable">
             <BreakoutTable rows={byAccount} currency={baseCur} />
           </Panel>
         </div>
@@ -427,61 +565,4 @@ function BreakoutTable(props: {
       ))}
     </div>
   );
-}
-
-// ── Period bucketing ─────────────────────────────────────────
-interface Bucket { label: string; start: string; end: string; income: number; expense: number; net: number; }
-
-function buildPeriodData(period: Period, txns: Transaction[], baseCur: string, rates: Record<string, number>): Bucket[] {
-  const data: Bucket[] = [];
-  const counts: Record<Period, number> = { day: 30, week: 12, month: 12, quarter: 8, year: 5 };
-  const count = counts[period];
-  const now = new Date();
-  for (let i = count - 1; i >= 0; i--) {
-    const d = new Date(now);
-    let label = '', start = '', end = '';
-    if (period === 'day') {
-      d.setDate(d.getDate() - i);
-      const s = d.toISOString().split('T')[0];
-      start = s; end = s;
-      label = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    } else if (period === 'week') {
-      d.setDate(d.getDate() - i * 7);
-      const wkStart = new Date(d); wkStart.setDate(wkStart.getDate() - wkStart.getDay());
-      const wkEnd = new Date(wkStart); wkEnd.setDate(wkEnd.getDate() + 6);
-      start = wkStart.toISOString().split('T')[0];
-      end   = wkEnd.toISOString().split('T')[0];
-      label = wkStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    } else if (period === 'month') {
-      d.setMonth(d.getMonth() - i);
-      const y = d.getFullYear(); const m = d.getMonth();
-      start = `${y}-${String(m+1).padStart(2,'0')}-01`;
-      end   = `${y}-${String(m+1).padStart(2,'0')}-31`;
-      label = d.toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
-    } else if (period === 'quarter') {
-      d.setMonth(d.getMonth() - i * 3);
-      const y = d.getFullYear(); const q = Math.floor(d.getMonth() / 3);
-      const sm = q*3, em = sm + 2;
-      start = `${y}-${String(sm+1).padStart(2,'0')}-01`;
-      end   = `${y}-${String(em+1).padStart(2,'0')}-31`;
-      label = `Q${q+1} '${String(y).slice(2)}`;
-    } else {
-      d.setFullYear(d.getFullYear() - i);
-      const y = d.getFullYear();
-      start = `${y}-01-01`; end = `${y}-12-31`;
-      label = String(y);
-    }
-    const filtered = txns
-      .filter(t => !t.excluded && (t.type === 'income' || t.type === 'expense') && t.date >= start && t.date <= end);
-    let income = 0, expense = 0;
-    for (const t of filtered) {
-      const amt = effectiveAmount(t, baseCur, rates);
-      if (t.type === 'income') income += amt;
-      else                     expense += amt;
-    }
-    data.push({ label, start, end, income, expense, net: income - expense });
-  }
-  return data;
-  // Suppress unused getMonthKey (imported defensively)
-  void getMonthKey;
 }

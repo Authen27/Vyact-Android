@@ -7,6 +7,7 @@
 import type {
   Transaction, Budget, BudgetAllocation, Goal, Member, Debt, Asset, Account, SavedView,
   Profile, ExchangeRates, HouseholdMeta, ProfileTypeKey,
+  RecordLoanPaymentCommand, RecordLoanPaymentResult, AccountDependencies, AccountMoveResult,
 } from '../types';
 import { DEFAULT_RATES } from '../constants';
 import { uid } from './format';
@@ -17,6 +18,7 @@ import ls from './localStorageCompat';
 // no quota risk, and they need synchronous access from constructor /
 // startup paths.
 import { kvGet, kvSet, kvRemove } from './kvStore';
+import { mergeSnapshot, type NetWorthSnapshot } from './netWorthSnapshots';
 import { BudgetExistsError } from './supabaseAdapter';
 import { expected } from './faults';
 
@@ -96,6 +98,61 @@ export interface DataAdapter {
    *  as before. */
   queryTxnByMember?(householdId: string): Promise<Array<{ member_id: string | null; type: string; currency: string; total: number; n: number }> | undefined>;
   queryTxnByAccount?(householdId: string): Promise<Array<{ account_id: string | null; type: string; currency: string; total: number; n: number }> | undefined>;
+
+  /**
+   * Audit F2 — atomic loan-payment command. Present on the cloud adapters
+   *  (SupabaseAdapter performs the RPC; HybridAdapter adds cache seeding).
+   *  When absent (local-only) or offline, the store falls back to the
+   *  sequential client decomposition — documented non-atomic offline.
+   */
+  recordLoanPayment?(
+    householdId: string,
+    cmd: RecordLoanPaymentCommand,
+    rows: { expense?: Transaction; transfer?: Transaction; debt: Debt },
+  ): Promise<RecordLoanPaymentResult>;
+
+  /**
+   * v10.23.0 (R1) — return the household's ONE Cash in Hand, creating it
+   *  server-side if there is none. Present on the cloud adapters only; the
+   *  database owns this identity (`uq_account_cash_per_household`). The store
+   *  must never insert a cash account itself in cloud mode: its old check ran
+   *  against a store that had not hydrated yet, and wrote duplicates.
+   */
+  ensureCashAccount?(householdId: string): Promise<Account | null>;
+
+  /**
+   * v10.24.0 (R2) — the account delete guard, decided by the database. Present
+   *  on the cloud adapters only; local-only mode builds the same answers from the
+   *  store (lib/accountsView.ts).
+   *  - accountDependencies: what refers to the account.
+   *  - deleteAccountGuarded: tombstones it, and refuses while anything refers to it.
+   *  - moveAccountAndDelete: re-tags every transaction and schedule to another
+   *    account of the same group, folds the balance across, then tombstones —
+   *    in one database transaction.
+   */
+  accountDependencies?(householdId: string, accountId: string): Promise<AccountDependencies>;
+  deleteAccountGuarded?(householdId: string, accountId: string): Promise<void>;
+  moveAccountAndDelete?(householdId: string, fromId: string, toId: string): Promise<AccountMoveResult>;
+
+  /**
+   * v10.30.0 — the household's RECORDED monthly Net Worth snapshots, months
+   *  ascending. History is recorded, never reconstructed (lib/netWorthSnapshots.ts).
+   */
+  listNetWorthSnapshots?(householdId: string): Promise<NetWorthSnapshot[]>;
+  /**
+   * v10.30.0 — record this month's snapshot. The FIRST write for a month wins
+   *  (the database's unique (household, month) in cloud mode). Returns the row
+   *  that stands for the month, or null when the caller may not record (a viewer).
+   */
+  recordNetWorthSnapshot?(householdId: string, snapshot: NetWorthSnapshot): Promise<NetWorthSnapshot | null>;
+  /**
+   * v10.30.0 — true when the rows the store last read for the Net Worth inputs
+   *  (transactions, accounts, assets, debts) came from a cache that a cloud read
+   *  had already confirmed in this session. A cache-first adapter serves stale
+   *  rows while it revalidates; a snapshot recorded from those would lock a
+   *  wrong month in (first write wins). Adapters without a cache omit this.
+   */
+  positionIsCloudFresh?(householdId: string): boolean;
 }
 
 const ANON = 'local';
@@ -187,7 +244,7 @@ export class LocalStorageAdapter implements DataAdapter {
   async deleteHousehold(id: string): Promise<void> {
     if (id === ANON) throw new Error('Cannot delete the default profile');
     await Promise.all(
-      ['transactions','budgets','goals','members','debts','assets','accounts','savedViews','rates','profile']
+      ['transactions','budgets','goals','members','debts','assets','accounts','savedViews','rates','profile','net_worth_snapshots']
         .map(e => this.removeBoth(e, id))
     );
     const list = (await this.listHouseholds()).filter(h => h.id !== id);
@@ -266,6 +323,23 @@ export class LocalStorageAdapter implements DataAdapter {
   async replaceAll<T = unknown>(entity: Entity, householdId: string, records: T[]): Promise<T[]> {
     await this.write(entity, householdId, records);
     return records;
+  }
+
+  // ── v10.30.0 — recorded Net Worth snapshots ──────────────────
+  async listNetWorthSnapshots(householdId: string): Promise<NetWorthSnapshot[]> {
+    const rows = await this.read<NetWorthSnapshot[]>('net_worth_snapshots', householdId, []);
+    return [...rows].sort((left, right) => left.month.localeCompare(right.month));
+  }
+  async recordNetWorthSnapshot(householdId: string, snapshot: NetWorthSnapshot): Promise<NetWorthSnapshot> {
+    const rows = await this.read<NetWorthSnapshot[]>('net_worth_snapshots', householdId, []);
+    const existing = rows.find(row => row.month === snapshot.month);
+    if (existing) return existing;   // first write for a month wins
+    await this.write('net_worth_snapshots', householdId, mergeSnapshot(rows, snapshot));
+    return snapshot;
+  }
+  /** Cache-only: the hybrid adapter mirrors the cloud's rows here for offline reads. */
+  async replaceNetWorthSnapshots(householdId: string, rows: NetWorthSnapshot[]): Promise<void> {
+    await this.write('net_worth_snapshots', householdId, rows);
   }
 
   // ── rates ────────────────────────────────────────────────────

@@ -7,9 +7,29 @@ import type {
   Transaction, Budget, BudgetAllocation, Goal, Member, Debt, Asset, Account, SavedView,
   Profile, ExchangeRates, HouseholdMeta, ProfileTypeKey,
   WithProvenance, Confidence, ProvenanceSource, RecurringSchedule,
+  RecordLoanPaymentCommand, RecordLoanPaymentResult, AccountDependencies, AccountMoveResult,
 } from '../types';
 import type { DataAdapter, Entity } from './dataAdapter';
 import { parseMoneyFromCloud } from './money';
+import type { NetWorthSnapshot } from './netWorthSnapshots';
+
+// v10.30.0 — net_worth_snapshots row → recorded snapshot. `month` is a date
+// column (first of the month); the app keys months as 'YYYY-MM'.
+interface NetWorthSnapshotRow {
+  month: string; total_assets: number | string; total_liabilities: number | string;
+  net_worth: number | string; liquid_assets: number | string; currency: string; recorded_at: string;
+}
+function rowToNetWorthSnapshot(row: NetWorthSnapshotRow): NetWorthSnapshot {
+  return {
+    month: String(row.month).slice(0, 7),
+    totalAssets: parseMoneyFromCloud(row.total_assets),
+    totalLiabilities: parseMoneyFromCloud(row.total_liabilities),
+    netWorth: parseMoneyFromCloud(row.net_worth),
+    liquidAssets: parseMoneyFromCloud(row.liquid_assets),
+    currency: row.currency,
+    recordedAt: row.recorded_at,
+  };
+}
 
 // TD-01 phase D: money fields arriving from Supabase (`numeric(15,2)`
 // columns serialised as JSON strings) go through `parseMoneyFromCloud`
@@ -44,6 +64,8 @@ interface TransactionRow {
   // production rows still come back without them set on legacy data.
   account_id?: string | null;
   to_account_id?: string | null;
+  payment_mode?: string | null;   // v10.25.0 (R3)
+  asset_id?: string | null;       // v10.26.0 (R4) — investment rows: the asset money moves into/out of
   initiated_by?: string | null;
   // v9.1 — deep-link FKs (§5 materialisation, §8 debt drill).
   recurring_schedule_id?: string | null;
@@ -109,6 +131,8 @@ interface AssetRow extends ProvenanceRowCols {
   id: string; household_id: string;
   type: string; name: string; value: number; currency: string;
   liquidity: string; note: string | null; last_updated: string | null;
+  valuation_offset?: number | null;   // v10.26.0 (R4)
+  valuation_log?: unknown[] | null;   // v10.26.0 (R4)
   updated_at: string; deleted_at: string | null;
 }
 
@@ -116,11 +140,17 @@ interface AssetRow extends ProvenanceRowCols {
 interface AccountRow extends ProvenanceRowCols {
   id: string; household_id: string;
   asset_id: string | null;
+  debt_id?: string | null;                    // audit F2/§8.2 — explicit debt link
   kind: string; name: string; currency: string;
   is_default: boolean; is_archived: boolean;
   opening_balance?: number | null;            // Money-Model B1.2
   reconciliation_offset?: number | null;      // v9 D2
   reconciliation_log?: unknown[] | null;      // v9 D2 quiet log
+  payment_modes?: string[] | null;            // v10.24.0 (R2)
+  credit_limit?: number | null;               // v10.24.0 (R2) — cards only
+  billing_cycle_day?: number | null;
+  payment_due_day?: number | null;
+  last_reconciled_at?: string | null;
   created_at: string; updated_at: string; deleted_at: string | null;
 }
 
@@ -183,6 +213,16 @@ const txnToRow = (t: Partial<Transaction>, householdId: string): Partial<Transac
     initiated_by:  t.initiatedBy  ?? t.memberId ?? null,
     recurring_schedule_id: fkOrNull(t.recurringScheduleId),   // v9.1 §5
     debt_id: fkOrNull(t.debtId),                              // v9.1 §8
+    // v10.25.0 (R3) — written only when the caller says something about it, so
+    // a patch that never mentions the mode cannot erase it.
+    ...(t.paymentMode !== undefined
+      ? { payment_mode: type === 'investment' ? null : t.paymentMode }
+      : {}),
+    // v10.26.0 (R4) — only an investment names an asset; written only when the
+    // caller mentions it (a lagging schema is never sent the column).
+    ...(t.assetId !== undefined
+      ? { asset_id: type === 'investment' ? fkOrNull(t.assetId) : null }
+      : {}),
     extras: {
       time: t.time, paymentMethod: t.paymentMethod, excluded: t.excluded,
       linkedDebtId: t.linkedDebtId,
@@ -207,6 +247,8 @@ const rowToTxn = (r: TransactionRow): Transaction => ({
   initiatedBy: r.initiated_by  ?? r.member_id ?? undefined,
   recurringScheduleId: r.recurring_schedule_id ?? undefined,   // v9.1 §5
   debtId: r.debt_id ?? undefined,                              // v9.1 §8
+  paymentMode: (r.payment_mode as Transaction['paymentMode']) ?? undefined,   // v10.25.0
+  assetId: r.asset_id ?? undefined,                                            // v10.26.0 (R4)
   linkedDebtId: r.extras?.linkedDebtId,
   linkedTxnId: r.extras?.linkedTxnId,
   split: r.extras?.split as Transaction['split'],
@@ -315,6 +357,10 @@ const assetToRow = (a: Partial<Asset>, hid: string): Partial<AssetRow> => ({
   value: a.value!, currency: a.currency || 'USD',
   liquidity: a.liquidity!, note: a.note || null,
   last_updated: a.lastUpdated || null,
+  // v10.26.0 (R4) — NOT NULL with DB defaults: written only when mentioned, so an
+  // edit that does not touch the valuation cannot erase it (audit F1 rule).
+  ...(a.valuationOffset !== undefined ? { valuation_offset: a.valuationOffset } : {}),
+  ...(a.valuationLog !== undefined ? { valuation_log: a.valuationLog as unknown[] } : {}),
 });
 const rowToAsset = (r: AssetRow): Asset => ({
   id: r.id, type: r.type, name: r.name,
@@ -322,6 +368,9 @@ const rowToAsset = (r: AssetRow): Asset => ({
   liquidity: r.liquidity as Asset['liquidity'],
   note: r.note || undefined,
   lastUpdated: r.last_updated || undefined,
+  // v10.26.0 (R4) — a column the database did not return stays undefined.
+  ...('valuation_offset' in r ? { valuationOffset: r.valuation_offset != null ? parseMoneyFromCloud(r.valuation_offset) : 0 } : {}),
+  ...('valuation_log' in r ? { valuationLog: (r.valuation_log ?? []) as Asset['valuationLog'] } : {}),
   updated_at: r.updated_at,   // TD-03 phase B — concurrency precondition
   ...rowToProv(r),
 });
@@ -340,22 +389,68 @@ const rowToMember = (r: MembershipRow): Member => ({
   userId: r.user_id || undefined,
 });
 
-const accountToRow = (a: Partial<Account>, hid: string): Partial<AccountRow> => ({
-  ...provToRow(a),
-  id: a.id, household_id: hid,
-  asset_id: a.assetId || null,
-  kind: a.kind!,
-  name: a.name!,
-  currency: a.currency || 'USD',
-  is_default: a.isDefault ?? false,
-  is_archived: a.isArchived ?? false,
-  opening_balance: a.openingBalance ?? 0,                  // Money-Model B1.2
-  reconciliation_offset: a.reconciliationOffset ?? 0,      // v9 D2
-  reconciliation_log: (a.reconciliationLog ?? []) as unknown[],
-});
+// ── Audit F8 — composite delta cursor ──────────────────────────────────────
+// Stored form: "<updated_at>|<id>". A bare "<updated_at>" (any stored cursor
+// from before this change) decodes with an empty id, so the boundary rows are
+// re-read once — idempotent — and the next write stores the full pair.
+function encodeDeltaCursor(updatedAt: string, id: string): string {
+  return `${updatedAt}|${id}`;
+}
+function decodeDeltaCursor(cursor: string): [ts: string, id: string] {
+  const i = cursor.indexOf('|');
+  if (i < 0) return [cursor, ''];
+  return [cursor.slice(0, i), cursor.slice(i + 1)];
+}
+
+/**
+ * 🔒 OMITTED MEANS UNCHANGED — NEVER ZERO.
+ *
+ * This takes a `Partial<Account>`, and the three financial fields below used to
+ * read `?? 0` / `?? []`. On an UPSERT that is not a default, it is an erasure:
+ * a caller sending a metadata-only patch (rename, archive, change currency) had
+ * the account's opening balance written to 0 and its reconciliation history
+ * emptied. Silently, under an "Account updated" toast.
+ *
+ * All three columns are NOT NULL *with a DB default* (`0`, `0`, `'[]'::jsonb`),
+ * so omitting them is safe in both directions: on INSERT Postgres applies the
+ * default, and on the ON CONFLICT UPDATE the column is absent from the SET list
+ * and the stored value survives.
+ *
+ * Provenance already behaved correctly — `provToRow` uses `?? undefined`, and
+ * `JSON.stringify` drops undefined keys, so those columns were never defaulted.
+ * Keep it that way for anything financial that gets added here later.
+ */
+const accountToRow = (a: Partial<Account>, hid: string): Partial<AccountRow> => {
+  const row: Partial<AccountRow> = {
+    ...provToRow(a),
+    id: a.id, household_id: hid,
+    asset_id: a.assetId || null,
+    kind: a.kind!,
+    name: a.name!,
+    currency: a.currency || 'USD',
+    is_default: a.isDefault ?? false,
+    is_archived: a.isArchived ?? false,
+  };
+  if (a.openingBalance !== undefined) row.opening_balance = a.openingBalance;             // Money-Model B1.2
+  if (a.reconciliationOffset !== undefined) row.reconciliation_offset = a.reconciliationOffset;  // v9 D2
+  if (a.reconciliationLog !== undefined) row.reconciliation_log = a.reconciliationLog as unknown[];
+  // Audit F2 — explicit debt link. Conditional for the same reason as the
+  // financial fields above: a metadata-only patch must not erase it.
+  if (a.debtId !== undefined) row.debt_id = a.debtId || null;
+  // v10.24.0 (R2) — conditional for the same reason: a patch that does not
+  // mention these must not erase them. payment_modes is NOT NULL with a DB
+  // default, so it is written only when present, never as null.
+  if (a.paymentModes !== undefined) row.payment_modes = a.paymentModes;
+  if (a.creditLimit !== undefined) row.credit_limit = a.creditLimit;
+  if (a.billingCycleDay !== undefined) row.billing_cycle_day = a.billingCycleDay;
+  if (a.paymentDueDay !== undefined) row.payment_due_day = a.paymentDueDay;
+  if (a.lastReconciledAt !== undefined) row.last_reconciled_at = a.lastReconciledAt;
+  return row;
+};
 const rowToAccount = (r: AccountRow): Account => ({
   id: r.id,
   assetId: r.asset_id || undefined,
+  debtId: r.debt_id || undefined,
   kind: r.kind as Account['kind'],
   name: r.name,
   currency: r.currency,
@@ -364,9 +459,41 @@ const rowToAccount = (r: AccountRow): Account => ({
   openingBalance: r.opening_balance != null ? parseMoneyFromCloud(r.opening_balance) : 0,
   reconciliationOffset: r.reconciliation_offset != null ? parseMoneyFromCloud(r.reconciliation_offset) : 0,
   reconciliationLog: (r.reconciliation_log ?? []) as Account['reconciliationLog'],
+  // v10.24.0 (R2) — a column the database did not RETURN stays undefined, never
+  // null/[]. Rows are routinely re-saved as `{...account, ...patch}` (reconcile
+  // does), and a defaulted value would then name a column that a lagging schema
+  // does not have — PGRST204, the write refused. That is the window between a
+  // Vercel deploy and `db push`, and every un-migrated test database.
+  ...('payment_modes' in r ? { paymentModes: (r.payment_modes ?? []) as Account['paymentModes'] } : {}),
+  ...('credit_limit' in r ? { creditLimit: r.credit_limit != null ? parseMoneyFromCloud(r.credit_limit) : null } : {}),
+  ...('billing_cycle_day' in r ? { billingCycleDay: r.billing_cycle_day ?? null } : {}),
+  ...('payment_due_day' in r ? { paymentDueDay: r.payment_due_day ?? null } : {}),
+  ...('last_reconciled_at' in r ? { lastReconciledAt: r.last_reconciled_at ?? null } : {}),
+  createdAt: r.created_at,
   updated_at: r.updated_at,
   ...rowToProv(r),
 });
+
+// v10.24.0 (R2) — the account RPCs refuse with a machine key in the message.
+// Translate it into something a customer can act on; anything unknown passes
+// through untouched rather than being guessed at.
+const ACCOUNT_RPC_ERRORS: Record<string, string> = {
+  account_in_use: 'This account has history attached — archive it, or move its history first.',
+  cash_account_protected: 'Cash in Hand cannot be deleted — every household keeps exactly one.',
+  system_account_protected: 'This is a system account and cannot be deleted.',
+  not_allowed: 'Only the household owner or an admin can delete accounts.',
+  unsettled_splits: 'A split on this account is not settled — settle or cancel it before moving its history.',
+  loan_history_attached: 'Loan payment history is attached to this account, so it cannot be moved.',
+  transfers_between_accounts: 'Transfers run between these two accounts — moving would turn them into transfers to itself.',
+  destination_different_group: 'History can only move to another account of the same type.',
+  destination_archived: 'Choose an active account to move the history to.',
+  same_account: 'Choose a different account to move the history to.',
+};
+function accountRpcError(error: { message?: string }): Error {
+  const message = error.message ?? '';
+  const key = Object.keys(ACCOUNT_RPC_ERRORS).find(k => message.includes(k));
+  return new Error(key ? ACCOUNT_RPC_ERRORS[key] : message || 'The account request failed');
+}
 
 const savedViewToRow = (v: Partial<SavedView>, hid: string): Partial<SavedViewRow> => ({
   id: v.id, household_id: hid,
@@ -475,6 +602,40 @@ export class BudgetExistsError extends Error {
   }
 }
 
+/**
+ * A write that PostgREST accepted but that changed nothing.
+ *
+ * 🔴 THIS IS THE MOST DANGEROUS SHAPE IN THE WHOLE ADAPTER, and it is the
+ * mechanism behind two reported defects: "deleting a household does nothing"
+ * and "deleting a recurring schedule reverts".
+ *
+ * A row-level-security policy does NOT raise on a blocked write. The statement
+ * runs, matches zero rows, and returns `{ error: null }`. `if (error) throw` —
+ * the pattern used everywhere here — therefore sees a clean success. The store
+ * then drops the row from local state, the UI reports "Deleted", and the next
+ * sync pulls it straight back.
+ *
+ * Verified directly against the schema: an unauthorised UPDATE and DELETE each
+ * reported `row_count = 0` with no exception (Lane B, CON-E2E-029).
+ *
+ * The fix is to ask for the affected rows with `.select()` and count them. This
+ * error is what "zero" means: the server declined, silently.
+ */
+export class WriteNotAppliedError extends Error {
+  override readonly name = 'WriteNotAppliedError';
+  constructor(
+    public readonly operation: string,
+    public readonly table: string,
+    public readonly id: string,
+  ) {
+    super(
+      `${operation} on ${table}/${id} affected no rows. The server accepted the request and ` +
+      'changed nothing — usually because permission was denied, or the row is already gone. ' +
+      'Nothing has been removed.',
+    );
+  }
+}
+
 // ── Adapter ───────────────────────────────────────────────────
 export class SupabaseAdapter implements DataAdapter {
   constructor(private sb: SupabaseClient) {}
@@ -535,8 +696,12 @@ export class SupabaseAdapter implements DataAdapter {
   }
 
   async deleteHousehold(id: string): Promise<void> {
-    const { error } = await this.sb.from('households').delete().eq('id', id);
+    // `.select('id')` is what turns "the server declined" into a failure. The
+    // DELETE policy is `role_in(id) = 'owner'`; a non-owner gets zero rows and
+    // no error, which used to read as success all the way up to the toast.
+    const { data, error } = await this.sb.from('households').delete().eq('id', id).select('id');
     if (error) throw error;
+    if (!data || data.length === 0) throw new WriteNotAppliedError('delete', 'households', id);
   }
 
   async getActiveHousehold(): Promise<string> {
@@ -587,7 +752,13 @@ export class SupabaseAdapter implements DataAdapter {
     if (patch.language    !== undefined) userPatch.language = patch.language;
     if (patch.educationProgress !== undefined) userPatch.education_progress = patch.educationProgress;
     if (Object.keys(userPatch).length) {
-      await this.sb.from('profiles').update(userPatch).eq('id', user.id);
+      // Audit F7: PostgREST failures RESOLVE with { error } — they do not
+      // throw. An unchecked call here let the queue treat a rejected profile
+      // update as acknowledged. And an UPDATE blocked by RLS matches zero
+      // rows with no error at all, so we also count affected rows.
+      const { data, error } = await this.sb.from('profiles').update(userPatch).eq('id', user.id).select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) throw new WriteNotAppliedError('update', 'profiles', user.id);
     }
     // Household-level fields → households
     const hhPatch: Record<string, unknown> = {};
@@ -597,9 +768,160 @@ export class SupabaseAdapter implements DataAdapter {
     if (patch.payoffStrategy !== undefined) hhPatch.payoff_strategy = patch.payoffStrategy;
     if (patch.extraPayment   !== undefined) hhPatch.extra_payment = patch.extraPayment;
     if (Object.keys(hhPatch).length) {
-      await this.sb.from('households').update(hhPatch).eq('id', householdId);
+      const { data, error } = await this.sb.from('households').update(hhPatch).eq('id', householdId).select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) throw new WriteNotAppliedError('update', 'households', householdId);
     }
     return (await this.getProfile(householdId))!;
+  }
+
+  /** Audit F6 — the outbox stamps every op with its owner's uid so a flush on
+   *  a shared device never attempts (and dead-letters) another user's writes.
+   *  getSession() is local — no network round-trip. */
+  async currentUserId(): Promise<string | null> {
+    try {
+      const { data } = await this.sb.auth.getSession();
+      return data.session?.user?.id ?? null;
+    } catch { return null; }
+  }
+
+  /**
+   * Audit F2 — the atomic loan-payment command. The server validates caller
+   * role, debt/account tenancy and split reconciliation, then writes the
+   * interest expense + principal transfer + re-amortised debt + payment log
+   * in ONE transaction, idempotent on cmd.operationId.
+   */
+  async recordLoanPayment(
+    householdId: string,
+    cmd: RecordLoanPaymentCommand,
+  ): Promise<RecordLoanPaymentResult> {
+    void householdId; // tenancy is derived from the debt server-side
+    const { data, error } = await this.sb.rpc('record_loan_payment', {
+      p_operation_id: cmd.operationId,
+      p_debt_id: cmd.debtId,
+      p_funding_account_id: cmd.fundingAccountId,
+      p_amount: cmd.amount,
+      p_currency: cmd.currency,
+      p_date: cmd.date,
+      p_interest: cmd.interest,
+      p_principal: cmd.principal,
+      p_member_id: cmd.memberId ?? null,
+      p_description: cmd.description ?? null,
+      p_new_balance: cmd.newBalance ?? null,
+      p_new_remaining_months: cmd.newRemainingMonths ?? null,
+      p_new_minimum_payment: cmd.newMinimumPayment ?? null,
+      p_payment_log_entry: cmd.paymentLogEntry ?? null,
+    });
+    if (error) throw error;
+    const r = data as Record<string, unknown> | null;
+    if (!r) throw new Error('record_loan_payment returned no result');
+    if (r.status === 'error') {
+      throw new Error(`record_loan_payment rejected: ${String(r.reason ?? 'unknown')}`);
+    }
+    if ((r.status !== 'success' && r.status !== 'duplicate') || !r.debt || !r.loan_account
+        || !Array.isArray(r.transactions)) {
+      throw new Error('Loan payment returned an unsupported response; update the server before retrying');
+    }
+    return {
+      status: r.status as RecordLoanPaymentResult['status'],
+      expenseTxnId: (r.expense_txn_id as string | null) ?? null,
+      transferTxnId: (r.transfer_txn_id as string | null) ?? null,
+      loanAccountId: (r.loan_account_id as string | null) ?? null,
+      debt: rowToDebt(r.debt as DebtRow),
+      loanAccount: rowToAccount(r.loan_account as AccountRow),
+      transactions: r.transactions.map(row => rowToTxn(row as TransactionRow)),
+    };
+  }
+
+  /**
+   * v10.23.0 (R1) — the household's ONE Cash in Hand, created server-side when
+   * absent (`ensure_cash_account`, idempotent on the unique index). Returns
+   * null only when the household has no cash account and the caller may not
+   * create one (a viewer).
+   */
+  async ensureCashAccount(householdId: string): Promise<Account | null> {
+    const { data, error } = await this.sb.rpc('ensure_cash_account', { p_household: householdId });
+    if (error) throw error;
+    return data ? rowToAccount(data as AccountRow) : null;
+  }
+
+  /** v10.30.0 — the household's recorded monthly Net Worth snapshots, months ascending. */
+  async listNetWorthSnapshots(householdId: string): Promise<NetWorthSnapshot[]> {
+    const { data, error } = await this.sb.from('net_worth_snapshots')
+      .select('month,total_assets,total_liabilities,net_worth,liquid_assets,currency,recorded_at')
+      .eq('household_id', householdId)
+      .order('month', { ascending: true });
+    if (error) throw error;
+    return ((data ?? []) as NetWorthSnapshotRow[]).map(rowToNetWorthSnapshot);
+  }
+
+  /**
+   * v10.30.0 — record this month's snapshot (`record_net_worth_snapshot`). The
+   * database keeps the first row for a month and derives net worth itself, so
+   * only the two sides, liquid assets and currency are sent. Returns the row that
+   * stands for the month, or null when a viewer asks and none exists yet.
+   */
+  async recordNetWorthSnapshot(householdId: string, snapshot: NetWorthSnapshot): Promise<NetWorthSnapshot | null> {
+    const { data, error } = await this.sb.rpc('record_net_worth_snapshot', {
+      p_household: householdId,
+      p_month: `${snapshot.month}-01`,
+      p_total_assets: snapshot.totalAssets,
+      p_total_liabilities: snapshot.totalLiabilities,
+      p_liquid_assets: snapshot.liquidAssets,
+      p_currency: snapshot.currency,
+    });
+    if (error) throw error;
+    return data ? rowToNetWorthSnapshot(data as NetWorthSnapshotRow) : null;
+  }
+
+  /** v10.24.0 (R2) — what refers to an account, counted by the database. */
+  async accountDependencies(householdId: string, accountId: string): Promise<AccountDependencies> {
+    void householdId; // tenancy is derived from the account server-side
+    const { data, error } = await this.sb.rpc('account_dependencies', { p_account_id: accountId });
+    if (error) throw accountRpcError(error);
+    const r = (data ?? {}) as {
+      transactions?: { count?: number; total?: number | string; firstDate?: string | null; lastDate?: string | null;
+        groups?: { label?: string; count?: number; total?: number | string }[] };
+      recurring?: { id?: string; label?: string }[];
+      openSplits?: { id?: string; txnId?: string }[];
+      loanEvents?: number;
+    };
+    return {
+      accountId,
+      transactions: {
+        count: Number(r.transactions?.count ?? 0),
+        total: parseMoneyFromCloud(r.transactions?.total ?? 0),
+        firstDate: r.transactions?.firstDate ?? null,
+        lastDate: r.transactions?.lastDate ?? null,
+        groups: (r.transactions?.groups ?? []).map(g => ({
+          label: String(g.label ?? ''), count: Number(g.count ?? 0), total: parseMoneyFromCloud(g.total ?? 0),
+        })),
+      },
+      recurring: (r.recurring ?? []).map(x => ({ id: String(x.id), label: String(x.label ?? 'Recurring') })),
+      openSplits: (r.openSplits ?? []).map(x => ({ id: String(x.id), txnId: String(x.txnId) })),
+      loanEvents: Number(r.loanEvents ?? 0),
+    };
+  }
+
+  /** v10.24.0 (R2) — tombstones the account; the database refuses while anything refers to it. */
+  async deleteAccountGuarded(householdId: string, accountId: string): Promise<void> {
+    void householdId;
+    const { error } = await this.sb.rpc('delete_account', { p_account_id: accountId });
+    if (error) throw accountRpcError(error);
+  }
+
+  /** v10.24.0 (R2) — moves every transaction and schedule, folds the balance, deletes; one transaction. */
+  async moveAccountAndDelete(householdId: string, fromId: string, toId: string): Promise<AccountMoveResult> {
+    void householdId;
+    const { data, error } = await this.sb.rpc('move_account_and_delete', { p_from: fromId, p_to: toId });
+    if (error) throw accountRpcError(error);
+    const r = (data ?? {}) as { transactions?: number; schedules?: number; folded?: number | string };
+    return {
+      status: 'moved',
+      transactions: Number(r.transactions ?? 0),
+      schedules: Number(r.schedules ?? 0),
+      folded: parseMoneyFromCloud(r.folded ?? 0),
+    };
   }
 
   // ── domain CRUD ────────────────────────────────────────────
@@ -610,19 +932,44 @@ export class SupabaseAdapter implements DataAdapter {
       if (error) throw error;
       return (data || []).map(rowToMember) as unknown as T[];
     }
-    const { data, error } = await this.sb.from(this.tableName(entity))
-      .select('*').eq('household_id', householdId).is('deleted_at', null);
-    if (error) throw error;
-    const rows = data || [];
-    if (entity === 'transactions') return rows.map(rowToTxn) as unknown as T[];
-    if (entity === 'budgets')      return rows.map(rowToBudget) as unknown as T[];
-    if (entity === 'goals')        return rows.map(rowToGoal) as unknown as T[];
-    if (entity === 'debts')        return rows.map(rowToDebt) as unknown as T[];
-    if (entity === 'assets')       return rows.map(rowToAsset) as unknown as T[];
-    if (entity === 'accounts')     return rows.map(rowToAccount) as unknown as T[];
-    if (entity === 'savedViews')   return rows.map(rowToSavedView) as unknown as T[];
-    if (entity === 'recurring')    return rows.map(rowToRecurring) as unknown as T[];
-    if (entity === 'budgetAllocations') return rows.map(rowToBudgetAllocation) as unknown as T[];
+    // Audit F8 — DRAIN, don't single-shot. PostgREST caps a response (default
+    // ~1000 rows); a household past the cap used to get a SILENTLY incomplete
+    // initial dataset — and that incomplete read seeded the delta cursor, so
+    // the missing rows never arrived later either. Page by (updated_at, id)
+    // keyset to completeness; a full page means there may be more.
+    const PAGE = 500;
+    const all: unknown[] = [];
+    let lastU: string | null = null;
+    let lastI: string | null = null;
+    for (let guard = 0; guard < 200; guard++) {
+      let q = this.sb.from(this.tableName(entity))
+        .select('*').eq('household_id', householdId).is('deleted_at', null)
+        .order('updated_at', { ascending: true }).order('id', { ascending: true })
+        .limit(PAGE);
+      if (lastU !== null && lastI !== null) {
+        q = q.or(`updated_at.gt.${lastU},and(updated_at.eq.${lastU},id.gt.${lastI})`);
+      }
+      const { data, error } = await q;
+      if (error) throw error;
+      const page = data || [];
+      all.push(...page);
+      if (page.length < PAGE) break;   // short page = drained
+      const last = page[page.length - 1] as { id: string; updated_at: string };
+      lastU = last.updated_at;
+      lastI = last.id;
+    }
+    // `all` accumulates raw rows across pages. Map each through its typed row
+    // mapper — the same per-entity casts the (single-shot) list() always used.
+    const rows = all as unknown[];
+    if (entity === 'transactions') return rows.map(r => rowToTxn(r as TransactionRow)) as unknown as T[];
+    if (entity === 'budgets')      return rows.map(r => rowToBudget(r as BudgetRow)) as unknown as T[];
+    if (entity === 'goals')        return rows.map(r => rowToGoal(r as GoalRow)) as unknown as T[];
+    if (entity === 'debts')        return rows.map(r => rowToDebt(r as DebtRow)) as unknown as T[];
+    if (entity === 'assets')       return rows.map(r => rowToAsset(r as AssetRow)) as unknown as T[];
+    if (entity === 'accounts')     return rows.map(r => rowToAccount(r as AccountRow)) as unknown as T[];
+    if (entity === 'savedViews')   return rows.map(r => rowToSavedView(r as SavedViewRow)) as unknown as T[];
+    if (entity === 'recurring')    return rows.map(r => rowToRecurring(r as RecurringRow)) as unknown as T[];
+    if (entity === 'budgetAllocations') return rows.map(r => rowToBudgetAllocation(r as BudgetAllocationRow)) as unknown as T[];
     return [];
   }
 
@@ -652,24 +999,32 @@ export class SupabaseAdapter implements DataAdapter {
     since: string,
     limit = 500,
   ): Promise<{ rows: T[]; tombstones: string[]; maxUpdatedAt: string | null }> {
-    // R1 (sync fix): use `>=`, not `>`. A strict `>` silently skips any row
-    // whose `updated_at` ties the cursor's exact millisecond — so a write
-    // that lands on the boundary timestamp is never pulled by other devices.
-    // `>=` re-reads only the boundary rows; applyCloudDelta upserts them
-    // idempotently, so the only cost is re-processing rows at the cursor ms.
-    const { data, error } = await this.sb.from(this.tableName(entity))
+    // Audit F8 — composite (updated_at, id) keyset cursor. A timestamp-only
+    // cursor with a 500-row limit STALLS when ≥500 rows share the boundary
+    // timestamp (every page re-reads the same 500). Keyset on the pair is
+    // monotonic and cannot repeat a page. `since` may be a bare timestamp
+    // (legacy stored cursor) — treated as (ts, '') so ties at that ms are
+    // re-read once, idempotently.
+    const [sinceTs, sinceId] = decodeDeltaCursor(since);
+    let q = this.sb.from(this.tableName(entity))
       .select('*')
       .eq('household_id', householdId)
-      .gte('updated_at', since)
       .order('updated_at', { ascending: true })
+      .order('id', { ascending: true })
       .limit(limit);
+    if (sinceId) {
+      q = q.or(`updated_at.gt.${sinceTs},and(updated_at.eq.${sinceTs},id.gt.${sinceId})`);
+    } else {
+      q = q.gte('updated_at', sinceTs);
+    }
+    const { data, error } = await q;
     if (error) throw error;
     const all = (data || []) as Array<{ id: string; updated_at: string; deleted_at: string | null }>;
     const tombstones: string[] = [];
     const liveRaw: typeof all = [];
     let maxUpdatedAt: string | null = null;
     for (const r of all) {
-      if (!maxUpdatedAt || r.updated_at > maxUpdatedAt) maxUpdatedAt = r.updated_at;
+      maxUpdatedAt = encodeDeltaCursor(r.updated_at, r.id);
       if (r.deleted_at) tombstones.push(r.id);
       else liveRaw.push(r);
     }
@@ -788,8 +1143,9 @@ export class SupabaseAdapter implements DataAdapter {
   async remove(entity: Entity, householdId: string, id: string): Promise<void> {
     const tableName = this.tableName(entity);
     if (entity === 'members') {
-      const { error } = await this.sb.from('memberships').delete().eq('id', id);
+      const { data, error } = await this.sb.from('memberships').delete().eq('id', id).select('id');
       if (error) throw error;
+      if (!data || data.length === 0) throw new WriteNotAppliedError('delete', 'memberships', id);
       return;
     }
     // Soft-delete for syncable tables.
@@ -801,10 +1157,18 @@ export class SupabaseAdapter implements DataAdapter {
     // never enters any other device's delta window, and the row lives on
     // forever as a ghost (the case-7 net-worth bug). Setting it explicitly
     // here guarantees tombstone propagation regardless of server triggers.
+    //
+    // R3 (Phase 1): `.select('id')` and a row count. A soft-delete is an
+    // UPDATE, and an RLS-blocked UPDATE is the quietest failure in Postgres —
+    // it matches zero rows and returns no error. `removeRecurring` awaited this
+    // call, saw it resolve, and dropped the schedule from local state; the next
+    // sync pulled it back. That is defect 7, and it was never a delete bug — it
+    // was this line not asking whether anything happened.
     const nowIso = new Date().toISOString();
-    const { error } = await this.sb.from(tableName)
-      .update({ deleted_at: nowIso, updated_at: nowIso }).eq('id', id);
+    const { data, error } = await this.sb.from(tableName)
+      .update({ deleted_at: nowIso, updated_at: nowIso }).eq('id', id).select('id');
     if (error) throw error;
+    if (!data || data.length === 0) throw new WriteNotAppliedError('soft-delete', tableName, id);
     void householdId;
   }
 

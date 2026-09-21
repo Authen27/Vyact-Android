@@ -19,11 +19,12 @@ interface DonutEntry {
 interface DonutProps {
   data: DonutEntry[];
   currency: string;
+  animate?: boolean;
   /** When provided, each category row links to filtered Transactions. */
   monthKey?: string;
 }
 
-export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
+export function CategoryDonut({ data, currency, monthKey, animate = true }: DonutProps) {
   if (!data.length) {
     return <div className="text-center py-9 text-ink-dim font-mono text-xs uppercase tracking-wider">No data</div>;
   }
@@ -34,7 +35,7 @@ export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
   });
 
   return (
-    <div className="grid md:grid-cols-[180px_1fr] gap-4 p-4 items-center">
+    <div className="grid grid-cols-1 xl:grid-cols-[180px_minmax(0,1fr)] min-w-0 gap-4 p-4 items-center">
       <div className="h-[180px] relative">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -48,7 +49,7 @@ export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
               paddingAngle={1}
               startAngle={90}
               endAngle={-270}
-              isAnimationActive
+              isAnimationActive={animate}
               animationDuration={900}
               animationEasing="ease-out"
             >
@@ -64,13 +65,13 @@ export function CategoryDonut({ data, currency, monthKey }: DonutProps) {
           <div className="font-mono text-[0.55rem] tracking-[0.14em] uppercase text-ink-dim mt-0.5">Total</div>
         </div>
       </div>
-      <motion.div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto" variants={staggerContainer} initial="hidden" animate="visible">
-        {enriched.slice(0, 8).map(entry => {
+      <motion.div className="flex flex-col min-w-0 gap-1 max-h-[200px] overflow-y-auto" variants={staggerContainer} initial={animate ? 'hidden' : false} animate="visible">
+        {enriched.map(entry => {
           const pct = Math.round(entry.amount / total * 100);
           const row = (
-            <div className="grid grid-cols-[10px_1fr_auto_auto] gap-2 items-center py-1 border-b border-line text-[0.74rem] text-ink-mid">
+            <div className="grid grid-cols-[10px_minmax(0,1fr)_auto_auto] gap-2 items-center py-1 border-b border-line text-[0.74rem] text-ink-mid min-w-0">
               <div className="w-2 h-2 rounded-full" style={{ background: entry.color }} />
-              <div className="font-medium text-ink truncate">{entry.name}</div>
+              <div className="font-medium text-ink min-w-0 [overflow-wrap:anywhere]">{entry.name}</div>
               <div className="font-mono text-[0.68rem] text-ink">{fmtShort(entry.amount, currency)}</div>
               <div className="font-mono text-[0.6rem] text-ink-dim w-8 text-right">{pct}%</div>
             </div>

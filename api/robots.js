@@ -1,6 +1,6 @@
 // Vyact — robots.txt (v9.5.5). Allows crawling and advertises the sitemap so the
 // public Learn microsite is discoverable by search engines and AI crawlers.
-const BASE = 'https://vyact-twentyx.vercel.app';
+const BASE = 'https://vyact.app';
 
 export default async function handler(req, res) {
   const body = [

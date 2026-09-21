@@ -9,13 +9,22 @@
 
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://dmxqkvploojokffuhxnz.supabase.co';
 const ANON = process.env.VITE_SUPABASE_ANON_KEY || '';
-const BASE = 'https://vyact-twentyx.vercel.app';
+const BASE = 'https://vyact.app';
 const APP = `${BASE}/insights`;
 const OG_IMAGE = `${BASE}/og-vyact.png`;
 
 const esc = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+// Audit S4 — HTML-safe JSON for <script type="application/ld+json">.
+// `esc()` protects HTML text contexts; it does NOT protect a script element,
+// where `</script>` inside a JSON string terminates the tag early and breaks
+// out into markup. JSON is a subset of JS, so escaping `<` as \u003c keeps the
+// payload byte-equivalent for JSON.parse while making a script-closing (or
+// comment-sequenced) breakout impossible. CMS-controlled title/body flow
+// through here. Exported for the unit test (learnJsonLd.test.ts).
+export const safeJsonLd = o => JSON.stringify(o).replace(/</g, '\\u003c');
 
 async function sb(path) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/content_items?${path}`, {
@@ -49,7 +58,7 @@ function shell({ title, description, canonical, jsonld, body, ogType = 'website'
 <meta name="twitter:title" content="${esc(title)}">
 <meta name="twitter:description" content="${esc(description)}">
 <meta name="twitter:image" content="${OG_IMAGE}">
-<script type="application/ld+json">${JSON.stringify(jsonld)}</script>
+<script type="application/ld+json">${safeJsonLd(jsonld)}</script>
 <style>
 :root{--coral:#E26D5C;--ink:#2A2522;--mid:#6B6259;--dim:#9A9087;--cream:#F5EFE6;--bone:#FBF7EE;--line:#E7DFD2}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,system-ui,sans-serif;color:var(--ink);background:var(--cream);line-height:1.6}

@@ -68,7 +68,7 @@ test.describe('§18 BACKUP-FC · Backup and data portability', () => {
         configurable: true,
         value: {
           writeText: async (text: string) => {
-            (window as Window & { __copiedBackup: string }).__copiedBackup = text;
+            (window as unknown as Window & { __copiedBackup: string }).__copiedBackup = text;
           },
         },
       });
@@ -77,7 +77,7 @@ test.describe('§18 BACKUP-FC · Backup and data portability', () => {
     await page.getByRole('button', { name: 'Copy to Clipboard' }).click();
     await expect(page.getByText('Backup copied')).toBeVisible();
 
-    const copied = await page.evaluate(() => (window as Window & { __copiedBackup: string }).__copiedBackup);
+    const copied = await page.evaluate(() => (window as unknown as Window & { __copiedBackup: string }).__copiedBackup);
     const backup = JSON.parse(copied) as {
       profile: { name: string };
       transactions: unknown[];

@@ -33,12 +33,12 @@ function fixture() {
     { id: 'i1', type: 'income',  amount: 5000, currency: 'USD', date: `${MK}-01`, description: 'Salary', category: 'salary' },
     { id: 'e1', type: 'expense', amount: 1200, currency: 'USD', date: `${MK}-02`, description: 'Rent',   category: 'rent' },
     { id: 'e2', type: 'expense', amount: 300,  currency: 'USD', date: `${MK}-03`, description: 'Food',   category: 'food' },
-    { id: 'e3', type: 'expense', amount: 150,  currency: 'USD', date: `${MK}-04`, description: 'Fuel',   category: 'transport' },
+    { id: 'e3', type: 'expense', amount: 150,  currency: 'USD', date: `${MK}-04`, description: 'Fuel',   category: 'travel' },
     { id: 'e4', type: 'expense', amount: 90,   currency: 'USD', date: `${MK}-05`, description: 'Movie',  category: 'entertainment' },
   ];
   const budgets: Budget[] = [
     { id: 'b1', category: 'food', limit: 400, currency: 'USD' },
-    { id: 'b2', category: 'transport', limit: 200, currency: 'USD' },
+    { id: 'b2', category: 'travel', limit: 200, currency: 'USD' },
   ];
   const goals: Goal[] = [
     { id: 'g1', type: 'emergency', name: 'Emergency', target: 10000, current: 4000, currency: 'USD', completed: false },
@@ -93,7 +93,7 @@ describe('Money-Model regression — aggregation golden file (C4.1)', () => {
     expect(g.monthlyData.expense).toBe(1740);          // 1200+300+150+90
     expect(g.totalBalance).toBe(3260);                 // 5000 − 1740
     expect(g.netWorth).toBe(13000);                    // assets 21000 − debt 8000
-    expect(g.spendByCategory).toEqual({ rent: 1200, food: 300, transport: 150, entertainment: 90 });
+    expect(g.spendByCategory).toEqual({ rent: 1200, food: 300, travel: 150, entertainment: 90 });
   });
 });
 

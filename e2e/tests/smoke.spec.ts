@@ -1,17 +1,23 @@
 import { test, expect } from '../fixtures/app';
 import { defaultSeed, legacyOnlySeedScript } from '../fixtures/seed';
 
+// Every route App.tsx actually registers. Keep this list in step with the
+// <Route path=…> set: a route listed here but not registered never resolves, so
+// the test times out after 30s instead of failing with a useful message — which
+// is exactly how '/goals' (removed with the Goals module in v8.8.0) kept this
+// suite, and therefore CI, red.
+// '/planner' is not listed: since v10.29.0 it redirects to /insights?tab=for-you,
+// so the URL never settles on it. INS-FC-002 asserts that redirect.
 const PRIMARY_ROUTES = [
   '/dashboard',
   '/transactions',
+  '/accounts',
   '/budgets',
-  '/goals',
   '/splits',
   '/debts',
   '/networth',
   '/reports',
   '/recurring',
-  '/planner',
   '/chat',
   '/insights',
   '/households',
@@ -33,11 +39,12 @@ const LEGAL_PAGES = [
 
 test.describe('App shell (unseeded)', () => {
   test('CON-E2E-001 · boots into the dashboard in local-only mode', async ({ page, dashboard }) => {
-    await page.goto('/');
+    // Since v10.33.0, "/" renders the public Landing page instead of
+    // redirecting — going straight to /dashboard is how the app shell is
+    // reached now. The no-auth-gate proof is that /dashboard renders directly
+    // with no bounce to a sign-in route (a cloud build would show one).
+    await dashboard.goto();
     await expect(page).toHaveTitle(/Vyact/i);
-    // '/' redirects to /dashboard, and the app shell renders (no auth gate,
-    // confirming local-only mode — a cloud build would show the sign-in route).
-    await page.waitForURL('**/dashboard');
     await expect(dashboard.logoLink).toBeVisible();
   });
 
@@ -46,7 +53,17 @@ test.describe('App shell (unseeded)', () => {
     await expect(page).not.toHaveURL(/\/auth\//);
   });
 
-  test('CON-E2E-008 · tolerates corrupt localStorage payloads and falls back to clean defaults', async ({ page, transactions }) => {
+  test('CON-E2E-054 · the landing page itself renders at "/" in local-only mode with a single dashboard CTA', async ({ page }) => {
+    await page.goto('/');
+    await expect(page).not.toHaveURL(/\/(dashboard|auth)/);
+    await expect(page.getByRole('heading', { name: /understand its money/i })).toBeVisible();
+    // Multiple "Open Vyact" links exist on the page (hero, final CTA, footer) —
+    // the hero one is first in DOM order.
+    await page.getByRole('link', { name: 'Open Vyact', exact: true }).first().click();
+    await page.waitForURL('**/dashboard');
+  });
+
+  test('CON-E2E-040 · tolerates corrupt localStorage payloads and falls back to clean defaults', async ({ page, transactions }) => {
     await page.addInitScript(() => {
       localStorage.setItem('vt_transactions', '{bad json');
       localStorage.setItem('vt_profile', '{bad json');
@@ -76,7 +93,7 @@ test.describe('Seeded household', () => {
     await expect(transactions.row('E2E Salary')).toBeVisible();
   });
 
-  test('CON-E2E-007 · primary routed pages mount without page errors', async ({ page }) => {
+  test('CON-E2E-041 · primary routed pages mount without page errors', async ({ page }) => {
     const pageErrors: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
@@ -100,7 +117,7 @@ test.describe('Seeded household', () => {
 });
 
 test.describe('Legacy localStorage boot path', () => {
-  test('CON-E2E-010 · boots from legacy ff_* keys and writes back under vt_*', async ({ page, transactions }) => {
+  test('CON-E2E-042 · boots from legacy ff_* keys and writes back under vt_*', async ({ page, transactions }) => {
     await page.addInitScript(legacyOnlySeedScript, defaultSeed);
 
     await transactions.goto();

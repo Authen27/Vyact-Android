@@ -96,7 +96,10 @@ export interface SharedSplit {
 // baseline-derived record so honest-data rendering and the 21-day truing-up loop
 // work across devices (these are real, cloud-synced columns, not a local overlay).
 export type Confidence = 'estimated' | 'confirming' | 'confirmed';
-export type ProvenanceSource = 'onboarding' | 'user' | 'bank';
+// 'agent' = the row was extracted by the agent from a message/receipt (P4.5).
+// It is deliberately NOT 'bank': a model-read value is not a bank-confirmed one,
+// and collapsing the two would let an unverified figure render as real data.
+export type ProvenanceSource = 'onboarding' | 'user' | 'bank' | 'agent';
 
 /** Mixed onto baseline-derived entities (Transaction, Budget, Goal, Debt, Asset).
  *  Absent / 'confirmed' + 'user' means a first-class, user-owned value. */
@@ -132,6 +135,13 @@ export interface Transaction extends WithProvenance {
    *  `linkedAssetId` while flag is `'shadow'`; sole source once `'on'`. */
   accountId?: string;
   toAccountId?: string;
+  /** v10.26.0 (R4) — an investment moves money between an ACCOUNT and an
+   *  investment ASSET. Buy: `accountId` + `assetId`. Withdrawal: `toAccountId`
+   *  + `assetId`. Legacy rows with both account FKs and no asset still fold. */
+  assetId?: string;
+  /** v10.25.0 (R3) — how the paying account was used; one of that account's
+   *  `paymentModes`. Descriptive only: no balance or total reads it. `null` clears. */
+  paymentMode?: PaymentMode | null;
   initiatedBy?: string;
   /** v7.3 — Money Map Item #5 (multi-account split). When set, the txn's
    *  total amount is divided across these accounts (e.g. partial debit +
@@ -259,6 +269,12 @@ export interface Asset extends WithProvenance {
   liquidity: Liquidity;
   note?: string;
   lastUpdated?: string;
+  /** v10.26.0 (R4) — investment assets fold like accounts. `value` is the
+   *  OPENING value; live value = value + buys − withdrawals + valuationOffset
+   *  (lib/accountBalance.ts computeAssetValue). "Update value" moves the offset
+   *  with a dated log entry — never `value`, never a transaction. */
+  valuationOffset?: number;
+  valuationLog?: ReconciliationEntry[];
   /** v6.4.19 — TD-03 optimistic-concurrency precondition. See Budget.updated_at. */
   updated_at?: string;
 }
@@ -270,11 +286,23 @@ export interface Asset extends WithProvenance {
 // credit_card and loan are liabilities (negative to net worth).
 export type AccountKind = 'cash' | 'bank' | 'credit_card' | 'investment' | 'loan';
 
+/** v10.24.0 (R2) — how money moves through an account. Bank accounts use the
+ *  first five, cards the next four, Cash in Hand only `cash`. The set is
+ *  enforced by `ck_account_payment_modes`. */
+export type PaymentMode =
+  | 'upi' | 'debit_card' | 'net_banking' | 'cheque' | 'auto_debit'
+  | 'swipe' | 'upi_on_card' | 'online' | 'standing_instruction'
+  | 'cash';
+
 export interface Account extends WithProvenance {
   id: string;
   /** Legacy back-link to the asset this account was synthesised from. Set
    *  by the Phase 1 backfill; null for accounts the user creates directly. */
   assetId?: string;
+  /** Audit F2/§8.2 — explicit debt link for liability accounts (loan,
+   *  credit_card). Replaces the old `assetId: debt.id` overload, which
+   *  violated the FK (asset_id → assets, not debts). */
+  debtId?: string;
   kind: AccountKind;
   name: string;
   currency: string;
@@ -291,6 +319,19 @@ export interface Account extends WithProvenance {
   reconciliationOffset?: number;
   /** v9 D2 — dated audit trail of reconciliations; shown in account history only. */
   reconciliationLog?: ReconciliationEntry[];
+  /** v10.24.0 (R2) — the payment modes used on this account. */
+  paymentModes?: PaymentMode[];
+  /** v10.24.0 (R2) — credit cards only. Outstanding, available and utilisation
+   *  are DERIVED from this and the ledger balance (lib/accountsView.ts); none of
+   *  them is stored, so none can drift. `null` clears the value. */
+  creditLimit?: number | null;
+  billingCycleDay?: number | null;
+  paymentDueDay?: number | null;
+  /** v10.24.0 (R2) — the last check against a statement, drift or not. Clears
+   *  "not reconciled in N days" even when nothing needed correcting. */
+  lastReconciledAt?: string | null;
+  /** Row creation time (cloud). A never-reconciled account is judged stale from here. */
+  createdAt?: string;
   updated_at?: string;
 }
 
@@ -298,8 +339,38 @@ export interface Account extends WithProvenance {
 export interface ReconciliationEntry {
   at: string;                    // ISO timestamptz
   delta: number;
-  kind: 'bank' | 'investment';
+  /** 'merge' (v10.24.0) records a balance folded in when another account's
+   *  history was moved here before that account was deleted. */
+  kind: 'bank' | 'investment' | 'credit_card' | 'merge';
   stated_value: number | null;
+  note?: string;
+}
+
+/** v10.24.0 (R2) — what refers to an account. Built by the
+ *  `account_dependencies` RPC in cloud mode, or from the store locally. */
+export interface AccountDependencies {
+  accountId: string;
+  transactions: {
+    count: number;
+    total: number;
+    firstDate: string | null;
+    lastDate: string | null;
+    /** The busiest descriptions (or categories), most transactions first. At most 3. */
+    groups: { label: string; count: number; total: number }[];
+  };
+  recurring: { id: string; label: string }[];
+  /** Shared splits on this account's transactions that are not yet closed. */
+  openSplits: { id: string; txnId: string }[];
+  loanEvents: number;
+}
+
+/** v10.24.0 (R2) — result of moving an account's history, then deleting it. */
+export interface AccountMoveResult {
+  status: 'moved';
+  transactions: number;
+  schedules: number;
+  /** The source's opening balance + offset, carried into the destination. */
+  folded: number;
 }
 
 export type SavedViewPage = 'transactions' | 'reports' | 'insights';
@@ -460,6 +531,52 @@ export interface AmortizationEntry {
 }
 
 export type PartPaymentChoice = 'reduce_tenure' | 'reduce_emi' | 'apply_advance';
+
+/** Audit F2 — the atomic loan-payment command payload (client → RPC). The
+ *  decomposition is computed by the parity-tested lib/amortization.ts port;
+ *  the server validates shape and applies every write in one transaction. */
+export interface RecordLoanPaymentCommand {
+  operationId: string;
+  debtId: string;
+  fundingAccountId: string;
+  amount: number;
+  currency: string;
+  date: string;
+  interest: number;
+  principal: number;
+  memberId?: string;
+  description?: string;
+  newBalance?: number | null;
+  newRemainingMonths?: number | null;
+  newMinimumPayment?: number;
+  paymentLogEntry?: PaymentLogEntry;
+}
+
+export interface RecordLoanPaymentResult {
+  status: 'success' | 'duplicate';
+  expenseTxnId?: string | null;
+  transferTxnId?: string | null;
+  loanAccountId?: string | null;
+  debt: Debt;
+  loanAccount: Account;
+  transactions: Transaction[];
+}
+
+/** Store-facing input for the loan-payment command (what the FORM knows; the
+ *  store computes the decomposition and fills in the command payload). */
+export interface RecordLoanPaymentInput {
+  operationId?: string;
+  debtId: string;
+  /** Real account uuid or an encoded picker value ('cash' / account id);
+   *  defaults to the household's Cash account. */
+  fundingAccountId?: string;
+  amount: number;
+  currency?: string;
+  date?: string;
+  description?: string;
+  memberId?: string;
+  partPaymentChoice?: PartPaymentChoice;
+}
 
 export interface PaymentLogEntry {
   id: string;

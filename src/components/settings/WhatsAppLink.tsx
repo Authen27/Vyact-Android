@@ -14,6 +14,7 @@ import Button from '../ui/Button';
 import { Input, Select, Field } from '../ui/Input';
 import { useStore } from '../../store';
 import { supabase, isCloudEnabled } from '../../lib/supabase';
+import { readWhatsAppLink } from '../../lib/whatsappLink';
 
 type Phase = 'loading' | 'unlinked' | 'code-sent' | 'linked';
 
@@ -34,26 +35,22 @@ export default function WhatsAppLink() {
 
   const userId = session?.user?.id;
 
-  // Read current link status on mount (RLS lets a user read their own profile row).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!supabase || !userId) { setPhase('unlinked'); return; }
-      const { data } = await supabase
-        .from('profiles')
-        .select('phone_number, phone_verified_at, whatsapp_household_id')
-        .eq('id', userId).maybeSingle();
+      const data = await readWhatsAppLink();
       if (cancelled) return;
-      if (data?.phone_verified_at && data.phone_number) {
-        setLinkedPhone(data.phone_number);
-        setLinkedHouseholdId(data.whatsapp_household_id ?? '');
+      if (data.status === 'linked' && data.phone) {
+        setLinkedPhone(data.phone);
+        setLinkedHouseholdId(data.householdId ?? '');
         setPhase('linked');
       } else {
         setPhase('unlinked');
       }
-    })();
+    })().catch(() => { if (!cancelled) toast('Could not load WhatsApp link status.', 'error'); });
     return () => { cancelled = true; };
-  }, [userId]);
+  }, [userId, toast]);
 
   // Resend cooldown ticker.
   useEffect(() => {
@@ -102,12 +99,11 @@ export default function WhatsAppLink() {
     if (!confirm('Unlink your WhatsApp number?')) return;
     setBusy(true);
     try {
-      const { error } = await supabase.from('profiles')
-        .update({ phone_number: null, phone_verified_at: null, whatsapp_household_id: null })
-        .eq('id', userId);
-      if (error) { toast(`Unlink failed: ${error.message}`, 'error'); return; }
+      await readWhatsAppLink('unlink');
       setLinkedPhone(''); setLinkedHouseholdId(''); setPhone(''); setPhase('unlinked');
       toast('WhatsApp number unlinked.', 'info');
+    } catch (error) {
+      toast(`Unlink failed: ${(error as Error).message}`, 'error');
     } finally { setBusy(false); }
   }
 

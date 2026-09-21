@@ -56,6 +56,40 @@ export function can(role: AppRole | undefined, action: Action): boolean {
   return PERMS[role]?.has(action) ?? false;
 }
 
+/**
+ * The OTHER half of the permission policy: which role the current user holds.
+ *
+ * `can()` decides what a role may do; this decides what role you have. It is
+ * pure and lives here, beside `can()`, because the two are one rule — split
+ * across two files they drifted, and the drift was invisible.
+ *
+ * Three states, and the difference between the last two is the whole point:
+ *
+ *   local-only          → 'owner'.    One anonymous household on this device
+ *                                     with no auth and no sharing. There is no
+ *                                     one else to be, and no server to enforce
+ *                                     anything, so denying writes here just
+ *                                     bricks the app (it did — see App.tsx).
+ *   cloud, signed out   → undefined.  No identity ⇒ no role. `can()` then
+ *                                     grants `view` and nothing else.
+ *   cloud, signed in    → the membership row's role, or undefined when the
+ *                                     user has no membership in this household.
+ *
+ * The bug this replaces keyed the 'owner' fallback on "no session" rather than
+ * "no cloud", so a signed-out CLOUD user resolved to 'owner'. It was
+ * unreachable only because nothing invoked it in that state — the kind of
+ * latent hole that becomes live the moment someone adds a caller.
+ */
+export function resolveMyRole(opts: {
+  cloudEnabled: boolean;
+  hasSession: boolean;
+  membershipRole?: AppRole | null;
+}): AppRole | undefined {
+  if (!opts.cloudEnabled) return 'owner';
+  if (!opts.hasSession) return undefined;
+  return opts.membershipRole ?? undefined;
+}
+
 export function highestRole(roles: AppRole[]): AppRole | undefined {
   const rank: AppRole[] = ['child','viewer','member','admin','owner'];
   let best: AppRole | undefined;

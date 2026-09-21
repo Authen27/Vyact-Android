@@ -17,6 +17,11 @@ export interface SeedData {
   profile?: unknown;
   // v6.5 — added for the feature-test scaffolding (PR #scaffold-1).
   recurringSchedules?: unknown[];
+  // v10.20.6 — the Recurring form now requires an account (see CON-E2E-030).
+  accounts?: unknown[];
+  /** v9.1 budget allocation child rows — the Budgets page renders category
+   *  labels from THESE, not from the budget container. */
+  budgetAllocations?: unknown[];
   notifications?: unknown[];
   exchangeRates?: Record<string, number>;
 }
@@ -72,6 +77,29 @@ export const defaultSeed: SeedData = {
   ],
   goals: [
     { id: '00000000-0000-4000-8000-0000000000c1', type: 'emergency', name: 'E2E Emergency Fund', target: 10000, current: 4000, currency: 'USD', completed: false },
+  ],
+  // v10.20.6 — the Recurring form requires an account (ck_txn_accounts_by_type
+  // rejects an account-less transaction with 23514), so the baseline household
+  // needs one to be usable in journey tests.
+  accounts: [
+    {
+      id: "00000000-0000-4000-8000-0000000000a0",
+      kind: "bank",
+      name: "E2E Checking",
+      currency: "USD",
+      isDefault: true,
+      openingBalance: 8000,
+    },
+    {
+      // An investment transaction sets BOTH account FKs (v9 per-type matrix), so
+      // the baseline household needs an investment-kind destination. Without one
+      // CON-E2E-012 had nothing to buy into.
+      id: '00000000-0000-4000-8000-0000000000a2',
+      kind: 'investment',
+      name: 'E2E Brokerage',
+      currency: 'USD',
+      openingBalance: 0,
+    },
   ],
   debts: [],
   assets: [
@@ -131,6 +159,9 @@ export function seedScript(data: SeedData) {
   if (data.debts)        w('debts', data.debts);
   if (data.assets)       w('assets', data.assets);
   if (data.members)      w('members', data.members);
+  if (data.accounts)     w('accounts', data.accounts);
+  if (data.budgetAllocations) w('budgetAllocations', data.budgetAllocations);
+  if (data.recurringSchedules) w('recurring', data.recurringSchedules);
   if (data.exchangeRates) w('rates', data.exchangeRates);
 }
 

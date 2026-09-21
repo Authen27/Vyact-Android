@@ -1,6 +1,7 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/app';
 
-function cardValueByLabel(page: Parameters<typeof test>[0]['page'], label: string) {
+function cardValueByLabel(page: Page, label: string) {
   return page.locator('div').filter({ has: page.getByText(label, { exact: true }) }).locator('span[title]').first();
 }
 

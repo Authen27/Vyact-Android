@@ -158,7 +158,7 @@ export default function Debts() {
         </div>
       )}
 
-      {/* Add/Edit form lives in <DebtFormModal /> mounted at App root */}
+      {/* Add/Edit is the /debts/new and /debts/:id/edit page (v10.28.0) */}
 
       {/* Debt list */}
       {debts.length === 0 ? (

@@ -11,6 +11,7 @@ import { useMemo } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2, AlertTriangle, Check } from 'lucide-react';
 import type { AccountOption } from '../../lib/accounts';
 import type { AccountSplit } from '../../types';
+import { Select } from '../ui/Input';
 
 export interface AccountDrawerProps {
   total: number;
@@ -72,17 +73,17 @@ export function AccountDrawer({
           )}
           {splits.map((row, i) => (
             <div key={i} className="flex items-center gap-2">
-              <select
+              <Select
                 value={row.accountId}
                 onChange={e => setRow(i, { accountId: e.target.value })}
-                className="input flex-1 min-w-[140px]"
+                className="flex-1 min-w-0"
                 aria-label={`Account ${i + 1}`}
               >
                 <option value="">Choose account</option>
                 {accounts.map(a => (
                   <option key={a.value} value={a.value}>{a.label}</option>
                 ))}
-              </select>
+              </Select>
               <input
                 type="number"
                 inputMode="decimal"

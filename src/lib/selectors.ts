@@ -2,9 +2,10 @@ import {
   monthlyData, totalBalance, computePulseScore, getInsights, spendByCategory,
   totalAssets, totalLiabilities, totalMonthlyDebtPayment,
 } from './calculations';
-import { transactionSortValue } from './format';
+import { computeNetWorth } from './netWorth';
+import { compareTxnRecency } from './format';
 import type {
-  Transaction, Budget, Goal, Debt, Asset, Profile, ExchangeRates,
+  Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, Account, Profile, ExchangeRates,
 } from '../types';
 
 // Subset of the Zustand store the selectors actually read. Kept local so
@@ -12,9 +13,11 @@ import type {
 interface StoreSlice {
   transactions: Transaction[];
   budgets: Budget[];
+  budgetAllocations: BudgetAllocation[];
   goals: Goal[];
   debts: Debt[];
   assets: Asset[];
+  accounts: Account[];
   profile: Profile;
   rates: ExchangeRates;
 }
@@ -45,10 +48,10 @@ const memoTotalBalance = memoizeOne((transactions: Transaction[], base: string, 
 );
 export const selectTotalBalance = (s: StoreSlice) => memoTotalBalance(s.transactions, s.profile.baseCurrency, s.rates);
 
-const memoPulse = memoizeOne((transactions: Transaction[], budgets: Budget[], goals: Goal[], debts: Debt[], base: string, rates: ExchangeRates) =>
-  computePulseScore(transactions, budgets, goals, debts, base, rates),
+const memoPulse = memoizeOne((transactions: Transaction[], budgets: Budget[], goals: Goal[], debts: Debt[], base: string, rates: ExchangeRates, allocations: BudgetAllocation[]) =>
+  computePulseScore(transactions, budgets, goals, debts, base, rates, allocations),
 );
-export const selectPulse = (s: StoreSlice) => memoPulse(s.transactions, s.budgets, s.goals, s.debts, s.profile.baseCurrency, s.rates);
+export const selectPulse = (s: StoreSlice) => memoPulse(s.transactions, s.budgets, s.goals, s.debts, s.profile.baseCurrency, s.rates, s.budgetAllocations);
 
 const memoInsights = memoizeOne((transactions: Transaction[], budgets: Budget[], goals: Goal[], debts: Debt[], assets: Asset[], base: string, rates: ExchangeRates) =>
   getInsights(transactions, budgets, goals, debts, assets, base, rates),
@@ -60,7 +63,8 @@ const memoSpend = memoizeOne((transactions: Transaction[], mk: string, base: str
 );
 export const selectSpendByCategory = (mk: string) => (s: StoreSlice) => memoSpend(s.transactions, mk, s.profile.baseCurrency, s.rates);
 
-const memoRecent = memoizeOne((transactions: Transaction[]) => [...transactions].sort((a, b) => transactionSortValue(b) - transactionSortValue(a) || b.id.localeCompare(a.id)).slice(0, 5));
+const memoRecent = memoizeOne((transactions: Transaction[]) =>
+  [...transactions].sort(compareTxnRecency).slice(0, 5));
 export const selectRecentTxns = (s: StoreSlice) => memoRecent(s.transactions);
 
 const memoTotalAssets = memoizeOne((assets: Asset[], base: string, rates: ExchangeRates) => totalAssets(assets, base, rates));
@@ -68,6 +72,20 @@ export const selectTotalAssets = (s: StoreSlice) => memoTotalAssets(s.assets, s.
 
 const memoTotalLiabilities = memoizeOne((debts: Debt[], base: string, rates: ExchangeRates) => totalLiabilities(debts, base, rates));
 export const selectTotalLiabilities = (s: StoreSlice) => memoTotalLiabilities(s.debts, s.profile.baseCurrency, s.rates);
+
+// ── Audit F3 — the canonical net-worth projection. ─────────────────────────
+// Dashboard's Net Worth card and Ask Vyact used to read the STATIC
+// assets/debts arrays while NetWorth.tsx read live account balances — three
+// answers to one question. All surfaces now derive from this single
+// projection (live account balances both sides, unlinked assets/debts,
+// receivables excluded, one FX path).
+const memoNetWorth = memoizeOne((
+  assets: Asset[], accounts: Account[], debts: Debt[], transactions: Transaction[],
+  base: string, rates: ExchangeRates,
+) => computeNetWorth({ assets, accounts, debts, transactions }, base, rates));
+export const selectNetWorth = (s: StoreSlice) => memoNetWorth(
+  s.assets, s.accounts, s.debts, s.transactions, s.profile.baseCurrency, s.rates,
+);
 
 const memoMonthlyDebt = memoizeOne((debts: Debt[], base: string, rates: ExchangeRates) => totalMonthlyDebtPayment(debts, base, rates));
 export const selectMonthlyDebtPayment = (s: StoreSlice) => memoMonthlyDebt(s.debts, s.profile.baseCurrency, s.rates);

@@ -66,7 +66,7 @@ export function buildSeed(): SeedBundle {
     { id:uid(), type:'income',  amount:950,  category:'freelance',   description:'Design Consulting',  date:`${mk}-08`, memberId:alexId, currency:'USD', note:'UI project', paymentMethod:'paypal' },
     { id:uid(), type:'expense', amount:2340, category:'rent_mortgage',        description:'Mortgage Payment',   date:`${mk}-01`, memberId:alexId, recurring:'monthly', currency:'USD', paymentMethod:'wells' },
     { id:uid(), type:'expense', amount:280,  category:'food_dining',        description:'Weekly Groceries',   date:`${mk}-05`, memberId:samId,  recurring:'weekly',  currency:'USD', note:'Whole Foods', paymentMethod:'visa' },
-    { id:uid(), type:'expense', amount:95,   category:'transport',   description:'Bus Pass',           date:`${mk}-02`, memberId:alexId, recurring:'monthly', currency:'USD', paymentMethod:'cash' },
+    { id:uid(), type:'expense', amount:95,   category:'travel',   description:'Bus Pass',           date:`${mk}-02`, memberId:alexId, recurring:'monthly', currency:'USD', paymentMethod:'cash' },
     { id:uid(), type:'expense', amount:44,   category:'entertainment',description:'Netflix & Spotify', date:`${mk}-03`, memberId:alexId, recurring:'monthly', currency:'USD', paymentMethod:'amex' },
     { id:uid(), type:'expense', amount:130,  category:'health',      description:'Gym Membership',     date:`${mk}-04`, memberId:samId,  recurring:'monthly', currency:'USD', paymentMethod:'visa' },
     { id:uid(), type:'expense', amount:185,  category:'shopping',    description:'Clothing',           date:`${mk}-10`, memberId:samId,  currency:'USD', paymentMethod:'mastercard' },
@@ -96,7 +96,7 @@ export function buildSeed(): SeedBundle {
 
   const budgets: Budget[] = [
     { id:uid(), category:'food_dining',          limit:850, color:'#E8A87C', currency:'USD' },
-    { id:uid(), category:'transport',     limit:200, color:'#4A6FA5', currency:'USD' },
+    { id:uid(), category:'travel',     limit:200, color:'#4A6FA5', currency:'USD' },
     { id:uid(), category:'entertainment', limit:80,  color:'#6E4555', currency:'USD' },
     { id:uid(), category:'shopping',      limit:300, color:'#E26D5C', currency:'USD' },
     { id:uid(), category:'health',        limit:200, color:'#85A88A', currency:'USD' },

@@ -143,16 +143,32 @@ describe('balance sheet helpers', () => {
 
 describe('computePulseScore', () => {
   it('CON-UNIT-023 · returns a total in [0,100] with the four components present (goals removed)', () => {
+    // Audit F5: budget compliance is scoped to the CURRENT month. The budget is
+    // dated into the same month as the txns so the budget component is actually
+    // exercised regardless of when the suite runs.
+    const mk = new Date().toISOString().slice(0, 7);
     const txns = [
-      txn({ type: 'income', amount: 5000, date: '2026-05-01' }),
-      txn({ type: 'expense', amount: 2000, date: '2026-05-10' }),
+      txn({ type: 'income', amount: 5000, date: `${mk}-01` }),
+      txn({ type: 'expense', amount: 2000, date: `${mk}-10` }),
     ];
-    const budgets: Budget[] = [{ id: 'b1', category: 'general', limit: 3000, currency: 'USD' }];
+    const [y, m] = mk.split('-').map(Number);
+    const budgets: Budget[] = [{
+      id: 'b1', category: 'general', limit: 3000, currency: 'USD',
+      scope: 'month', periodYear: y, periodMonth: m,
+    }];
     const debts: Debt[] = [];
     const p = computePulseScore(txns, budgets, [], debts, USD, R);
-    expect(p.total).toBeGreaterThanOrEqual(0);
-    expect(p.total).toBeLessThanOrEqual(100);
+    expect(typeof p.total === 'number' || p.total === null).toBe(true);
+    if (typeof p.total === 'number') {
+      expect(p.total).toBeGreaterThanOrEqual(0);
+      expect(p.total).toBeLessThanOrEqual(100);
+    }
     expect(Object.keys(p.components).sort()).toEqual(['budget', 'debt', 'savings', 'trend']);
+    // The budget line IS in-month now, so the component applies and — with
+    // 2000 spent against a 3000 limit (≤100%) — scores full under the audit's
+    // under=full rule.
+    expect(p.applicable.budget).toBe(true);
+    expect(p.components.budget).toBe(100);
   });
   it('CON-UNIT-024 · higher debt-to-income lowers the debt component', () => {
     // Date the income into the CURRENT month so the DTI ratio is actually

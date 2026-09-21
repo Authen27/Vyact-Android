@@ -39,7 +39,7 @@ export const TEMPLATES: Record<TemplateKey, TemplateMeta> = {
       { category: 'food_dining',          limit: 600,  color: '#E8A87C' },
       { category: 'utilities',     limit: 200,  color: '#F4D27A' },
       { category: 'entertainment', limit: 250,  color: '#6E4555' },
-      { category: 'transport',     limit: 300,  color: '#4A6FA5' },
+      { category: 'travel',         limit: 300,  color: '#4A6FA5' },
     ],
     starterGoals: [
       { type: 'savings',    name: 'Holiday Fund',         target: 4000,  current: 0, completed: false },
@@ -64,7 +64,7 @@ export const TEMPLATES: Record<TemplateKey, TemplateMeta> = {
       { category: 'education',     limit: 300,  color: '#6B7C53' },
       { category: 'utilities',     limit: 280,  color: '#F4D27A' },
       { category: 'insurance',     limit: 350,  color: '#6B635C' },
-      { category: 'transport',     limit: 400,  color: '#4A6FA5' },
+      { category: 'travel',         limit: 400,  color: '#4A6FA5' },
     ],
     starterGoals: [
       { type: 'emergency',  name: '6-Month Emergency Fund', target: 18000, current: 0, completed: false },
@@ -88,7 +88,7 @@ export const TEMPLATES: Record<TemplateKey, TemplateMeta> = {
       { category: 'rent_mortgage',          limit: 1200, color: '#C44536' },
       { category: 'food_dining',          limit: 450,  color: '#E8A87C' },
       { category: 'utilities',     limit: 180,  color: '#F4D27A' },
-      { category: 'transport',     limit: 200,  color: '#4A6FA5' },
+      { category: 'travel',         limit: 200,  color: '#4A6FA5' },
       { category: 'childcare',     limit: 400,  color: '#F4B6A8' },
     ],
     starterGoals: [
@@ -153,7 +153,7 @@ export const TEMPLATES: Record<TemplateKey, TemplateMeta> = {
       { category: 'rent_mortgage',          limit: 700,  color: '#C44536' },
       { category: 'food_dining',          limit: 250,  color: '#E8A87C' },
       { category: 'education',     limit: 150,  color: '#6B7C53' },
-      { category: 'transport',     limit: 80,   color: '#4A6FA5' },
+      { category: 'travel',         limit: 80,   color: '#4A6FA5' },
       { category: 'entertainment', limit: 100,  color: '#6E4555' },
     ],
     starterGoals: [

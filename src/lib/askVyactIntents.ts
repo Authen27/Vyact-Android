@@ -40,59 +40,48 @@ export interface Intent {
   label: string;
   /** Board D M6 — the glyph shown in the intent row's inset icon tile. */
   icon: string;
+  example?: string;
+  inputHint?: string;
   /** When set, tapping the chip primes a sub-row of secondary chips. */
   secondary?: SubChip[];
   /** When `secondary` is absent, the chip fires this action on tap-1. */
   action?: IntentAction;
 }
 
-// Curated tap-2 chips for "Add expense" — top everyday categories. Stays a
-// short list deliberately; we don't want a wall of buttons. Power users
-// can still use the modal's category dropdown after the seed lands.
-const EXPENSE_QUICK_CATS: SubChip[] = [
-  { label: 'Groceries',     action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'food' } } },
-  { label: 'Fuel',          action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'transport' } } },
-  { label: 'Eating out',    action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'food' } } },
-  { label: 'Shopping',      action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'shopping' } } },
-  { label: 'Bills',         action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'utilities' } } },
-  { label: 'Other',         action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'other_exp' } } },
-];
-
-const INCOME_QUICK_CATS: SubChip[] = [
-  { label: 'Salary',        action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'salary' } } },
-  { label: 'Freelance',     action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'freelance' } } },
-  { label: 'Gift / Bonus',  action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'gift' } } },
-  { label: 'Other',         action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'other_inc' } } },
-];
-
 export const INTENTS: Intent[] = [
   // ── Capture ─────────────────────────────────────────────────
-  { id: 'add-expense',     bucket: 'capture', icon: '➕', label: 'Add expense',      secondary: EXPENSE_QUICK_CATS },
-  { id: 'add-income',      bucket: 'capture', icon: '💰', label: 'Add income',       secondary: INCOME_QUICK_CATS },
-  { id: 'add-transfer',    bucket: 'capture', icon: '🔄', label: 'Add transfer',     action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'transfer' as TxnType, category: 'transfer' } } },
-  { id: 'add-investment',  bucket: 'capture', icon: '📈', label: 'Add investment',   action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'investment' as TxnType, category: 'investment_in' } } },
-  { id: 'add-budget',      bucket: 'capture', icon: '🎯', label: 'Add a budget',     action: { kind: 'open-modal', modal: 'addBudget' } },
-  { id: 'add-debt',        bucket: 'capture', icon: '⬇️', label: 'Add a debt',       action: { kind: 'open-modal', modal: 'addDebt' } },
-  { id: 'add-asset',       bucket: 'capture', icon: '🏠', label: 'Add an asset',     action: { kind: 'open-modal', modal: 'addAsset' } },
+  { id: 'add-expense',     bucket: 'capture', icon: '➕', label: 'Add expense', example: 'Spent 45 on groceries today', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' } } },
+  { id: 'add-income',      bucket: 'capture', icon: '💰', label: 'Add income', example: 'Received 5000 salary today', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' } } },
+  { id: 'add-transfer',    bucket: 'capture', icon: '🔄', label: 'Add transfer', example: 'Transferred 200 from my bank to cash', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'transfer' as TxnType, category: '' } } },
+  { id: 'add-investment',  bucket: 'capture', icon: '📈', label: 'Add investment', example: 'Invested 500 in my index fund', inputHint: 'Choose the investment asset and paying account in the form.', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'investment' as TxnType, category: '' } } },
+  { id: 'add-budget',      bucket: 'capture', icon: '🎯', label: 'Add a budget', inputHint: 'Form example: monthly limit 3000, groceries 400. Budget creation is not a chat command.', action: { kind: 'open-modal', modal: 'addBudget' } },
+  { id: 'add-debt',        bucket: 'capture', icon: '⬇️', label: 'Add a debt', inputHint: 'Form example: Car loan, balance 6000, APR 6%, payment 250. Debt creation is not a chat command.', action: { kind: 'open-modal', modal: 'addDebt' } },
+  { id: 'add-asset',       bucket: 'capture', icon: '🏠', label: 'Add an asset', inputHint: 'Form example: Investment, Index fund, value 3000. Asset creation is not a chat command.', action: { kind: 'open-modal', modal: 'addAsset' } },
 
   // ── Inquire ─────────────────────────────────────────────────
   { id: 'spend-month',     bucket: 'inquire', icon: '💸', label: 'Spend this month', action: { kind: 'ask', prompt: 'How much did I spend this month?' } },
-  { id: 'pulse',           bucket: 'inquire', icon: '💚', label: 'Pulse Score',      action: { kind: 'ask', prompt: "What's my Pulse Score and why?" } },
+  { id: 'health',          bucket: 'inquire', icon: '💚', label: 'Household overview', action: { kind: 'ask', prompt: 'How am I doing financially?' } },
   { id: 'net-worth',       bucket: 'inquire', icon: '⚖️', label: 'Net worth',        action: { kind: 'ask', prompt: "What's my net worth?" } },
   { id: 'budgets-risk',    bucket: 'inquire', icon: '⚠️', label: 'Budgets at risk',  action: { kind: 'ask', prompt: 'Which budgets are at risk?' } },
   { id: 'top-categories',  bucket: 'inquire', icon: '📊', label: 'Top categories',   action: { kind: 'ask', prompt: 'What are my top spending categories this month?' } },
   { id: 'upcoming-bills',  bucket: 'inquire', icon: '🔁', label: 'Upcoming bills',   action: { kind: 'ask', prompt: 'What are my upcoming bills?' } },
 
   // ── Plan ────────────────────────────────────────────────────
-  { id: 'emergency',       bucket: 'plan',    icon: '🛡️', label: 'Emergency fund',   action: { kind: 'ask', prompt: 'How am I doing on my emergency fund?' } },
+  { id: 'emergency',       bucket: 'plan',    icon: '🛡️', label: 'Income interruption', action: { kind: 'ask', prompt: 'How long would my money last without income?' } },
   { id: 'debts',           bucket: 'plan',    icon: '⬇️', label: 'Debt strategy',    action: { kind: 'ask', prompt: 'Tell me about my debts and the best payoff strategy.' } },
+  { id: 'affordability', bucket: 'plan', icon: '🛒', label: 'Can I afford it?', action: { kind: 'ask', prompt: 'Can I afford a 1200 purchase?' } },
+  { id: 'cut-back', bucket: 'plan', icon: '✂️', label: 'Find room to save', action: { kind: 'ask', prompt: 'Where can I cut back on spending?' } },
 ];
 
 export const BUCKET_LABEL: Record<Bucket, string> = {
-  capture: 'Capture',
-  inquire: 'Inquire',
-  plan:    'Plan',
+  capture: 'Record money',
+  inquire: 'Understand my money',
+  plan:    'Explore a decision',
 };
+
+export function intentExample(intent: Intent): string | undefined {
+  return intent.action?.kind === 'ask' ? intent.action.prompt : intent.example;
+}
 
 export function intentsByBucket(bucket: Bucket): Intent[] {
   return INTENTS.filter(i => i.bucket === bucket);
@@ -118,6 +107,8 @@ export type AssistantIntentId =
   | 'interpret.status' | 'interpret.diagnostic' | 'interpret.lookup'
   | 'interpret.budgets' | 'interpret.bills' | 'interpret.debts'
   | 'forecast.affordability' | 'forecast.runway' | 'forecast.prescriptive'
+  /** v10.38 — about the assistant, not the household's money. Reads no data. */
+  | 'meta.assistant'
   | 'fallback';
 
 export interface IntentResult {
@@ -136,6 +127,8 @@ const BUCKET_OF: Record<AssistantIntentId, AssistantBucket | 'none'> = {
   'interpret.budgets': 'interpret', 'interpret.bills': 'interpret', 'interpret.debts': 'interpret',
   'forecast.affordability': 'forecast', 'forecast.runway': 'forecast',
   'forecast.prescriptive': 'forecast',
+  // No bucket: meta questions are not a money feature and are not gated by one.
+  'meta.assistant': 'none',
   fallback: 'none',
 };
 
