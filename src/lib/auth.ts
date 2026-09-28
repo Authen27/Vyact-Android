@@ -3,6 +3,7 @@
 // signUp, etc. without knowing about Supabase internals.
 
 import { sb, APP_URL } from './supabase';
+import { disablePush } from './webPush';
 import type { Session, User } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core';
 import { Browser } from '@capacitor/browser';
@@ -61,6 +62,9 @@ export async function signInOAuth(provider: 'google' | 'apple' | 'github') {
 }
 
 export async function signOut() {
+  // v10.48.0 — a signed-out device must not keep receiving this person's figures on its
+  // lock screen. Unregister while the session can still authorise it.
+  await disablePush().catch(() => undefined);
   const { error } = await sb().auth.signOut();
   if (error) throw error;
 }

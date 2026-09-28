@@ -42,7 +42,7 @@ test.describe('§25 RESP-FC · responsive mobile layout', () => {
     await page.waitForURL('**/dashboard');
 
     const plannerFab = page.getByRole('button', { name: 'Planner' });
-    const chatFab = page.getByRole('button', { name: 'Ask Vyact' });
+    const chatFab = page.getByRole('button', { name: 'Ask Pip' });
 
     await expect(plannerFab).toBeVisible();
     await expect(chatFab).toBeVisible();
@@ -53,9 +53,9 @@ test.describe('§25 RESP-FC · responsive mobile layout', () => {
     await expect(page.getByRole('heading', { name: 'Planner' })).toHaveCount(0);
 
     await chatFab.click();
-    await expect(page.getByRole('heading', { name: 'Ask Vyact' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Pip' })).toBeVisible();
     await page.getByRole('button', { name: 'Close' }).click();
-    await expect(page.getByRole('heading', { name: 'Ask Vyact' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Pip' })).toHaveCount(0);
   });
 
   test('RESP-FC-005 · drawer labels for Accounts and Insights stay title-cased and readable', async ({ page }) => {

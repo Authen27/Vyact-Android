@@ -4,9 +4,11 @@
 // GoalFormModal / BudgetFormModal so the creation surfaces feel
 // consistent. Replaces the inline panel form previously rendered inside
 // pages/Debts.tsx.
+//
+// v10.28.0 — rendered as the /debts/new and /debts/:id/edit pages.
 
 import { useEffect, useState } from 'react';
-import HalfSheet from '../ui/HalfSheet';
+import FormPage from '../ui/FormPage';
 import Button from '../ui/Button';
 import { Input, Select, Field, FieldRow } from '../ui/Input';
 import { useStore } from '../../store';
@@ -17,7 +19,7 @@ import type { Debt } from '../../types';
 interface Props {
   open?: boolean;
   initial?: Debt | null;
-  onClose?: () => void;
+  onClose: () => void;
 }
 
 interface FormState {
@@ -58,12 +60,9 @@ export default function DebtFormModal(props: Props) {
   const removeDebt  = useStore(s => s.removeDebt);
   const toast       = useStore(s => s.toast);
 
-  const storeOpen    = useStore(s => s.debtModalOpen);
-  const storeInitial = useStore(s => s.editingDebt);
-  const storeClose   = useStore(s => s.closeDebtModal);
-  const open         = props.open    ?? storeOpen;
-  const initial      = props.initial ?? storeInitial;
-  const onClose      = props.onClose ?? storeClose;
+  const open         = props.open ?? true;
+  const initial      = props.initial ?? null;
+  const onClose      = props.onClose;
 
   const [form, setForm]   = useState<FormState>(blank(profile.baseCurrency));
   const [saving, setSaving] = useState(false);
@@ -161,7 +160,7 @@ export default function DebtFormModal(props: Props) {
   );
 
   return (
-    <HalfSheet open={open} title={initial ? 'Edit Debt' : 'Add Debt'} onClose={onClose} footer={footer}>
+    <FormPage open={open} title={initial ? 'Edit Debt' : 'Add Debt'} onClose={onClose} footer={footer} helpTopicId="debt">
       {/* v10.17 — "Owed to me" (receivables) is deprecated from the UI; debts
           are liabilities only. The direction/counterparty model is retained in
           the data layer (reversible), just never surfaced here. */}
@@ -261,6 +260,6 @@ export default function DebtFormModal(props: Props) {
         </Field>
       </FieldRow>
 
-    </HalfSheet>
+    </FormPage>
   );
 }

@@ -1,6 +1,12 @@
 import { Link } from 'react-router-dom';
 
-export const POLICY_VERSION = '2026-07-01';
+// Bump whenever the substance of the policy changes — it is rendered as
+// "Last updated" on Privacy / Terms / Cookies and recorded against an account
+// at sign-up, so it is the auditable record of WHICH text a user accepted.
+// 2026-09-07: v10.20 rewrote the Ask Vyact disclosure. The assistant became
+// model-backed and the previous text ("minimum context needed") was too vague
+// to describe a feature that now calls a provider on every question.
+export const POLICY_VERSION = '2026-09-07';
 
 function Section({ id, title, children }: { id?: string; title: string; children: React.ReactNode }) {
   return (
@@ -86,9 +92,47 @@ export default function Privacy() {
           'Cloud database and authentication infrastructure (Supabase) — stores your account and household data, encrypted at rest and in transit.',
           'Hosting/CDN and application infrastructure (Vercel) — serves the application.',
           'Messaging channel providers (e.g. WhatsApp Business Platform / Meta) — only if you explicitly link your account to that channel.',
-          'AI-assistant infrastructure (e.g. large-language-model providers) — only for the specific request you make in Ask Vyact / Chat, and only the minimum context needed to answer it.',
+          'AI-assistant infrastructure (large-language-model providers) — only when you ask Pip, Vyact\'s assistant, a question, and only your question plus the figures Vyact has already calculated for that one answer. Your transaction history is never sent. See "How Pip uses a language model" below.',
         ]} />
         <p>We may disclose information where required by law, to protect the rights, property, or safety of Vyact, our users, or the public, or in connection with a merger, acquisition, or sale of assets — in which case we will notify affected users before data is transferred under materially different terms.</p>
+
+        <h3 className="font-display font-bold text-ink text-[15px] mt-6 mb-2">How Pip uses a language model</h3>
+        <p>
+          Pip, Vyact's assistant, answers your questions with the help of a large-language-model provider.
+          Exactly two things leave Vyact each time you ask a question, and nothing else:
+        </p>
+        <List items={[
+          <><strong className="text-ink">Your question, as you typed it</strong> — used only to work out what you are asking for.</>,
+          <><strong className="text-ink">The answer Vyact has already calculated</strong> — the specific values that make up that one reply, such as an amount, a category name, a percentage, or the name you gave to a bill the answer mentions.</>,
+        ]} />
+        <p>
+          Your transaction history is never sent. Neither is any account, budget, debt or household
+          record that is not part of the answer you asked for. The model is not given your data to
+          search through — it is given one question and one already-computed answer to put into words.
+        </p>
+        <p>
+          <strong className="text-ink">The model never calculates money.</strong> Every amount in a
+          reply comes from Vyact's own calculation on your data; the model's job is to put that
+          answer into words. As a further check, replies are screened for amounts that do not match
+          what was calculated, and a reply that fails is not shown to you.
+        </p>
+        <p>
+          That screening is a safeguard, not a guarantee of correctness: it compares the numbers in a
+          reply against the ones Vyact calculated, so it will not catch a correct figure that has
+          been described the wrong way round. Pip is here to help you understand your money,
+          not to replace your own judgement — and it is never financial advice.
+        </p>
+        <p>
+          These requests are made by Vyact's own server, never by your browser, so no provider
+          credential is ever present in the app you are running. If no model is configured or
+          reachable, Pip tells you it is unavailable — it does not fall back to a guess.
+        </p>
+        <p>
+          <strong className="text-ink">On WhatsApp.</strong> If you link a WhatsApp number and turn on
+          &quot;Answer my questions here&quot;, Pip answers in that chat, so the answer, including its
+          figures, is delivered through WhatsApp (Meta) and can appear in your phone&apos;s notifications.
+          It is off until you turn it on, and you can turn it off at any time in Settings.
+        </p>
       </Section>
 
       <Section title="6. Your rights and controls" id="rights">
@@ -101,7 +145,7 @@ export default function Privacy() {
           <><strong className="text-ink">Portability</strong> — receive your data in a structured, machine-readable format (JSON/CSV).</>,
           <><strong className="text-ink">Withdraw consent</strong> — contact us to withdraw consent for optional processing (e.g. WhatsApp linking) without affecting the lawfulness of prior processing.</>,
         ]} />
-        <p>To exercise any right not self-serviceable in the app, email <a href="mailto:uday.kr27@gmail.com?subject=Vyact%20Privacy%20rights%20request" className="text-coral hover:underline">uday.kr27@gmail.com</a> (temporary support inbox). We respond to verifiable requests within 30 days (or the timeframe required by your local law, if shorter).</p>
+        <p>To exercise any right not self-serviceable in the app, email <a href="mailto:support@vyact.app?subject=Vyact%20Privacy%20rights%20request" className="text-coral hover:underline">support@vyact.app</a>. We respond to verifiable requests within 30 days (or the timeframe required by your local law, if shorter).</p>
       </Section>
 
       <Section title="7. Data erasure, deactivation, and deletion — what actually happens" id="erasure">
@@ -155,8 +199,8 @@ export default function Privacy() {
       <Section title="14. Contact" id="contact">
         <p>
           Questions about this policy or your data can be raised by emailing{' '}
-          <a href="mailto:uday.kr27@gmail.com?subject=Vyact%20Privacy%20question" className="text-coral hover:underline">uday.kr27@gmail.com</a>{' '}
-          (temporary support inbox — more channels are coming), or via the{' '}
+          <a href="mailto:support@vyact.app?subject=Vyact%20Privacy%20question" className="text-coral hover:underline">support@vyact.app</a>,{' '}
+          or via the{' '}
           <Link to="/help#contact" className="text-coral hover:underline">Help → Contact support</Link> form once signed in.
         </p>
       </Section>

@@ -5,8 +5,14 @@ import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
 import { fmt, convert, nowMonthKey } from '../lib/format';
 import Money from '../components/ui/Money';
-import { totalLiabilities, monthlyData } from '../lib/calculations';
-import { liveAssetRows, liveTotalAssets, type LiveAssetRow } from '../lib/accountBalance';
+import { monthlyData } from '../lib/calculations';
+import { computeNetWorth, cardDues } from '../lib/netWorth';
+// v10.38.1 — the one spend baseline, shared with Ask Vyact so the two screens
+// cannot quote different months of cover for the same household.
+import { spendBasis } from '../lib/aiSummary';
+import { netWorthHistory, monthLabel, type NetWorthSnapshot } from '../lib/netWorthSnapshots';
+import { NetWorthHistoryChart } from '../components/charts/ReportCharts';
+import { computeAssetValue, type LiveAssetRow } from '../lib/accountBalance';
 import { ASSET_TYPES, DEBT_TYPES } from '../constants';
 import type { Asset, AccountKind } from '../types';
 
@@ -32,17 +38,22 @@ export default function NetWorth() {
   const toast        = useStore(s => s.toast);
   const openAddAsset  = useStore(s => s.openAddAsset);
   const openEditAsset = useStore(s => s.openEditAsset);
+  const snapshots    = useStore(s => s.netWorthSnapshots);
 
   const c = profile.baseCurrency;
 
-  // Money-Model — Net Worth's asset side is LIVE: every spendable account
-  // (cash/bank/investment) contributes its computed balance (opening + ledger
-  // folds + reconciliation offset), not a frozen linked-asset snapshot. See
-  // lib/accountBalance.ts `liveAssetRows` for the de-dup rule.
-  const liveRows = useMemo(
-    () => liveAssetRows(assets, accountsState, transactions, c, rates),
-    [assets, accountsState, transactions, c, rates],
+  // Audit F3 — Net Worth reads THE canonical projection, the same one the
+  // Dashboard and Ask Vyact read. Live account balances on both sides
+  // (asset accounts + liability accounts), unlinked legacy assets and
+  // unlinked debts folded in, receivables excluded, one FX path. The
+  // asset-side rows still drive the per-liquidity display below.
+  const projection = useMemo(
+    () => computeNetWorth(
+      { assets, accounts: accountsState, debts, transactions }, c, rates,
+    ),
+    [assets, accountsState, debts, transactions, c, rates],
   );
+  const liveRows = projection.assetRows;
 
   // Remind once per mount if any legacy (account-less) asset is stale (>30
   // days). Account-sourced rows are computed live from the ledger on every
@@ -64,23 +75,42 @@ export default function NetWorth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const ta  = liveTotalAssets(liveRows);
-  const tl  = totalLiabilities(debts, c, rates);
+  const ta  = projection.totalAssets;
+  const tl  = projection.totalLiabilities;
   // v10.17 — "Owed to me" (receivables) is deprecated from the UI. The rows
   // remain in the data model (reversible) but no longer count toward the
-  // displayed Net Worth. `totalReceivables` already excludes them from
-  // `totalAssets`/`totalLiabilities`, so dropping the addend here is the only
-  // change needed to keep every number honest.
-  const nw  = ta - tl;
-  const la  = liveRows.filter(r => r.liquidity === 'liquid').reduce((s, r) => s + r.value, 0);
+  // displayed Net Worth — the projection excludes them, so no addend here.
+  const nw  = projection.netWorth;
+  const la  = projection.liquidAssets;
+  // v10.39.1 (P19) — the card bill is paid from `la`, so what is FREE is less by it.
+  // Same helper as the assistant's facts: one figure, whichever screen asks.
+  const dues = cardDues(projection);
   const { income, expense } = monthlyData(transactions, nowMonthKey(), c, rates);
   const monthlyIncome = income || 1;
 
-  // Financial ratios
-  const liquidityRatio   = expense > 0 ? la / expense : 0;
+  // v10.38.1 — ONE cover figure, on the SAME baseline as everywhere else.
+  //
+  // There used to be two: `liquidityRatio` and `emergencyCover`, computed from
+  // identical expressions (`la / expense`) and rendered as separate tiles — the same
+  // number twice, in different units ("2.9x" and "2.9mo"), with different thresholds,
+  // so one could read green while the other read amber. And both divided by THIS
+  // month's expense, which on the 2nd of a month is barely any spending at all: the
+  // page reported enormous cover early in the month and shrinking cover through it.
+  //
+  // The assistant moved onto `spendBasis` (up to six COMPLETED months) in v10.38 for
+  // exactly that reason, so this page was about to quote a different number for the
+  // same household. Both now read the one baseline; `askVyactFacts` pins them equal.
+  const basis = useMemo(
+    () => spendBasis(transactions, c, rates),
+    [transactions, c, rates],
+  );
+  const typicalMonthly   = basis.averageMonthly;
+  const monthsOfCover    = typicalMonthly > 0 ? la / typicalMonthly : 0;
   const debtToAsset      = ta > 0 ? tl / ta * 100 : 0;
-  const emergencyCover   = expense > 0 ? la / expense : 0;
   const savingsRatio     = monthlyIncome > 0 ? ((monthlyIncome - expense) / monthlyIncome) * 100 : 0;
+  const coverBasisLabel  = basis.partialMonthOnly
+    ? 'based on this month so far'
+    : `based on your usual ${fmt(Math.round(typicalMonthly), c)} a month`;
 
   // Board C — liquidity stacked bar totals (presentation of existing values).
   const liqMix = { liquid: 0, short: 0, long: 0 };
@@ -97,8 +127,14 @@ export default function NetWorth() {
 
   async function del(id: string) {
     if (!confirm('Delete this asset?')) return;
-    await removeAsset(id);
-    toast('Asset removed', 'info');
+    // v10.26.0 (R4) — the store refuses an investment with buys recorded against
+    // it; that refusal must reach the user, not vanish as an unhandled rejection.
+    try {
+      await removeAsset(id);
+      toast('Asset removed', 'info');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
   }
 
   const byLiquidity = (liq: LiveAssetRow['liquidity']) =>
@@ -190,31 +226,37 @@ export default function NetWorth() {
       {/* Financial ratios — 2×2 in the desktop right column (board D3). */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 gap-3 mb-4 lg:mb-0">
         {[
+          // v10.38.1 — plain words, same figures. "Liquidity Ratio", "leverage
+          // ratio" and "Savings Ratio" are analyst vocabulary; a household app
+          // should say what it means. Thresholds are unchanged.
           {
-            label: 'Liquidity Ratio',
-            value: `${liquidityRatio.toFixed(1)}x`,
-            sub: 'months liquid coverage',
-            good: liquidityRatio >= 3,
-            warn: liquidityRatio >= 1,
+            label: 'Money you can reach',
+            value: fmt(Math.round(la), c),
+            sub: dues <= 0 ? 'cash and savings you could use today'
+              : la >= dues
+                ? `${fmt(Math.round(la - dues), c)} free after ${fmt(Math.round(dues), c)} card dues`
+                : `${fmt(Math.round(dues - la), c)} short of ${fmt(Math.round(dues), c)} card dues`,
+            good: la >= typicalMonthly * 6,
+            warn: la >= typicalMonthly * 3,
           },
           {
-            label: 'Debt-to-Asset',
+            label: 'How long it would last',
+            value: `${monthsOfCover.toFixed(1)} months`,
+            sub: coverBasisLabel,
+            good: monthsOfCover >= 6,
+            warn: monthsOfCover >= 3,
+          },
+          {
+            label: 'What you owe vs own',
             value: `${debtToAsset.toFixed(1)}%`,
-            sub: 'leverage ratio',
+            sub: 'of everything you own is borrowed',
             good: debtToAsset < 30,
             warn: debtToAsset < 50,
           },
           {
-            label: 'Emergency Cover',
-            value: `${emergencyCover.toFixed(1)}mo`,
-            sub: 'months of expenses',
-            good: emergencyCover >= 6,
-            warn: emergencyCover >= 3,
-          },
-          {
-            label: 'Savings Ratio',
+            label: 'Kept this month',
             value: `${savingsRatio.toFixed(1)}%`,
-            sub: 'income saved this month',
+            sub: 'of what came in this month',
             good: savingsRatio >= 20,
             warn: savingsRatio >= 10,
           },
@@ -230,7 +272,9 @@ export default function NetWorth() {
       </div>
       </div>{/* /hero + ratios desktop grid */}
 
-      {/* Add/Edit form lives in <AssetFormModal /> mounted at App root */}
+      <NetWorthHistory snapshots={snapshots} currency={c} />
+
+      {/* Add/Edit is the /networth/assets/new and /networth/assets/:id/edit page (v10.28.0) */}
 
       {/* Balance sheet split — board D3: Assets (1fr) | Liabilities + Owed (1fr),
           each a neu card.
@@ -301,7 +345,9 @@ export default function NetWorth() {
                             )}
                             <div className="text-right min-w-0">
                               <Money amount={row.value} currency={c} maxChars={11} className="font-semibold text-sage text-[0.9rem]" />
-                              {a.currency !== c && <div className="font-mono text-[0.58rem] text-ink-dim">{fmt(a.value, a.currency)}</div>}
+                              {/* v10.26.0 (R4) — the live value in the asset's own currency;
+                                  for an investment `value` is only its opening value. */}
+                              {a.currency !== c && <div className="font-mono text-[0.58rem] text-ink-dim">{fmt(computeAssetValue(a, transactions, rates), a.currency)}</div>}
                             </div>
                             <div className="flex gap-1">
                               <button className="row-action" aria-label={`Edit ${a.name}`} title="Edit" onClick={() => openEdit(a)}>
@@ -365,5 +411,38 @@ export default function NetWorth() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * v10.30.0 — Net Worth over time, from RECORDED monthly snapshots only. A past
+ * position is never rebuilt from today's rows (standalone assets and debts keep
+ * only their current value), so the chart waits for two recorded months.
+ */
+function NetWorthHistory({ snapshots, currency }: { snapshots: NetWorthSnapshot[]; currency: string }) {
+  const history = netWorthHistory(snapshots, currency);
+  const first = history.points[0];
+  return (
+    <section aria-label="Net worth history" className="mt-4 min-w-0">
+      <Panel title="Net worth history" sub="Recorded once a month · never reconstructed" className="min-w-0">
+        {history.ready
+          ? <NetWorthHistoryChart data={history.points} currency={currency} />
+          : (
+            <p className="px-4 py-6 text-sm text-ink-mid">
+              {first
+                ? `Recording started ${monthLabel(first.month)}. The chart appears once a second month is recorded.`
+                : 'Your Net Worth is recorded the first time the household opens Vyact each month. The chart appears once two months are recorded.'}
+            </p>
+          )}
+        {history.otherCurrency > 0 && (
+          <p className="px-4 pb-2 text-xs text-ink-dim">
+            {history.otherCurrency} month{history.otherCurrency === 1 ? '' : 's'} recorded in a previous household currency {history.otherCurrency === 1 ? 'is' : 'are'} not shown.
+          </p>
+        )}
+        <p className="px-4 pb-4 text-xs text-ink-dim">
+          Each point is the Net Worth shown when the month was first recorded, in {currency}. Earlier months are never filled in.
+        </p>
+      </Panel>
+    </section>
   );
 }

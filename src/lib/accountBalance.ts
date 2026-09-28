@@ -20,10 +20,13 @@ import { effectiveAmount } from './calculations';
 import { convert } from './format';
 import type { ExchangeRates } from '../types';
 
-/** The encoded legacy account key for an Account (paymentMethod scheme). */
+/** The encoded legacy account key for an Account (paymentMethod scheme).
+ *  Audit F2: liability accounts prefer the explicit debtId link (the old
+ *  assetId: debt.id overload violated the FK). */
 export function accountValueOf(account: Account): string {
   if (account.kind === 'cash') return 'cash';
-  if (account.kind === 'credit_card') return `debt:${account.assetId || account.id}`;
+  if (account.kind === 'credit_card') return `debt:${account.debtId ?? account.assetId ?? account.id}`;
+  if (account.kind === 'loan') return `debt:${account.debtId ?? account.assetId ?? account.id}`;
   return `asset:${account.assetId || account.id}`;
 }
 
@@ -65,6 +68,47 @@ export function computeAccountBalance(
     }
   }
   return Math.round(bal * 100) / 100;
+}
+
+/** v10.26.0 (R4) — an investment ASSET's live value, folded exactly like an
+ *  account: opening `value` + every buy into it − every withdrawal out of it +
+ *  the valuation offset. A buy carries `accountId` (the money left that account)
+ *  and `assetId`; a withdrawal carries `toAccountId` and `assetId`. Returned in
+ *  the asset's own currency. An asset nothing moves into and with no offset is
+ *  exactly its stated value, so every other asset type is unchanged. */
+export function computeAssetValue(asset: Asset, txns: Transaction[], rates: ExchangeRates): number {
+  let v = asset.value + (asset.valuationOffset ?? 0);
+  for (const t of txns) {
+    if (t.type !== 'investment' || t.assetId !== asset.id) continue;
+    const amt = effectiveAmount(t, asset.currency, rates);
+    // A withdrawal names ONLY a receiving account; anything else is a buy —
+    // including a local-only buy paid from a legacy encoded `paymentMethod`,
+    // which debits its account through debitAccountOf and must credit the asset
+    // by the same amount or net worth would fall (v10.27.0).
+    if (t.toAccountId && !t.accountId) v -= amt;
+    else v += amt;
+  }
+  return Math.round(v * 100) / 100;
+}
+
+/** v10.26.0 (R4) — "Update value" on an investment asset. The same D2 rule as
+ *  reconcileAccount: delta = stated − computed moves the valuation offset with a
+ *  dated log entry; the opening `value` and the transaction stream are untouched.
+ *  A value that already matches appends nothing. */
+export function reconcileAssetValue(
+  asset: Asset,
+  computedValue: number,
+  statedValue: number,
+): { patch: Pick<Asset, 'valuationOffset' | 'valuationLog'>; delta: number } {
+  const delta = Math.round((statedValue - computedValue) * 100) / 100;
+  const entry: ReconciliationEntry = { at: new Date().toISOString(), delta, kind: 'investment', stated_value: statedValue };
+  return {
+    delta,
+    patch: {
+      valuationOffset: Math.round(((asset.valuationOffset ?? 0) + delta) * 100) / 100,
+      valuationLog: [...(asset.valuationLog ?? []), ...(delta !== 0 ? [entry] : [])],
+    },
+  };
 }
 
 // ── Net Worth — live first-class-account balances, not a frozen linked asset ──
@@ -121,7 +165,8 @@ export function liveAssetRows(
     .map(a => ({
       id: a.id,
       name: a.name,
-      value: convert(a.value, a.currency, baseCurrency, rates),
+      // v10.26.0 (R4) — live: an investment asset folds its buys/withdrawals.
+      value: convert(computeAssetValue(a, txns, rates), a.currency, baseCurrency, rates),
       currency: a.currency,
       liquidity: a.liquidity,
       source: 'asset',
@@ -153,7 +198,20 @@ export function reconcileAccount(
   statedValue: number,
   kind: ReconciliationEntry['kind'],
 ): ReconcileResult {
-  const delta = Math.round((statedValue - computedBalance) * 100) / 100;
+  // v10.38.1 — A CARD IS STATED AS WHAT YOU OWE, AND A CARD'S BALANCE IS THAT
+  // NEGATED (the convention `openingBalanceForCard` and `cardFigures` already use:
+  // outstanding = max(0, −balance)).
+  //
+  // 🔴 This function was written for bank and investment accounts, where the stated
+  // figure IS the balance — but the UI let a card through, so typing an outstanding
+  // of ₹24,000 stored a +₹24,000 offset. The card then read as money held, not owed:
+  // it was counted as a liquid asset AND its liability floored to zero, overstating
+  // net worth by twice the amount. Interpreting the statement for what it is keeps
+  // the sign honest at the point of entry rather than compensating downstream.
+  const target = account.kind === 'credit_card'
+    ? -Math.abs(statedValue)
+    : statedValue;
+  const delta = Math.round((target - computedBalance) * 100) / 100;
   const entry: ReconciliationEntry = {
     at: new Date().toISOString(),
     delta,

@@ -14,11 +14,12 @@
 
 import type {
   Notification, NotifType, NotifPriority, NotifActionSpec, NotificationPrefs,
-  RecurringSchedule, Transaction, Budget, Debt, Account, ExchangeRates, SharedSplit,
+  RecurringSchedule, Transaction, Budget, BudgetAllocation, Debt, Account, ExchangeRates, SharedSplit,
 } from '../types';
-import { uid, today, getMonthKey, fmt } from './format';
+import { uid, today, getMonthKey, fmt, convert } from './format';
 import { upcomingSchedules } from './recurring';
-import { spendByCategory } from './calculations';
+import { spendByCategoryInRange } from './calculations';
+import { getCat } from '../constants';
 
 // ── Per-type render metadata (icon glyph + default tint + priority) ──────────
 export interface NotifMeta { icon: string; tint: string; priority: NotifPriority }
@@ -166,30 +167,60 @@ export function recurringReminderNotifs(schedules: RecurringSchedule[], prefs: N
   return out;
 }
 
-/** 4 · budget_threshold (P1) — allocation crosses 80% / 100%. */
-export function budgetThresholdNotifs(budgets: Budget[], txns: Transaction[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * 4 · budget_threshold (P1) — a budget LINE crosses 80% / 100% of its allocation.
+ *
+ * v10.48.0 (TD-39) — since v9.1 a budget is a period container whose categories live
+ * in `BudgetAllocation` rows; the budget itself has no `category`. This rule used to
+ * read `b.category`, so for every current budget it looked up spend for '' and never
+ * fired (production had zero budget_threshold notifications). It now checks each
+ * allocation over the budget's own period with the Budgets screen's figure
+ * (`spendByCategoryInRange` in base currency). A legacy single-category budget (no
+ * allocations) is still checked as one line for the current month.
+ */
+export function budgetThresholdNotifs(
+  budgets: Budget[], allocations: BudgetAllocation[], txns: Transaction[],
+  prefs: NotificationPrefs, existing: Notification[], ctx: Ctx, now: string = today(),
+): Notification[] {
   if (!typeEnabled(prefs, 'budget_threshold')) return [];
   const out: Notification[] = [];
-  const mk = getMonthKey(today());
-  const spend = spendByCategory(txns, mk, ctx.baseCurrency, ctx.rates);
+  const cur = ctx.baseCurrency;
   for (const b of budgets) {
-    const limitBase = b.limit * ((ctx.rates[b.currency] / ctx.rates[ctx.baseCurrency]) || 1);
-    const spent = spend[b.category ?? ''] || 0;
-    const pct = limitBase > 0 ? spent / limitBase : 0;
-    const threshold: 80 | 100 | null = pct >= 1 ? 100 : pct >= 0.8 ? 80 : null;
-    if (!threshold) continue;
-    const key = `budget_threshold:${b.id}:${mk}:${threshold}`;
-    if (existing.some(n => n.dedupeKey === key)) continue;
-    const remaining = Math.max(0, limitBase - spent);
-    out.push({
-      ...base('budget_threshold', key, ctx),
-      tint: threshold === 100 ? 'var(--crit)' : 'var(--warn)',
-      title: `${b.category ?? 'Budget'} at ${Math.round(pct * 100)}% of ${mk} budget`,
-      body: `${fmt(remaining, ctx.baseCurrency)} left`,
-      budgetId: b.id, amountRef: remaining,
-      deepLink: `/budgets?budgetId=${b.id}`,
-      actions: [A('review', 'Review budget', 'primary'), A('see_txns', 'See transactions', 'ghost')],
-    });
+    const own = allocations.filter(a => a.budgetId === b.id);
+    let start = b.periodStart, end = b.periodEnd;
+    const lines: { category: string; limit: number }[] = own.length
+      ? own.map(a => ({ category: a.category, limit: convert(a.amount, b.currency, cur, ctx.rates) }))
+      : b.category ? [{ category: b.category, limit: convert(b.limit, b.currency, cur, ctx.rates) }] : [];
+    if (!own.length && (!start || !end)) {            // legacy: the current month
+      const mk = getMonthKey(now);
+      start = `${mk}-01`;
+      end = `${mk}-31`;
+    }
+    if (!lines.length || !start || !end || start > now || end < now) continue;
+    const spend = spendByCategoryInRange(txns, start, end, cur, ctx.rates);
+    const period = b.scope === 'annual' ? `${b.periodYear ?? start.slice(0, 4)}`
+      : MONTH_NAMES[Number(start.slice(5, 7)) - 1] ?? start.slice(0, 7);
+    for (const line of lines) {
+      if (!(line.limit > 0)) continue;
+      const spent = spend[line.category] || 0;
+      const pct = spent / line.limit;
+      const threshold: 80 | 100 | null = pct >= 1 ? 100 : pct >= 0.8 ? 80 : null;
+      if (!threshold) continue;
+      const key = `budget_threshold:${b.id}:${line.category}:${start}:${threshold}`;
+      if (existing.some(n => n.dedupeKey === key)) continue;
+      const remaining = Math.max(0, line.limit - spent);
+      out.push({
+        ...base('budget_threshold', key, ctx),
+        tint: threshold === 100 ? 'var(--crit)' : 'var(--warn)',
+        title: `${getCat(line.category).label} at ${Math.round(pct * 100)}% of the ${period} budget`,
+        body: spent > line.limit ? `${fmt(spent - line.limit, cur)} over` : `${fmt(remaining, cur)} left`,
+        budgetId: b.id, amountRef: remaining,
+        deepLink: `/budgets?budgetId=${b.id}`,
+        actions: [A('review', 'Review budget', 'primary'), A('see_txns', 'See transactions', 'ghost')],
+      });
+    }
   }
   return out;
 }

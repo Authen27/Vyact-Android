@@ -21,6 +21,7 @@ import {
   insertNotifications, fetchNotifications, updateNotificationStatus, purgeExpired,
 } from '../../lib/notificationsCloud';
 import { readLocalJson, setLocalJson } from '../localJson';
+import { deviceHasServerPush, syncPush } from '../../lib/webPush';
 
 const KEY = (hid: string) => `notifications_${hid}`;
 const DAY = 86_400_000;
@@ -51,7 +52,7 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
 
   refreshNotifications: async () => {
     const {
-      cloudEnabled, currentHouseholdId, recurringSchedules, budgets, transactions,
+      cloudEnabled, currentHouseholdId, recurringSchedules, budgets, budgetAllocations, transactions,
       debts, accounts, profile, rates, notificationPrefs,
       sharedSplitsOwned, sharedSplitsWithMe, session,
     } = get();
@@ -70,7 +71,7 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     const fresh: Notification[] = [
       ...recurringDueNotifs(recurringSchedules, notificationPrefs, existing, ctx),
       ...recurringReminderNotifs(recurringSchedules, notificationPrefs, existing, ctx),
-      ...budgetThresholdNotifs(budgets, transactions, notificationPrefs, existing, ctx),
+      ...budgetThresholdNotifs(budgets, budgetAllocations, transactions, notificationPrefs, existing, ctx),
       ...debtDueNotifs(debts, notificationPrefs, existing, ctx),
       ...incomeLandedNotifs(transactions, notificationPrefs, existing, ctx),
       ...staleBalanceNotifs(accounts, notificationPrefs, existing, ctx),
@@ -96,7 +97,9 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     }
 
     // Web Push for action-required (P1) types outside quiet hours (opt-in).
-    if (fresh.length && notificationPrefs.webPushEnabled && !isInQuietHours(notificationPrefs)) {
+    // v10.48.0 — a device registered for real push gets these from the server (with the
+    // app closed too); popping them here as well would show each one twice.
+    if (fresh.length && notificationPrefs.webPushEnabled && !isInQuietHours(notificationPrefs) && !deviceHasServerPush()) {
       for (const n of fresh) if (n.priority === 'P1') showWebPush(n.title, n.body);
     }
   },
@@ -139,5 +142,10 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     const next = { ...get().notificationPrefs, ...patch };
     setLocalJson('notification_prefs', next);
     set({ notificationPrefs: next });
+    // v10.48.0 — the server applies this device's switches and quiet hours when it pushes.
+    const { cloudEnabled, currentHouseholdId } = get();
+    if (cloudEnabled && currentHouseholdId && currentHouseholdId !== 'local' && next.webPushEnabled) {
+      void syncPush(currentHouseholdId, next);
+    }
   },
 });

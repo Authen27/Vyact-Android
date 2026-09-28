@@ -11,14 +11,18 @@
 // Editing is allowed **only while nothing is paid/settled** — split-level fields
 // lock once any participant has paid, and an individual participant's row locks
 // once that person pays/settles.
+//
+// v10.28.0 — rendered as the /splits/new and /splits/:txnId/edit pages.
 import { useEffect, useMemo, useState } from 'react';
-import HalfSheet from '../ui/HalfSheet';
-import Chip, { CategoryChip } from '../ui/Chip';
+import FormPage from '../ui/FormPage';
+import Chip from '../ui/Chip';
+import CategoryPicker from '../ui/CategoryPicker';
+import { Field, Select } from '../ui/Input';
 import { AmountField } from '../ui/NumericKeypad';
 import Button from '../ui/Button';
 import { useStore } from '../../store';
 import { uid, today, nowTime } from '../../lib/format';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, CURRENCIES } from '../../constants';
+import { CURRENCIES } from '../../constants';
 import { buildAccounts, buildAccountsFromStore, ACCOUNT_REQUIRED_TYPES, notInvestment } from '../../lib/accounts';
 import { getMoneyMapMode } from '../../lib/featureFlags';
 import { resolveParticipantNames } from '../../lib/sharedSplits';
@@ -27,7 +31,7 @@ import type { Transaction } from '../../types';
 interface Props {
   open?: boolean;
   initial?: Transaction | null;
-  onClose?: () => void;
+  onClose: () => void;
 }
 
 type SplitType = 'expense' | 'income';
@@ -56,7 +60,6 @@ interface FormState {
 const acctEmoji = (kind?: string) =>
   kind === 'card' ? '💳' : kind === 'bank' ? '🏦' : kind === 'investment' ? '📈' : '💵';
 
-const catsFor = (type: SplitType) => (type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
 const defaultCat = (type: SplitType) => (type === 'income' ? 'salary' : 'food_dining');
 
 const defaultParticipants = (): PForm[] => ([
@@ -105,12 +108,9 @@ export default function SplitFormModal(props: Props) {
   const deleteSharedSplitForTxn = useStore(s => s.deleteSharedSplitForTxn);
   const cloudActive = cloudEnabled && currentHouseholdId !== 'local';
 
-  const storeOpen    = useStore(s => s.splitModalOpen);
-  const storeInitial = useStore(s => s.editingSplit);
-  const storeClose   = useStore(s => s.closeSplitModal);
-  const open         = props.open    ?? storeOpen;
-  const initial      = props.initial ?? storeInitial;
-  const onClose      = props.onClose ?? storeClose;
+  const open         = props.open ?? true;
+  const initial      = props.initial ?? null;
+  const onClose      = props.onClose;
 
   const defaultMemberId = useMemo(() => {
     if (session?.user?.id) {
@@ -122,7 +122,6 @@ export default function SplitFormModal(props: Props) {
 
   const [form, setForm]   = useState<FormState>(blank(profile.baseCurrency));
   const [saving, setSaving] = useState(false);
-  const [showAllCats, setShowAllCats] = useState(false);
   // email → display-name resolution (cloud): string = has account, '' = no account, undefined = unresolved.
   const [resolvedNames, setResolvedNames] = useState<Record<string, string>>({});
 
@@ -152,7 +151,6 @@ export default function SplitFormModal(props: Props) {
   // matched shared_split to read per-share paid/settled state.
   useEffect(() => {
     if (!open) return;
-    setShowAllCats(false);
     setResolvedNames({});
     const sp = initial?.split;
     if (initial && sp?.isSplit) {
@@ -202,8 +200,6 @@ export default function SplitFormModal(props: Props) {
   // fields lock once ANY participant has paid/settled.
   const anyPaid = form.participants.some(p => !p.isYou && p.paid);
   const splitLocked = editing && anyPaid;
-  const cats = catsFor(form.type);
-  const orderedCats = cats;
   const currencySymbol = CURRENCIES[form.currency]?.symbol ?? '$';
   const accountRequired = ACCOUNT_REQUIRED_TYPES.includes(form.type as (typeof ACCOUNT_REQUIRED_TYPES)[number]);
   const idOf = (p: PForm) => (cloudActive ? (p.email ?? '').trim() : p.name.trim());
@@ -354,7 +350,7 @@ export default function SplitFormModal(props: Props) {
   const sharesOk = Math.abs(sharesSum - bill) < 0.01 && bill > 0;
 
   return (
-    <HalfSheet open={open} onClose={onClose} title={editing ? 'Edit Split' : 'Add Split'} footer={footer}>
+    <FormPage open={open} onClose={onClose} title={editing ? 'Edit Split' : 'Add Split'} footer={footer} helpTopicId="split">
       {splitLocked && (
         <div className="mb-3 rounded-md px-3 py-2 text-[0.72rem] leading-snug border border-line text-ink-mid" style={{ background: 'var(--sunken)' }}>
           A member has already settled, so the total, type and settled rows are locked. You can still edit unpaid members.
@@ -373,24 +369,14 @@ export default function SplitFormModal(props: Props) {
 
       {/* Total amount hero. */}
       <div className="py-1 mb-1">
-        <AmountField value={form.amount} currencySymbol={currencySymbol} autoFocus={!editing}
+        <AmountField value={form.amount} currencySymbol={currencySymbol}
           onChange={splitLocked ? () => {} : v => setForm(f => ({ ...f, amount: v }))} />
       </div>
       <div className="text-center mono-label mb-2">Total {isIncome ? 'payout' : 'bill'} — only your share counts toward you</div>
 
       {/* Category (for the backing transaction). */}
       <div className="mt-3">
-        <div className="mono-label mb-1.5">Category</div>
-        <div className="flex gap-1.5 flex-wrap">
-          {(showAllCats ? orderedCats : orderedCats.slice(0, 7)).map(c => (
-            <CategoryChip key={c.id} emoji={c.icon} label={c.label} on={c.id === form.category}
-              onClick={() => setForm(f => ({ ...f, category: c.id }))} />
-          ))}
-          {orderedCats.length > 7 && (
-            <CategoryChip emoji={showAllCats ? '▴' : '⌕'} label={showAllCats ? 'Less' : 'More'} on={false}
-              onClick={() => setShowAllCats(s => !s)} />
-          )}
-        </div>
+        <CategoryPicker type={form.type} value={form.category} onChange={category => setForm(f => ({ ...f, category }))} />
       </div>
 
       {/* Description. */}
@@ -410,13 +396,14 @@ export default function SplitFormModal(props: Props) {
           <input type="date" value={form.date}
             onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
             className="input h-[34px] py-0 px-2.5 text-[12.5px] w-[140px]" aria-label="Pick a date" />
-          {accounts.map(a => (
-            <Chip key={a.value} on={a.value === form.paymentMethod}
-              onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
-              <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
-            </Chip>
-          ))}
         </div>
+        <Field label={isIncome ? 'Paid into' : 'Paid with'}>
+          <Select value={form.paymentMethod} required={accountRequired}
+            onChange={event => setForm(f => ({ ...f, paymentMethod: event.target.value }))}>
+            <option value="">Choose account</option>
+            {accounts.map(account => <option key={account.value} value={account.value}>{acctEmoji(account.kind)} {account.label}</option>)}
+          </Select>
+        </Field>
       </div>
 
       {/* Participants + shares. */}
@@ -493,6 +480,6 @@ export default function SplitFormModal(props: Props) {
           Shares total {sharesSum.toFixed(2)} / total {bill.toFixed(2)} {sharesOk ? '✓' : '— must match'}
         </div>
       </div>
-    </HalfSheet>
+    </FormPage>
   );
 }

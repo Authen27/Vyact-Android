@@ -39,7 +39,7 @@ export default function CommandPalette({ open, onClose }: Props) {
     const quick: Item[] = [
       { key: 'qa-txn', label: 'Add transaction', hint: 'Create', icon: Plus, run: () => openAddTxn(), group: 'Quick actions' },
       { key: 'qa-budget', label: 'New budget', hint: 'Create', icon: Wallet, run: () => openAddBudget(), group: 'Quick actions' },
-      { key: 'qa-ask', label: 'Ask Vyact', hint: 'AI', icon: Sparkles, run: () => navigate('/chat'), group: 'Quick actions' },
+      { key: 'qa-ask', label: 'Ask Pip', hint: 'AI', icon: Sparkles, run: () => navigate('/chat'), group: 'Quick actions' },
     ];
     out.push(...quick.filter(a => match(a.label, a.key)));
     for (const s of SECTIONS) {

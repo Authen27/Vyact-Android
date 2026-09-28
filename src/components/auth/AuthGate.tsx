@@ -78,7 +78,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  const isPublic = PUBLIC_ROUTES.some(p => location.pathname.startsWith(p)) ||
+  // The landing page at "/" is public too, but it must be an EXACT match, not
+  // folded into PUBLIC_ROUTES' .startsWith() scan — every path in the app
+  // starts with "/", so adding it to that array would silently disable the
+  // sign-in gate for the entire app.
+  const isRoot = location.pathname === '/';
+  const isPublic = isRoot || PUBLIC_ROUTES.some(p => location.pathname.startsWith(p)) ||
                    location.pathname.startsWith('/invite/');
 
   // Not signed in + on a private route → bounce to sign-in

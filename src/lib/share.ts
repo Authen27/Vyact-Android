@@ -6,7 +6,7 @@
 // public page; their share promotes the app with a generic, number-free message.
 
 /** Canonical public origin for shareable links (CI-deployed prod). */
-export const PUBLIC_BASE = 'https://vyact-twentyx.vercel.app';
+export const PUBLIC_BASE = 'https://vyact.app';
 
 /** Public, server-rendered landing for one evergreen lesson. */
 export function evergreenUrl(slug: string): string {

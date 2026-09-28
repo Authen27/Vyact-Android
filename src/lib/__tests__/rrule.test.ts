@@ -27,6 +27,14 @@ describe('rrule — expansion', () => {
     expect(occ).toEqual(['2026-06-01', '2026-06-05', '2026-06-08', '2026-06-12']);
   });
 
+  it('CON-UNIT-RR-018 · weekly BYDAY from a mid-week start keeps date order, so a window ending before next Monday keeps its Friday', () => {
+    // 2026-09-01 is a Tuesday, so each 7-day block holds Fri before Mon.
+    expect(expandRRule(parseRRule('FREQ=WEEKLY;BYDAY=MO,FR'), '2026-09-01', '2026-09-11', '2026-09-20'))
+      .toEqual(['2026-09-11', '2026-09-14', '2026-09-18']);
+    expect(expandRRule(parseRRule('FREQ=WEEKLY;BYDAY=MO,FR;COUNT=3'), '2026-09-01', '2026-09-01', '2026-12-31'))
+      .toEqual(['2026-09-04', '2026-09-07', '2026-09-11']);
+  });
+
   it('CON-UNIT-RR-012 · monthly BYMONTHDAY=31 SKIPS short months (RFC, not clamped)', () => {
     const occ = expandRRule(parseRRule('FREQ=MONTHLY;BYMONTHDAY=31'), '2026-01-31', '2026-01-01', '2026-06-30');
     // Only Jan, Mar, May have a 31st in this window — Feb/Apr/Jun are skipped.

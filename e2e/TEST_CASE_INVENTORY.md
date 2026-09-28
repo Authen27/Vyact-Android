@@ -200,14 +200,23 @@ hold rows that still describe roadmap-era behaviour.
 
 ### ✅ CON-E2E-001 — Boots into dashboard in local-only mode
 - **File**: `react/e2e/tests/smoke.spec.ts`
-- **Scenario**: No Supabase env vars; visiting `/` should land on dashboard.
-- **Steps**: `goto('/')` → expect redirect to `/dashboard`.
+- **Scenario**: No Supabase env vars; navigating straight to `/dashboard` should
+  render with no auth bounce (since v10.33.0, `/` itself is the public Landing
+  page, not a redirect — see CON-E2E-054).
+- **Steps**: `dashboard.goto()` (→ `/dashboard` directly).
 - **Expected**: Title contains "Vyact" (post-v7.0.0 rebrand); `dashboard.logoLink` visible.
 
 ### ✅ CON-E2E-002 — Does not render cloud auth screen in local-only mode
 - **File**: `smoke.spec.ts`
 - **Steps**: `goto('/')`.
 - **Expected**: URL never matches `/auth/`.
+
+### ✅ CON-E2E-054 — Landing page renders at "/" in local-only mode
+- **File**: `smoke.spec.ts`
+- **Scenario**: `/` renders the public Landing page even with no Supabase env
+  vars, with a single CTA straight into the app (no auth concept locally).
+- **Steps**: `goto('/')` → assert not on `/dashboard` or `/auth` → click "Open Vyact".
+- **Expected**: Landing heading visible; click lands on `/dashboard`.
 
 ### ✅ CON-E2E-003 — Seeded transactions are visible
 - **File**: `smoke.spec.ts`

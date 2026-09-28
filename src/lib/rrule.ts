@@ -124,9 +124,11 @@ export function expandRRule(rule: RRule, dtstart: string, from: string, to: stri
     // iterate week by week from the week containing start
     for (let wk = new Date(start); iters < CAP; wk = addDays(wk, 7 * interval), iters++) {
       let stop = false;
-      for (const d of days) {
-        const delta = (d - wk.getUTCDay() + 7) % 7;
-        const occ = addDays(wk, delta);
+      // Emit this week's days in DATE order, not BYDAY order: a week anchored on a
+      // Tuesday start holds Fri before Mon, and stopping at a Monday past the
+      // window would otherwise drop the Friday inside it (and misorder COUNT).
+      const week = days.map((d) => addDays(wk, (d - wk.getUTCDay() + 7) % 7)).sort((a, b) => a.getTime() - b.getTime());
+      for (const occ of week) {
         if (occ < start) continue;                 // before DTSTART
         if (occ > hardEnd && rule.count == null) { stop = true; break; }
         if (!emit(occ)) { stop = true; break; }

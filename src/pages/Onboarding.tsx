@@ -25,6 +25,7 @@ import { CURRENCIES } from '../constants';
 import { fmt } from '../lib/format';
 import Button from '../components/ui/Button';
 import Chip from '../components/ui/Chip';
+import { Field, Select } from '../components/ui/Input';
 import { Pip } from '../components/layout/Brand';
 import { isOnboardingEnabled } from '../config/features';
 import { SEGMENTS, SEGMENT_ORDER } from '../lib/onboardingTemplates';
@@ -225,13 +226,12 @@ export default function Onboarding() {
                 <div className="text-[0.85rem] text-ink-mid"><span className="font-semibold text-ink">Nothing is locked in.</span> Every number here is a starting point you refine later.</div>
               </div>
             </div>
-            <div className="w-full flex items-center justify-between mb-3">
-              <span className="mono-label">Currency · set once</span>
-              <select value={currency} onChange={e => setCurrency(e.target.value)}
-                className="ff-select rounded-pill px-3 py-1.5 text-[0.82rem] font-ui cursor-pointer"
-                style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+            <div className="w-full mb-3 text-left">
+              <Field label="Currency">
+              <Select value={currency} onChange={e => setCurrency(e.target.value)}>
                 {Object.entries(CURRENCIES).map(([code, c]) => <option key={code} value={code}>{c.symbol} {code} — {c.name}</option>)}
-              </select>
+              </Select>
+              </Field>
             </div>
             <Button onClick={() => advance(1)} full>Let's go <ArrowRight size={15} /></Button>
             <Link to="/auth/sign-in" className="mono-label mt-4 hover:text-ink">

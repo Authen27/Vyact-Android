@@ -1,13 +1,43 @@
-// Vyact v9 — txn-redesign §7 invariants (INV-1..INV-9). These pin the money
-// model's load-bearing guarantees: transfers and investments never move
-// spend/income, reconciliation forgives drift without fabricating a transaction,
-// the EMI split is exact, balances/net-worth fold over real data, and categories
-// stay type-scoped. If a future change makes any number untrue, one of these
-// fails first.
+// Vyact v9 — txn-redesign §7 invariants. These pin the money model's
+// load-bearing guarantees: transfers and investments never move spend/income,
+// reconciliation forgives drift without fabricating a transaction, the EMI
+// split is exact, balances/net-worth fold over real data, and categories stay
+// type-scoped. If a future change makes any number untrue, one of these fails
+// first.
+//
+// 🔴 THE LABELS BELOW ARE OFF-BY-ONE FROM THE SPEC, from INV-4 onward.
+//
+// This file's numbering drifted when it was written and has been quoted as
+// "INV-1..9" ever since, which made the gaps at 4 and 8 look like missing
+// coverage. They are not missing — they are covered under a different label.
+// The mapping to `vyact-txn-redesign-architect-spec_1.md` §7 is:
+//
+//   spec INV-1  transfer_neutral      → INV-1   ✅
+//   spec INV-2  investment_neutral    → INV-2   ✅
+//   spec INV-3  value_update          → INV-3   ✅  (+ INV-3b reconcile_no_txn)
+//   spec INV-4  emi_split             → INV-5   ✅
+//   spec INV-5  account_balance       → INV-6   ✅
+//   spec INV-6  networth_recon        → INV-7   ✅  (+ INV-7b live-account de-dupe)
+//   spec INV-7  atomicity             →  —      ❌  NOT COVERED — see below
+//   spec INV-8  category_scope        → INV-9   ✅
+//   spec INV-9  migration_recon       →  —      one-time v9 migration check, not a
+//                                               standing invariant
+//
+// The labels are deliberately NOT renumbered: they are cited by id in the
+// CHANGELOG and in source comments, and silently reassigning them would make
+// that history point at the wrong guarantee.
+//
+// ❌ The one real gap is spec INV-7 (atomicity): "force-fail any leg of an EMI
+// or transfer — the ENTIRE event rolls back, zero state change". Nothing here
+// asserts it, because the store has no transactional boundary to assert against
+// yet; it is tracked as the "atomic reversal" release blocker. Do not add a
+// placeholder for it — the inventory gate rejects skipped and TODO cases, and a
+// green placeholder would be worse than an acknowledged gap.
 
 import { describe, it, expect } from 'vitest';
-import { computeAccountBalance, reconcileAccount, liveAssetRows, liveTotalAssets } from '../accountBalance';
+import { computeAccountBalance, reconcileAccount, liveAssetRows, liveTotalAssets, computeAssetValue, reconcileAssetValue } from '../accountBalance';
 import { monthlyData, reportableTxns, spendByCategory, splitEmiPortions, totalAssets, totalLiabilities } from '../calculations';
+import { computeNetWorth } from '../netWorth';
 import { CATEGORIES_BY_TYPE } from '../../constants';
 import type { Transaction, Account, Asset, Debt, ExchangeRates } from '../../types';
 
@@ -38,15 +68,44 @@ describe('§7 INV-1 — transfers are spend/income neutral', () => {
   });
 });
 
+// v10.26.0 (R4) — INV-2 REWRITTEN DELIBERATELY. An investment now moves money
+// between an ACCOUNT and an investment ASSET (Net Worth), not between two
+// accounts. The guarantee is unchanged in spirit and stronger in letter: no
+// spend, no income, and the account and the asset move by the same amount, so
+// net worth does not move at all.
+const FUND: Asset = { id: 'ast-fund', type: 'investment', name: 'Index fund', value: 0, currency: 'USD', liquidity: 'short' };
+const worth = (assets: Asset[], txns: Transaction[]) =>
+  liveTotalAssets(liveAssetRows(assets, [CASH, BANK], txns, 'USD', R));
+
 describe('§7 INV-2 — investment contributions are spend/income neutral', () => {
-  it('INV-2 · an investment buy is excluded from spend/income but moves balances', () => {
-    const buy: Transaction = { id: 'v', type: 'investment', amount: 500, currency: 'USD', date: d('04'), description: '', category: '', accountId: 'acc-cash', toAccountId: 'acc-inv' };
+  it('INV-2 · a buy is excluded from spend/income, moves the account down and the asset up by the same amount — net worth unchanged', () => {
+    const buy: Transaction = { id: 'v', type: 'investment', amount: 500, currency: 'USD', date: d('04'), description: '', category: '', accountId: 'acc-cash', assetId: 'ast-fund' };
     const before = monthlyData(base, MK, 'USD', R);
     const after = monthlyData([...base, buy], MK, 'USD', R);
     expect(after.expense).toBe(before.expense);
     expect(after.income).toBe(before.income);
-    expect(computeAccountBalance(INVEST, [...base, buy], 'USD', R)).toBe(500);
+    expect(computeAccountBalance(CASH, [...base, buy], 'USD', R)).toBe(computeAccountBalance(CASH, base, 'USD', R) - 500);
+    expect(computeAssetValue(FUND, [...base, buy], R)).toBe(500);
+    expect(worth([FUND], [...base, buy])).toBe(worth([FUND], base));
     expect(spendByCategory([...base, buy], MK, 'USD', R)['']).toBeUndefined();
+  });
+
+  it('INV-2b · a withdrawal moves the asset down and the receiving account up — net worth unchanged', () => {
+    const buy: Transaction = { id: 'v', type: 'investment', amount: 500, currency: 'USD', date: d('04'), description: '', category: '', accountId: 'acc-cash', assetId: 'ast-fund' };
+    const out: Transaction = { id: 'w', type: 'investment', amount: 200, currency: 'USD', date: d('05'), description: '', category: '', toAccountId: 'acc-bank', assetId: 'ast-fund' };
+    const txns = [...base, buy, out];
+    expect(computeAssetValue(FUND, txns, R)).toBe(300);
+    expect(computeAccountBalance(BANK, txns, 'USD', R)).toBe(200);
+    expect(worth([FUND], txns)).toBe(worth([FUND], base));
+    const m = monthlyData(txns, MK, 'USD', R);
+    expect(m.income).toBe(5000);
+    expect(m.expense).toBe(800);
+  });
+
+  it('INV-2c · a legacy investment ACCOUNT row still folds — caches and local households predate R4', () => {
+    const legacy: Transaction = { id: 'v', type: 'investment', amount: 500, currency: 'USD', date: d('04'), description: '', category: '', accountId: 'acc-cash', toAccountId: 'acc-inv' };
+    expect(computeAccountBalance(INVEST, [...base, legacy], 'USD', R)).toBe(500);
+    expect(monthlyData([...base, legacy], MK, 'USD', R).expense).toBe(800);
   });
 });
 
@@ -73,6 +132,20 @@ describe('§7 INV-3 — value updates are an offset, never a transaction', () =>
     expect('adjustment' in (reconcileAccount(BANK, 4200, 4250, 'bank') as object)).toBe(false);
     // a no-op reconcile appends nothing.
     expect(reconcileAccount(BANK, 4200, 4200, 'bank').patch.reconciliationLog).toHaveLength(0);
+  });
+
+  it('INV-3c · an investment ASSET value update moves the valuation offset only — opening value and spend untouched', () => {
+    const buy: Transaction = { id: 'v', type: 'investment', amount: 500, currency: 'USD', date: d('04'), description: '', category: '', accountId: 'acc-cash', assetId: 'ast-fund' };
+    const txns = [...base, buy];
+    const { patch, delta } = reconcileAssetValue(FUND, computeAssetValue(FUND, txns, R), 620);
+    expect(delta).toBe(120);
+    expect(patch.valuationOffset).toBe(120);
+    expect(patch.valuationLog?.[0]).toMatchObject({ delta: 120, kind: 'investment', stated_value: 620 });
+    const updated = { ...FUND, ...patch };
+    expect(updated.value).toBe(0);                                  // the opening value never moves
+    expect(computeAssetValue(updated, txns, R)).toBe(620);
+    expect(monthlyData(txns, MK, 'USD', R).expense).toBe(800);
+    expect(reconcileAssetValue(updated, 620, 620).patch.valuationLog).toHaveLength(1);   // no-op appends nothing
   });
 });
 
@@ -149,6 +222,21 @@ describe('§7 INV-7b — Net Worth asset side reads live account balances, de-du
 
     expect(liveTotalAssets(rows)).toBe(1200 + 5000 + 300000);
   });
+
+  it('INV-7c · an investment asset contributes its LIVE folded value; every other asset its stated value', () => {
+    const fund: Asset = { id: 'ast-f', type: 'investment', name: 'Delhi', value: 0, currency: 'INR', liquidity: 'short', valuationOffset: 46870 };
+    const house: Asset = { id: 'ast-h', type: 'real_estate', name: 'Plot', value: 3600000, currency: 'INR', liquidity: 'long' };
+    const txns: Transaction[] = [
+      { id: 'b1', type: 'investment', amount: 1200, currency: 'INR', date: d('01'), description: '', category: '', accountId: 'acc-cash', assetId: 'ast-f' },
+      { id: 'b2', type: 'investment', amount: 1200, currency: 'INR', date: d('02'), description: '', category: '', accountId: 'acc-cash', assetId: 'ast-f' },
+      { id: 'b3', type: 'investment', amount: 10, currency: 'INR', date: d('03'), description: '', category: '', accountId: 'acc-cash', assetId: 'ast-f' },
+      { id: 'w1', type: 'investment', amount: 500, currency: 'INR', date: d('04'), description: '', category: '', toAccountId: 'acc-cash', assetId: 'ast-f' },
+    ];
+    const INR: ExchangeRates = { USD: 1, INR: 1 };
+    const rows = liveAssetRows([fund, house], [], txns, 'INR', INR);
+    expect(rows.find(r => r.id === 'ast-f')!.value).toBe(48780);   // the production figure, preserved
+    expect(rows.find(r => r.id === 'ast-h')!.value).toBe(3600000);
+  });
 });
 
 describe('§7 INV-9 — categories are type-scoped; transfers/investments carry none', () => {
@@ -160,5 +248,79 @@ describe('§7 INV-9 — categories are type-scoped; transfers/investments carry 
     // no id appears in both the expense and income pools (disjoint scopes).
     const exp = new Set(CATEGORIES_BY_TYPE.expense.map(c => c.id));
     expect(CATEGORIES_BY_TYPE.income.some(c => exp.has(c.id))).toBe(false);
+  });
+});
+
+// ── INV-10 (v10.38.1) — borrowing is never savings ──────────────────────────
+//
+// Found in production on a real household: a credit card carrying ₹23,990 of
+// OUTSTANDING was stored with a positive balance, so `computeNetWorth` counted it
+// as a liquid asset while `liveLiabilityRows` — reading outstanding as
+// max(0, −balance) — reported its debt as zero. The same error twice: money the
+// household owed became money it had, and the debt vanished. Every months-of-cover
+// and affordability figure inherited it, on the assistant AND on Net Worth, because
+// both read this one projection.
+//
+// The guard cannot catch this class: every figure involved is real and correctly
+// copied. Only an invariant can.
+describe('§7 INV-10 — a liability account is never liquid', () => {
+  const R2: ExchangeRates = { USD: 1, INR: 1 };
+  const owing: Account = { id: 'acc-card', kind: 'credit_card', name: 'Federal', currency: 'INR', openingBalance: -24000 };
+  const bank: Account = { id: 'acc-b', kind: 'bank', name: 'HDFC', currency: 'INR', openingBalance: 34000 };
+
+  it('INV-10 · a card that owes money is a liability, and contributes nothing to liquid assets', () => {
+    const p = computeNetWorth({ assets: [], accounts: [bank, owing], debts: [], transactions: [] }, 'INR', R2);
+    expect(p.liquidAssets).toBe(34000);
+    expect(p.liabilityRows.find(r => r.id === 'acc-card')!.value).toBe(24000);
+    expect(p.netWorth).toBe(34000 - 24000);
+  });
+
+  it('INV-10b · even an OVERPAID card stays out of liquid savings', () => {
+    // A positive card balance is a refund owed by the issuer — real money, so it
+    // still counts in total assets, but it is not a cushion anyone can spend down.
+    const overpaid: Account = { ...owing, openingBalance: 5000 };
+    const p = computeNetWorth({ assets: [], accounts: [bank, overpaid], debts: [], transactions: [] }, 'INR', R2);
+    expect(p.liquidAssets).toBe(34000);                 // NOT 39000
+    expect(p.totalAssets).toBe(34000 + 5000);
+    expect(p.assetRows.find(r => r.id === 'acc-card')!.liquidity).not.toBe('liquid');
+  });
+
+  it('INV-10c · no liability kind can ever reach the liquid total, whatever its sign', () => {
+    for (const balance of [-50000, -1, 0, 1, 50000]) {
+      for (const kind of ['credit_card', 'loan'] as const) {
+        const p = computeNetWorth(
+          { assets: [], accounts: [bank, { id: 'x', kind, name: 'L', currency: 'INR', openingBalance: balance }], debts: [], transactions: [] },
+          'INR', R2);
+        expect(p.liquidAssets).toBe(34000);
+      }
+    }
+  });
+});
+
+// ── INV-11 (v10.38.1) — a card is reconciled against what it OWES ───────────
+//
+// `reconcileAccount` was written for bank and investment accounts, where the
+// stated figure IS the balance. A card reconciled through that path stored the
+// owner's ₹24,000 outstanding as +₹24,000 — the sign error behind INV-10. The
+// stated figure for a card is an outstanding, and a card's balance is that negated.
+describe('§7 INV-11 — reconciling a card states an outstanding, not a balance', () => {
+  const card: Account = { id: 'acc-card', kind: 'credit_card', name: 'Federal', currency: 'INR', openingBalance: 0 };
+
+  it('INV-11 · stating ₹24,000 owed drives the balance to −24,000, never +24,000', () => {
+    const { patch, delta } = reconcileAccount(card, 0, 24000, 'credit_card');
+    expect(delta).toBe(-24000);
+    expect(patch.reconciliationOffset).toBe(-24000);
+    // …and the audit log keeps what the customer actually typed.
+    expect(patch.reconciliationLog![0].stated_value).toBe(24000);
+  });
+
+  it('INV-11b · already-negative input is not double-negated (idempotent with the UI)', () => {
+    // ReconcileSheet negates before calling; this must not flip it back.
+    expect(reconcileAccount(card, 0, -24000, 'credit_card').delta).toBe(-24000);
+  });
+
+  it('INV-11c · a bank reconcile is unchanged — stated IS the balance', () => {
+    const bank: Account = { id: 'acc-b', kind: 'bank', name: 'HDFC', currency: 'INR', openingBalance: 0 };
+    expect(reconcileAccount(bank, 0, 34000, 'bank').delta).toBe(34000);
   });
 });

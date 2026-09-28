@@ -64,10 +64,10 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       date:        '2026-05-20',
       description: 'TXN-FC-001 Bonus',
       category:    'salary',
+      account:     'E2E Checking',
     });
     // income requires an account (ACCOUNT_REQUIRED_TYPES); the seed ships
     // 'E2E Checking' — pick it by its bare name (helper handles the prefix).
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
     await txnModal.submit();
 
     // ── ASSERT (UI) ──────────────────────────────────────────────────────
@@ -92,10 +92,10 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       amount:      42.50,
       date:        '2026-05-20',
       description: 'TXN-FC-002 Full',
-      category:    'food',
+      category:    'food_dining',
       note:        'all optional fields',
+      account:     'E2E Checking',
     });
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
     await txnModal.submit();
 
     // Assert through the UI, then confirm it survives a reload.
@@ -110,14 +110,20 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
     await transactions.goto();
     await transactions.openAdd();
     await txnModal.waitOpen();
+    // 🔴 NO category. `investment_in` is not a real id — `CATEGORIES_BY_TYPE`
+    // has `investment: []` (constants.ts) and INV-9 asserts that pool is empty,
+    // because an investment is one spend/income-NEUTRAL row with both account
+    // FKs set and no category. The old assertion was a money-model violation:
+    // had it passed, INV-9 would have been broken.
     await txnModal.fill({
       type:        'investment',
       amount:      123.45,
       date:        '2026-05-20',
       description: 'TXN-FC-004 Invest',
-      category:    'investment_in',
+      account:     'E2E Checking',
     });
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
+    // Per-type account matrix: investment needs a destination too.
+    await txnModal.selectToAccount('E2E Brokerage');
     await txnModal.submit();
 
     // The row exists and the account chip renders. NOTE: automatic
@@ -128,35 +134,53 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
     await expect(transactions.row('TXN-FC-004 Invest')).toBeVisible();
   });
 
-  test('CON-E2E-013 · [TXN-FC-005] form rejects negative, zero, and non-numeric amounts', async ({
+  test('CON-E2E-013 · [TXN-FC-005] the amount field cannot hold a negative, and zero is refused', async ({
     transactions, txnModal,
   }) => {
+    // 🔴 REWRITTEN 2026-09-10. The old version drove `txnModal.amountInput` (a
+    // member the Aurora page object does not have) and reasoned that "a
+    // type=number input simply refuses letters". The field is not type=number:
+    // it is `type=text inputmode=decimal` feeding an in-sheet keypad, with its
+    // own sanitiser. Measured behaviour, which is STRONGER than the old guard:
+    //   "abc"      -> ""       letters never land
+    //   "-100"     -> "100"    the minus is stripped, so a negative is unenterable
+    //   "12.34.56" -> "12.34"  a second decimal point is refused
+    // So negative amounts are no longer "rejected on submit" — they cannot be
+    // represented at all. Zero still has to be caught by the submit guard.
     await transactions.goto();
     await transactions.openAdd();
     await txnModal.waitOpen();
 
-    // (a) Negative and zero are caught by the app's `amount <= 0` guard:
-    //     the modal stays open and no row is created.
-    for (const bad of ['-100', '0']) {
-      await txnModal.fill({
-        type:        'expense',
-        date:        '2026-05-20',
-        description: `TXN-FC-005 Invalid ${bad}`,
-        category:    'food',
-      });
-      await txnModal.amountInput.fill(bad);
-      await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
-      await txnModal.submitButton.click();
+    const amount = txnModal.dialog.getByLabel('Amount', { exact: true });
 
-      await expect(txnModal.dialog).toBeVisible();                         // blocked
-      await expect(transactions.row(`TXN-FC-005 Invalid ${bad}`)).toHaveCount(0);
-    }
+    // (a) Input sanitisation — the field refuses what is not a positive decimal.
+    await amount.fill('');
+    await amount.pressSequentially('abc');
+    await expect(amount).toHaveValue('');
 
-    // (b) Non-numeric is blocked at the browser layer: a type="number" input
-    //     simply refuses letters, so the field cannot even hold "abc".
-    await txnModal.amountInput.fill('');
-    await txnModal.amountInput.pressSequentially('abc');
-    await expect(txnModal.amountInput).toHaveValue('');
+    await amount.fill('');
+    await amount.pressSequentially('-100');
+    await expect(amount, 'the minus sign must be stripped').toHaveValue('100');
+
+    await amount.fill('');
+    await amount.pressSequentially('12.34.56');
+    await expect(amount, 'a second decimal point must be refused').toHaveValue('12.34');
+
+    // (b) Zero IS enterable, so the submit guard must block it and keep the
+    //     sheet open with no row created.
+    await amount.fill('');
+    await amount.pressSequentially('0');
+    await txnModal.fill({
+      type:        'expense',
+      date:        '2026-05-20',
+      description: 'TXN-FC-005 Invalid 0',
+      category:    'food_dining',
+      account:     'E2E Checking',
+    });
+    await txnModal.submitButton.click();
+
+    await expect(txnModal.dialog, 'a zero amount must not submit').toBeVisible();
+    await expect(transactions.row('TXN-FC-005 Invalid 0')).toHaveCount(0);
 
     await txnModal.cancel();
   });
@@ -174,9 +198,8 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       amount:      10,
       date:        '2026-05-20',
       description: desc,
-      category:    'rent',
+      category:    'rent_mortgage',
     });
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
     await txnModal.submit();
 
     // Round-trips byte-for-byte in the rendered row and across a reload.
@@ -196,10 +219,10 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       amount:      55,
       date:        '2026-05-20',
       description: 'TXN-FC-008 EUR',
-      category:    'food',
+      category:    'food_dining',
+      currency:    'EUR',
+      account:     'E2E Checking',
     });
-    await txnModal.selectByValueOrText(txnModal.currencySelect, 'EUR');
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
     await txnModal.submit();
 
     await expect(transactions.row('TXN-FC-008 EUR')).toBeVisible();
@@ -227,9 +250,9 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       amount:      7,
       date:        '2026-05-20',
       description: desc,
-      category:    'food',
+      category:    'food_dining',
+      account:     'E2E Checking',
     });
-    await txnModal.selectByValueOrText(txnModal.accountSelect, 'E2E Checking');
 
     // Double-click the submit button; the form's `saving` guard should
     // collapse this into a single upsert.
@@ -248,6 +271,26 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
     expect(count).toBe(1);
   });
 
+  test('CON-E2E-055 · a transfer or investment has no category field', async ({
+    page, transactions, txnModal,
+  }) => {
+    // ── ARRANGE ──────────────────────────────────────────────────────────
+    await transactions.goto();
+
+    // ── ACT + ASSERT ─────────────────────────────────────────────────────
+    // Money-model rule: a transfer/investment is one spend/income-neutral
+    // row with no category — see CLAUDE.md's binding money-model section.
+    // Moved here from a removed Ask Vyact "Open form" shortcut (v10.34.0);
+    // opened via the real Add Transaction entry point instead.
+    for (const type of ['transfer', 'investment'] as const) {
+      await transactions.openAdd();
+      await txnModal.waitOpen();
+      await txnModal.setType(type);
+      await expect(page.getByRole('combobox', { name: 'Category', exact: true })).toHaveCount(0);
+      await txnModal.cancel();
+    }
+  });
+
   test.describe('track picker and time entry', () => {
     test.use({
       seed: {
@@ -263,130 +306,29 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       });
     });
 
-    test('TXN-FC-003 · transfer track creates the paired transfer rows between two accounts', async ({
-      page, transactions, txnModal,
-    }) => {
-      const desc = 'TXN-FC-003 Transfer';
-
-      await transactions.goto();
-      await transactions.openAdd();
-      await txnModal.waitOpen();
-
-      await txnModal.trackPickButton('transfer').click();
-      await expect(txnModal.trackPicker).toHaveCount(0);
-      await expect(txnModal.dialog.getByLabel('Category')).toHaveCount(0);
-
-      await txnModal.fill({
-        date: '2026-05-20',
-        amount: 125,
-        description: desc,
-      });
-      await txnModal.selectByValueOrText(txnModal.dialog.getByLabel('From Account'), 'E2E Checking');
-      await txnModal.selectByValueOrText(txnModal.dialog.getByLabel('To Account'), 'E2E Savings');
-      await txnModal.submit();
-
-      await expect(transactions.row(desc)).toHaveCount(2);
-
-      const pair = await page.evaluate((description: string) => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { transactions: Array<{ description: string; type: string; category: string; note?: string; paymentMethod?: string; linkedToAssetId?: string }> } };
-          __ff_store?: { getState(): { transactions: Array<{ description: string; type: string; category: string; note?: string; paymentMethod?: string; linkedToAssetId?: string }> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().transactions.filter(t => t.description === description).map(t => ({
-          type: t.type,
-          category: t.category,
-          note: t.note ?? '',
-          paymentMethod: t.paymentMethod ?? '',
-          linkedToAssetId: t.linkedToAssetId ?? '',
-        }));
-      }, desc);
-
-      expect(pair).toHaveLength(2);
-      expect(pair.map(t => t.type).sort()).toEqual(['expense', 'income']);
-      expect(pair.every(t => t.category === 'transfer')).toBe(true);
-      expect(pair.every(t => t.note.includes('__tg:'))).toBe(true);
-    });
-
-    test('TXN-FC-010 · track picker narrows investment categories and hides category for transfers', async ({
-      transactions, txnModal,
-    }) => {
-      await transactions.goto();
-      await transactions.openAdd();
-      await txnModal.waitOpen();
-
-      await expect(txnModal.trackPicker).toBeVisible();
-      await expect(txnModal.trackPickButton('expense')).toBeVisible();
-      await expect(txnModal.trackPickButton('income')).toBeVisible();
-      await expect(txnModal.trackPickButton('transfer')).toBeVisible();
-      await expect(txnModal.trackPickButton('investment')).toBeVisible();
-
-      await txnModal.trackPickButton('investment').click();
-      await expect(txnModal.trackFieldValue('Investment')).toBeVisible();
-      await expect(txnModal.changeTrackButton).toBeVisible();
-
-      const investmentOptions = await txnModal.categorySelect.locator('option').evaluateAll(options =>
-        options.map(option => (option as HTMLOptionElement).value),
-      );
-
-      expect(investmentOptions).toEqual([
-        'investment_in',
-        'investment_out',
-        'dividend',
-        'capital_gain',
-        'rebalance',
-      ]);
-      expect(investmentOptions).not.toContain('food');
-      expect(investmentOptions).not.toContain('salary');
-
-      await txnModal.changeTrackButton.click();
-      await expect(txnModal.trackPicker).toBeVisible();
-      await txnModal.trackPickButton('transfer').click();
-      await expect(txnModal.trackFieldValue('Transfer')).toBeVisible();
-      await expect(txnModal.dialog.getByLabel('Category')).toHaveCount(0);
-      await expect(txnModal.dialog.getByLabel('To Account')).toBeVisible();
-    });
-
-    test('TXN-FC-011 · edit mode opens directly with the track locked and no picker', async ({
-      transactions, txnModal,
-    }) => {
-      await transactions.goto();
-      await transactions.openEdit('E2E Salary');
-      await txnModal.waitOpen();
-
-      await expect(txnModal.trackPicker).toHaveCount(0);
-      await expect(txnModal.trackFieldValue('Income')).toBeVisible();
-      await expect(txnModal.changeTrackButton).toHaveCount(0);
-
-      await txnModal.cancel();
-      await expect(transactions.row('E2E Salary')).toBeVisible();
-    });
-
-    test('TXN-FC-012 · numeric shortcuts choose each track and Escape closes the modal', async ({
-      page, transactions, txnModal,
-    }) => {
-      const shortcuts = [
-        { key: '1', label: 'Spend' },
-        { key: '2', label: 'Income' },
-        { key: '3', label: 'Transfer' },
-        { key: '4', label: 'Investment' },
-      ] as const;
-
-      await transactions.goto();
-
-      for (const shortcut of shortcuts) {
-        await transactions.openAdd();
-        await txnModal.waitOpen();
-        await expect(txnModal.trackPicker).toBeVisible();
-
-        await page.keyboard.press(shortcut.key);
-        await expect(txnModal.trackFieldValue(shortcut.label)).toBeVisible();
-
-        await page.keyboard.press('Escape');
-        await txnModal.waitClosed();
-      }
-    });
+    // ──────────────────────────────────────────────────────────────────────
+    // RETIRED 2026-09-10 — four tests removed, not rewritten.
+    //
+    // TXN-FC-003 · "transfer track creates the paired transfer rows"
+    //   Asserted `toHaveCount(2)`, a sorted ['expense','income'] pair, every row
+    //   carrying `category === 'transfer'`, and a `__tg:` note tag. Every one of
+    //   those is now a MONEY-MODEL VIOLATION: v9 made a transfer ONE
+    //   spend/income-neutral row with both account FKs set and no category, and
+    //   retired the `__tg` paired-row encoding outright. This test failing is
+    //   the correct behaviour — had it passed, INV-1 would be broken. Kept as a
+    //   red test it would have been actively misleading.
+    //
+    // TXN-FC-010 · "track picker narrows investment categories"
+    // TXN-FC-011 · "edit mode opens directly with the track locked and no picker"
+    // TXN-FC-012 · "numeric shortcuts choose each track"
+    //   All three drive the TRACK PICKER, retired by v9 (D3). The page object has
+    //   no `trackPicker`/`trackPickButton`/`trackFieldValue`/`changeTrackButton`
+    //   because the control does not exist. A test for a deleted feature is not
+    //   a coverage gap. What survives of TXN-FC-012 — Escape closes the modal —
+    //   is already covered by A11Y-FC-001.
+    //
+    // IDs are recorded in docs/TEST_SCENARIOS.md §5 and must not be reused.
+    // ──────────────────────────────────────────────────────────────────────
 
     test('TXN-FC-013 · text time entry rejects malformed input, persists, and sorts latest first', async ({
       page, transactions, txnModal,
@@ -395,17 +337,16 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       await transactions.openAdd();
       await txnModal.waitOpen();
 
-      await txnModal.trackPickButton('expense').click();
       await txnModal.fill({
         date: '2026-05-20',
         timeClock: '99:99',
         timeMeridiem: 'AM',
         amount: 20,
         description: 'TXN-FC-013 Invalid',
-        category: 'food',
+        category: 'food_dining',
+        member: 'Test User',
+        account: 'E2E Checking',
       });
-      await txnModal.selectByValueOrText(txnModal.memberSelect, 'Test User');
-      await txnModal.selectByValueOrText(txnModal.dialog.getByLabel('Account'), 'E2E Checking');
       await txnModal.submitButton.click();
 
       await expect(txnModal.dialog).toBeVisible();
@@ -420,17 +361,16 @@ test.describe('§1 TXN-FC · Transaction Creation', () => {
       for (const entry of entries) {
         await transactions.openAdd();
         await txnModal.waitOpen();
-        await txnModal.trackPickButton('expense').click();
         await txnModal.fill({
           date: '2026-05-20',
           timeClock: entry.timeClock,
           timeMeridiem: entry.timeMeridiem,
           amount: 20,
           description: entry.description,
-          category: 'food',
+          category: 'food_dining',
+          member: 'Test User',
+          account: 'E2E Checking',
         });
-        await txnModal.selectByValueOrText(txnModal.memberSelect, 'Test User');
-        await txnModal.selectByValueOrText(txnModal.dialog.getByLabel('Account'), 'E2E Checking');
         await txnModal.submit();
       }
 

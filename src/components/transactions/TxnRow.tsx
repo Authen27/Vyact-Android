@@ -4,8 +4,10 @@ import { useStore } from '../../store';
 import { getCat } from '../../constants';
 import { formatDate, formatTime } from '../../lib/format';
 import { resolveAccount } from '../../lib/accounts';
+import { PAYMENT_MODE_LABEL } from '../../lib/accountsView';
 import Badge from '../ui/Badge';
 import Money from '../ui/Money';
+import EstimatedTag from '../ui/EstimatedTag';
 
 interface Props {
   txn: Transaction;
@@ -40,6 +42,14 @@ export default function TxnRow({ txn: t, showActions = false, onEdit }: Props) {
   const amount = isSplit ? t.split!.yourShare : t.amount;
 
   const wrapperBg = t.excluded ? 'opacity-65' : isInv ? 'bg-honey/[0.04]' : isXfer ? 'bg-denim/[0.03]' : '';
+
+  // Honest data (CLAUDE.md, binding): any value whose confidence !== 'confirmed'
+  // renders <EstimatedTag/>. Legacy/user rows carry no `confidence` at all, so
+  // this is false for every row that exists today and the markup is unchanged
+  // for them. It sits beside the amount rather than in the `hidden sm:flex`
+  // badge column — the badge column disappears on mobile, and an honesty marker
+  // that vanishes on the primary surface is not an honesty marker.
+  const unconfirmed = t.confidence !== undefined && t.confidence !== 'confirmed';
   const clickable = showActions && onEdit;
 
   return (
@@ -74,9 +84,12 @@ export default function TxnRow({ txn: t, showActions = false, onEdit }: Props) {
           {t.recurring && <span aria-label={`Recurring ${t.recurring}`} title={`Recurring · ${t.recurring}`} className="ml-1.5 text-ink-dim text-[0.72rem]">↻</span>}
         </div>
         <div className="font-mono text-[0.59rem] text-ink-dim mt-px truncate">
-          {(isXfer || isInv) ? (isXfer ? 'Transfer' : 'Investment') : cat.label} · {formatDate(t.date, dateFormat)}{t.time ? ` · ${formatTime(t.time)}` : ''}{acct ? ` · ${acct.label}` : ''}{t.note ? ' · ' + t.note : ''}
+          {(isXfer || isInv) ? (isXfer ? 'Transfer' : 'Investment') : cat.label} · {formatDate(t.date, dateFormat)}{t.time ? ` · ${formatTime(t.time)}` : ''}{acct ? ` · ${acct.label}` : ''}{t.paymentMode ? ` · ${PAYMENT_MODE_LABEL[t.paymentMode]}` : ''}{t.note ? ' · ' + t.note : ''}
         </div>
       </div>
+      {unconfirmed && (
+        <EstimatedTag confidence={t.confidence!} source={t.source} className="flex-shrink-0" />
+      )}
       <div className={`font-mono text-[0.86rem] font-medium whitespace-nowrap flex items-center gap-0.5 ${amtCls}`}>
         <span aria-hidden>{sign}</span>
         <Money amount={amount} currency={cur} maxChars={14} />

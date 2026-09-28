@@ -7,55 +7,7 @@
 // localStorage). See migration 20260709120000_v101_notifications_sync.sql.
 import { sb } from './supabase';
 import type { Notification } from '../types';
-
-interface NotifRow {
-  id: string;
-  household_id: string;
-  type: Notification['type'];
-  priority: Notification['priority'];
-  title: string;
-  body: string | null;
-  status: Notification['status'];
-  created_at: string;
-  due_at: string | null;
-  member_id: string | null;
-  amount_ref: number | null;
-  deep_link: string | null;
-  tint: string | null;
-  actions: Notification['actions'] | null;
-  context: Record<string, string> | null;
-  dedupe_key: string;
-}
-
-const CTX_KEYS = ['scheduleId', 'budgetId', 'debtId', 'accountId', 'txnId', 'inviteToken', 'splitId'] as const;
-
-function toInsertRow(n: Notification): Omit<NotifRow, 'id'> {
-  const context: Record<string, string> = {};
-  for (const k of CTX_KEYS) { const v = n[k]; if (v != null) context[k] = v; }
-  return {
-    household_id: n.householdId!,
-    type: n.type, priority: n.priority, title: n.title, body: n.body ?? null,
-    status: n.status, created_at: n.createdAt, due_at: n.dueAt ?? null,
-    member_id: n.memberId ?? null, amount_ref: n.amountRef ?? null,
-    deep_link: n.deepLink ?? null, tint: n.tint ?? null, actions: n.actions ?? null,
-    context: Object.keys(context).length ? context : null,
-    dedupe_key: n.dedupeKey!,
-  };
-}
-
-function fromRow(r: NotifRow): Notification {
-  const ctx = r.context || {};
-  return {
-    id: r.id, householdId: r.household_id, type: r.type, priority: r.priority,
-    title: r.title, body: r.body ?? '', status: r.status, createdAt: r.created_at,
-    dueAt: r.due_at ?? undefined, memberId: r.member_id ?? undefined,
-    amountRef: r.amount_ref ?? undefined, deepLink: r.deep_link ?? undefined,
-    tint: r.tint ?? undefined, actions: r.actions ?? undefined, dedupeKey: r.dedupe_key,
-    scheduleId: ctx.scheduleId, budgetId: ctx.budgetId, debtId: ctx.debtId,
-    accountId: ctx.accountId, txnId: ctx.txnId, inviteToken: ctx.inviteToken,
-    splitId: ctx.splitId,
-  };
-}
+import { toInsertRow, fromRow, type NotifRow } from './notificationRows';
 
 /** Insert freshly generated notifications; duplicate (household, dedupe_key) rows are ignored. */
 export async function insertNotifications(fresh: Notification[]): Promise<void> {

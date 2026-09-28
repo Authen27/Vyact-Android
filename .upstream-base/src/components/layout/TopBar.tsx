@@ -103,7 +103,7 @@ export default function TopBar({ onOpenPalette }: { onOpenPalette: () => void })
               color rather than a semantic status color. */}
           <button
             onClick={openAsk}
-            aria-label="Ask Vyact"
+            aria-label="Ask Pip"
             className="hidden sm:flex items-center gap-1.5 h-10 px-3.5 rounded-pill border-none cursor-pointer"
             style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--accent)' }}
           >

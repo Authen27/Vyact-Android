@@ -5,8 +5,8 @@
 // from the EXISTING aggregation helpers (monthlyData / spendByCategory / Pulse).
 // This module adds NO financial math; it only frames existing aggregates as cards,
 // ranks them by materiality, and enforces the neutral→positive tone mix (§5).
-import type { Transaction, Budget, Goal, Debt, Asset, ExchangeRates } from '../types';
-import { monthlyData, spendByCategory, computePulseScore, totalMonthlyDebtPayment } from './calculations';
+import type { Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, ExchangeRates } from '../types';
+import { monthlyData, spendByCategory, computePulseScore, totalMonthlyDebtPayment, reportableTxns } from './calculations';
 import { getMonthKey, nowMonthKey, fmtShort } from './format';
 import { getCat } from '../constants';
 import { evergreenByTag } from './evergreen';
@@ -30,6 +30,10 @@ export interface FeedCard {
   learnId?: string;
   /** Ranking weight (higher = more material). */
   materiality: number;
+  issue?: string;
+  period?: string;
+  basis?: string;
+  estimated?: boolean;
 }
 
 export interface FeedInput {
@@ -40,10 +44,12 @@ export interface FeedInput {
   assets: Asset[];
   baseCurrency: string;
   rates: ExchangeRates;
+  budgetAllocations?: BudgetAllocation[];
+  includePulse?: boolean;
 }
 
 const prevMonthKeys = (txns: Transaction[], n: number): string[] =>
-  [...new Set(txns.map(t => getMonthKey(t.date)))].sort().filter(m => m !== nowMonthKey()).slice(-n);
+  [...new Set(reportableTxns(txns).map(t => getMonthKey(t.date)))].sort().filter(m => m < nowMonthKey()).slice(-n);
 
 /** Build the candidate feed, ranked + tone-mixed, capped to `limit` (default 5).
  *  Pure + deterministic: no Math.random, so the same data yields the same feed. */
@@ -61,11 +67,13 @@ export function buildInsightFeed(input: FeedInput, limit = 5): FeedCard[] {
     const rate = Math.round((income - expense) / income * 100);
     if (rate >= 20) {
       cards.push({ id: `win-savings-${mk}`, type: 'win', tone: 'positive', emoji: '💚',
-        big: `${rate}% saved`, line: `You've kept ${C(income - expense)} of your income this month. Strong rate — keep it parked.`,
+        big: `${rate}% retained`, line: `${C(income - expense)} remains after recorded spending this month so far. Upcoming commitments may still use part of it.`,
+        issue: 'cash-flow', period: mk, basis: 'Income minus reportable spending, divided by recorded income; month to date.',
         to: '/reports?from=savings', materiality: 70 });
     } else {
       cards.push({ id: `mirror-savings-${mk}`, type: 'mirror', tone: 'neutral', emoji: '📊',
-        big: `${rate}% saved`, line: `That's the share of income left after spending this month so far.`,
+        big: `${rate}% retained`, line: `That's the share of recorded income left after spending this month so far. Review bills still to come.`,
+        issue: 'cash-flow', period: mk, basis: 'Income minus reportable spending, divided by recorded income; month to date.',
         to: '/reports?from=savings', materiality: 50 });
     }
   }
@@ -76,6 +84,7 @@ export function buildInsightFeed(input: FeedInput, limit = 5): FeedCard[] {
     const share = expense > 0 ? Math.round(top[1] / expense * 100) : 0;
     cards.push({ id: `mirror-topcat-${mk}`, type: 'mirror', tone: 'neutral', emoji: getCat(top[0]).icon || '🧾',
       big: `${C(top[1])} on ${getCat(top[0]).label}`, line: `Your biggest category this month${share ? ` — about ${share}% of spending` : ''}.`,
+      issue: `category:${top[0]}`, period: mk, basis: 'Reportable expenses in this category, in household currency; month to date.',
       to: `/transactions?type=expense&cat=${top[0]}&month=${mk}`, materiality: 55 + Math.min(share, 30) });
   }
 
@@ -95,7 +104,8 @@ export function buildInsightFeed(input: FeedInput, limit = 5): FeedCard[] {
     }
     if (best) {
       cards.push({ id: `win-catdown-${best.cat}-${mk}`, type: 'win', tone: 'positive', emoji: '📉',
-        big: `${getCat(best.cat).label} down ${best.drop}%`, line: `Versus your 3-month average (${C(best.was)} → ${C(best.now)}). Nice trim.`,
+        big: `${getCat(best.cat).label} down ${best.drop}%`, line: `Month-to-date ${C(best.now)} versus ${C(best.was)} across up to three prior recorded months. This month is not complete.`,
+        issue: `category:${best.cat}`, period: mk, basis: 'Partial current month compared with completed months containing recorded activity, not matched elapsed days.',
         to: `/transactions?type=expense&cat=${best.cat}&month=${mk}`, materiality: 60 + best.drop });
     }
   }
@@ -109,13 +119,14 @@ export function buildInsightFeed(input: FeedInput, limit = 5): FeedCard[] {
       const projected = Math.round(expense / day * daysInMonth);
       cards.push({ id: `forecast-spend-${mk}`, type: 'forecast', tone: 'neutral', emoji: '🔮',
         big: `≈ ${C(projected)}`, line: `At this pace, your spending lands near ${C(projected)} by month-end.`,
+        issue: 'spending-pace', period: mk, estimated: true, basis: 'Month-to-date expense divided by elapsed calendar days, projected over this month. Bills and timing can change the outcome.',
         to: '/reports', materiality: 58 });
     }
   }
 
   // ── pulse: current score + strongest driver ────────────────────────────────
-  const pulse = computePulseScore(transactions, budgets, goals, debts, baseCurrency, rates);
-  if (pulse.total !== null) {
+  const pulse = input.includePulse === false ? null : computePulseScore(transactions, budgets, goals, debts, baseCurrency, rates, input.budgetAllocations);
+  if (pulse && pulse.total !== null) {
     const entries = (Object.entries(pulse.components) as [keyof typeof pulse.components, number][])
       .filter(([k]) => pulse.applicable[k]);
     const strongest = entries.sort((a, b) => b[1] - a[1])[0];
@@ -131,11 +142,13 @@ export function buildInsightFeed(input: FeedInput, limit = 5): FeedCard[] {
     const lesson = evergreenByTag(['dti', 'debt', 'payoff']);
     if (lesson) cards.push({ id: `nudge-dti-${mk}`, type: 'nudge_to_learn', tone: 'constructive', emoji: '📚',
       big: `Debt is ${Math.round(dti)}% of income`, line: `A quick read on bringing that down — ${lesson.title}.`,
+      issue: 'debt-payments', period: mk, basis: 'Tracked monthly minimum debt payments versus recorded income this month so far.',
       learnId: lesson.id, materiality: 64 });
   } else if (income > 0 && (income - expense) / income < 0.1) {
     const lesson = evergreenByTag(['emergency_fund', 'saving', 'runway']);
     if (lesson) cards.push({ id: `nudge-savings-${mk}`, type: 'nudge_to_learn', tone: 'constructive', emoji: '📚',
       big: `Thin buffer this month`, line: `A 2-minute idea that helps — ${lesson.title}.`,
+      issue: 'cash-flow', period: mk, basis: 'Recorded spending and income this month to date.',
       learnId: lesson.id, materiality: 56 });
   }
 

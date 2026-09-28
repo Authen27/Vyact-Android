@@ -17,8 +17,22 @@ export class TransactionsPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.addButton      = page.getByRole('button', { name: /add transaction/i });
-    this.calendarToggle = page.getByRole('button', { name: /calendar/i });
+    // SCOPED TO <main> ON PURPOSE — this was the single largest cause of
+    // failures in this suite.
+    //
+    // Three controls answer to /add transaction/i: this page's own
+    // "+ Add Transaction" button, the global AddFab, and MobileTabBar's button.
+    // The FAB and the tab bar are siblings of <main> in Layout.tsx, so an
+    // unscoped accessible-name match resolved to 2+ elements and EVERY click
+    // failed Playwright's strict mode — reported as a 30s timeout, which reads
+    // like a hung app rather than an ambiguous selector.
+    //
+    // Scoping to <main> targets the page's own button, which is what a
+    // TransactionsPage object should drive. It is also robust to copy changes,
+    // unlike matching the literal "+ Add Transaction" label.
+    const main = page.locator('main');
+    this.addButton      = main.getByRole('button', { name: /add transaction/i });
+    this.calendarToggle = main.getByRole('button', { name: /calendar/i });
   }
 
   async goto() {

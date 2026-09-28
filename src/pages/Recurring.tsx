@@ -1,21 +1,22 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Repeat, Trash2, Pencil } from 'lucide-react';
 import { useStore } from '../store';
 import { Panel } from '../components/ui/Card';
 import EmptyState from '../components/ui/EmptyState';
 import Money from '../components/ui/Money';
-import Chip, { CategoryChip } from '../components/ui/Chip';
+import Chip from '../components/ui/Chip';
+import CategoryPicker from '../components/ui/CategoryPicker';
+import { Field, Select } from '../components/ui/Input';
 import { AmountField } from '../components/ui/NumericKeypad';
 import HalfSheet from '../components/ui/HalfSheet';
-import { formatDate, today } from '../lib/format';
-import { getCat, EXPENSE_CATEGORIES, INCOME_CATEGORIES, CURRENCIES } from '../constants';
+import BillCalendar from '../components/recurring/BillCalendar';
+import { formatDate } from '../lib/format';
+import { getCat, CURRENCIES } from '../constants';
 import type { RecurrenceFreq, RecurringSchedule } from '../types';
-import { computeNextDueDate } from '../lib/recurring';
+import type { RecurringSeed } from '../lib/askVyactResponses';
+import { nextDueAfterSave } from '../lib/recurring';
 import { formatRRule, parseRRule, describeRRule } from '../lib/rrule';
-
-/* Board M4 member chips are initials ("MR"), matching Add Transaction. */
-const memberInitials = (name: string) =>
-  name.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 
 type SchedType = 'expense' | 'income' | 'investment';
 type MonthlyMode = 'dom' | 'nth';
@@ -34,27 +35,26 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 
 function todayWeekday(): number { return new Date().getDay(); }
 function todayDom(): number { return new Date().getDate(); }
+/** Clamp a day-of-month to 1–31, falling back to today for anything unusable
+ *  (empty field, NaN, a stray minus). Applied on blur and submit — never on
+ *  keystroke, which is what made the field impossible to retype. */
+function clampDom(n: number): number {
+  if (!Number.isFinite(n)) return todayDom();
+  return Math.max(1, Math.min(31, Math.trunc(n)));
+}
 function todayMonth(): number { return new Date().getMonth() + 1; }
-const daysUntil = (d: string): number =>
-  Math.round((Date.parse(`${d}T00:00:00`) - Date.parse(`${today()}T00:00:00`)) / 86_400_000);
-const countdownLabel = (d: number): string => (d <= 0 ? 'Due today' : d === 1 ? 'Tomorrow' : `in ${d} days`);
 
 export default function Recurring() {
   const schedules = useStore(s => s.recurringSchedules);
   const members = useStore(s => s.members);
+  const accounts = useStore(s => s.accounts);
+  // v10.26.0 (R4) — an investment schedule puts money into a Net Worth asset.
+  const investmentAssets = useStore(s => s.assets).filter(a => a.type === 'investment');
   const upsert = useStore(s => s.upsertRecurring);
   const remove = useStore(s => s.removeRecurring);
   const baseCur = useStore(s => s.profile.baseCurrency);
   const dateFormat = useStore(s => s.profile.dateFormat);
   const toast = useStore(s => s.toast);
-
-  // Board M5 — schedules due within the next 7 days, for the upcoming strip.
-  const upcoming = useMemo(() => {
-    const t0 = today();
-    return schedules
-      .filter(s => s.active !== false && s.nextDueDate >= t0 && daysUntil(s.nextDueDate) <= 7)
-      .sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
-  }, [schedules]);
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<RecurringSchedule | null>(null);
@@ -66,13 +66,31 @@ export default function Recurring() {
   const [autoConfirm, setAutoConfirm] = useState(true);
   const [reminderLead, setReminderLead] = useState<1|3|7>(3);
   const [ownerMemberId, setOwnerMemberId] = useState<string>('');
+  // v10.20.6 — the account the schedule moves money through. Absent until now,
+  // which made every form-created schedule generate un-syncable transactions.
+  const [accountId, setAccountId] = useState<string>('');
+  const [toAccountId, setToAccountId] = useState<string>('');
   const [endsKind, setEndsKind] = useState<EndsKind>('never');
   const [endsCount, setEndsCount] = useState('12');
   // Weekly
   const [weekDays, setWeekDays] = useState<number[]>([todayWeekday()]);
   // Monthly
   const [monthlyMode, setMonthlyMode] = useState<MonthlyMode>('dom');
-  const [dayOfMonth, setDayOfMonth] = useState<number>(todayDom());
+  // DAY OF MONTH — the raw text is the state, the number is derived.
+  //
+  // This used to be `useState<number>` fed by an onChange that clamped on every
+  // keystroke: `Math.max(1, Math.min(31, parseInt(e.target.value) || 1))`.
+  // Backspacing to empty gives NaN, `|| 1` turns that into 1, and the field
+  // re-renders as "1" — so the box can never be transiently blank and fights
+  // you the moment you try to retype it. Typing a leading 0 collapsed the same
+  // way. Reproduced live: clearing the field showed "1", "0" showed "1".
+  //
+  // Holding the text lets the input be empty or mid-typing; the clamp moves to
+  // blur and submit, where it belongs. `dayOfMonth` stays a number for every
+  // consumer below, so nothing else changes.
+  const [domText, setDomText] = useState<string>(String(todayDom()));
+  const dayOfMonth = clampDom(parseInt(domText, 10));
+  const setDayOfMonth = (n: number) => setDomText(String(clampDom(n)));
   const [nthWeek, setNthWeek] = useState<number>(1);
   const [nthWeekday, setNthWeekday] = useState<number>(1); // Monday
   // Annual
@@ -83,6 +101,7 @@ export default function Recurring() {
     setType('expense'); setFreq('monthly'); setName(''); setAmount('');
     setCategory('rent_mortgage'); setAutoConfirm(true); setReminderLead(3);
     setOwnerMemberId(''); setEndsKind('never'); setEndsCount('12');
+    setAccountId(''); setToAccountId('');
     setWeekDays([todayWeekday()]); setMonthlyMode('dom');
     setDayOfMonth(todayDom()); setNthWeek(1); setNthWeekday(1);
     setAnnualMonth(todayMonth()); setAnnualDay(todayDom());
@@ -114,10 +133,37 @@ export default function Recurring() {
 
   async function save() {
     if (!name || !amount) { toast('Enter a name and amount', 'error'); return; }
+    // Refuse to save a schedule that cannot produce a storable transaction.
+    // `ck_txn_accounts_by_type` rejects an account-less row with 23514, and the
+    // failure used to surface only as a transaction that silently never synced.
+    if (!accountId) { toast('Choose an account for this schedule', 'error'); return; }
+    if (type === 'investment' && !toAccountId) {
+      toast('Choose the investment to put this into', 'error'); return;
+    }
     const startDate = editing?.startDate || new Date().toISOString().split('T')[0];
     const rrule = buildRruleStr();
     const dom = (freq === 'monthly' || freq === 'custom_day') && monthlyMode === 'dom' ? dayOfMonth : undefined;
-    const next = computeNextDueDate(freq, startDate, undefined, dom ?? 1);
+    // v10.20.6 — was `computeNextDueDate(freq, startDate, undefined, dom ?? 1)`,
+    // which always steps ONE period on from its base. Two bugs came out of that:
+    //
+    //   CREATE picking the 20th on the 8th → 2026-10-20, silently skipping the
+    //   20th of THIS month.
+    //
+    //   EDIT was worse. `startDate` is the schedule's ORIGINAL start and
+    //   lastGenerated was passed as undefined, so saving an edit to a schedule
+    //   that began 2026-05-22 set nextDueDate to 2026-06-02 — months in the
+    //   PAST. The engine then treated it as due and materialised a back-dated
+    //   transaction on every refresh. That is the "recurring schedule shows up
+    //   as a transaction for today" report.
+    //
+    // nextDueAfterSave answers the question actually being asked: the next
+    // occurrence on or after today that has not already been generated.
+    const next = nextDueAfterSave(freq, {
+      startDate,
+      dayOfMonth: dom,
+      weekday: editing?.weekday,
+      lastGenerated: editing?.lastGenerated,
+    });
     const schedule = {
       ...(editing || {}),
       transactionTemplate: {
@@ -126,6 +172,15 @@ export default function Recurring() {
         category: type === 'investment' ? '' : category,
         currency: baseCur, recurring: freq === 'custom_day' ? 'monthly' : freq,
         memberId: ownerMemberId || undefined,
+        // The per-type matrix `ck_txn_accounts_by_type` enforces: an expense
+        // moves FROM an account, income moves TO one, an investment does both.
+        // Written as undefined rather than null — a NOT-NULL column with a DB
+        // default is omitted, never sent as explicit null.
+        // v10.26.0 (R4) — an investment moves money FROM an account INTO an
+        // asset, so it names `assetId`, never a second account.
+        accountId:   type === 'income' ? undefined : (accountId || undefined),
+        toAccountId: type === 'income' ? (accountId || undefined) : undefined,
+        assetId:     type === 'investment' ? (toAccountId || undefined) : undefined,
       },
       frequency: freq,
       dayOfMonth: dom,
@@ -152,6 +207,8 @@ export default function Recurring() {
     setAutoConfirm(s.autoConfirm);
     setReminderLead(([1,3,7] as const).includes(s.reminderLeadDays as 1|3|7) ? (s.reminderLeadDays as 1|3|7) : 3);
     setOwnerMemberId(s.ownerMemberId ?? s.transactionTemplate.memberId ?? '');
+    setAccountId(s.transactionTemplate.accountId ?? '');
+    setToAccountId(s.transactionTemplate.assetId ?? s.transactionTemplate.toAccountId ?? '');
     // Parse RRULE to restore sub-fields
     if (s.rrule) {
       const r = parseRRule(s.rrule);
@@ -179,6 +236,29 @@ export default function Recurring() {
     }
   }
 
+  // v10.39.1 (P21) — an Ask Vyact draft ("add Netflix 649 every month") arrives as
+  // router state and opens this sheet pre-filled. It is a DRAFT: the account is left
+  // for the user to choose and nothing is saved until they tap Save. The state is
+  // cleared at once so a reload or Back does not reopen it.
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    const seed = (location.state as { recurringSeed?: RecurringSeed } | null)?.recurringSeed;
+    if (!seed) return;
+    resetForm();
+    setEditing(null);
+    setType(seed.type);
+    setFreq(seed.frequency);
+    setName(seed.name);
+    setAmount(String(seed.amount));
+    setCategory(seed.category);
+    if (seed.dayOfMonth) { setMonthlyMode('dom'); setDayOfMonth(seed.dayOfMonth); }
+    setOpen(true);
+    navigate(location.pathname, { replace: true, state: null });
+    // resetForm and the setters are stable for this purpose; run once per arrival.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
+
   const FREQ_TABS: { key: RecurrenceFreq; label: string }[] = [
     { key: 'daily',   label: 'Daily' },
     { key: 'weekly',  label: 'Weekly' },
@@ -198,33 +278,8 @@ export default function Recurring() {
         <button className="btn-primary flex-shrink-0" onClick={() => { resetForm(); setEditing(null); setOpen(true); }}>+ Add Schedule</button>
       </div>
 
-      {/* Board M5 — upcoming-7-day strip: what's about to post, with a countdown. */}
-      {upcoming.length > 0 && (
-        <div className="mb-5">
-          <div className="mono-label mb-2">Next 7 days</div>
-          <div className="flex gap-3 overflow-x-auto pb-1 -mx-1 px-1 [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
-            {upcoming.map(s => {
-              const d = daysUntil(s.nextDueDate);
-              const cat = getCat(s.transactionTemplate.category);
-              const isIncome = s.transactionTemplate.type === 'income';
-              return (
-                <div key={s.id} className="min-w-[152px] flex-shrink-0 rounded-r3 p-3.5" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-lg leading-none">{cat.icon}</span>
-                    <span className="num text-[10px] font-bold tracking-wide px-2 py-0.5 rounded-md"
-                      style={{ background: d <= 1 ? 'color-mix(in srgb, hsl(var(--honey)) 18%, transparent)' : 'var(--sunken)', color: d <= 1 ? 'hsl(var(--honey))' : 'var(--ff-ink-3)' }}>
-                      {countdownLabel(d)}
-                    </span>
-                  </div>
-                  <div className="font-display font-semibold text-[13.5px] text-ink truncate">{s.transactionTemplate.description}</div>
-                  <Money amount={s.transactionTemplate.amount} currency={s.transactionTemplate.currency}
-                    className={`num text-[15px] font-bold ${isIncome ? 'text-sage' : 'text-ink'}`} signed={isIncome} />
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {/* v10.32.0 — the approval-aware bill calendar replaces the 7-day strip. */}
+      <BillCalendar />
 
       <Panel title="Active Schedules">
         {schedules.length === 0
@@ -232,7 +287,8 @@ export default function Recurring() {
           : schedules.map(s => {
               const cat = getCat(s.transactionTemplate.category);
               return (
-                <div key={s.id} className="flex items-center gap-3 px-4 py-3 border-b border-line last:border-b-0">
+                <div key={s.id} data-testid="schedule-row"
+                  className="flex items-center gap-3 px-4 py-3 border-b border-line last:border-b-0">
                   <div className="w-9 h-9 rounded-md flex items-center justify-center text-base flex-shrink-0" style={{ background: cat.color + '22' }}>
                     {cat.icon}
                   </div>
@@ -251,7 +307,24 @@ export default function Recurring() {
                   <div className={`text-[0.86rem] font-medium ${s.transactionTemplate.type === 'income' ? 'text-sage' : 'text-terra'}`}>
                     <Money amount={s.transactionTemplate.amount} currency={s.transactionTemplate.currency} className="font-medium" signed={s.transactionTemplate.type === 'income'} />
                   </div>
-                  <button onClick={() => { if (confirm('Delete this schedule?')) { remove(s.id); toast('Schedule deleted', 'info'); } }} className="row-action danger" aria-label="Delete schedule" title="Delete">
+                  {/* The delete used to be `remove(s.id); toast('Schedule
+                      deleted')` — fire-and-forget, with the success toast on the
+                      very next line regardless of what happened. Any rejection
+                      became an unhandled promise rejection: invisible in the UI,
+                      invisible in the console for most users, and the toast
+                      claimed success anyway.
+                      That is why this read as "deletion doesn't work" with no
+                      error to go on. Await it, and only claim success when the
+                      write actually succeeded. */}
+                  <button onClick={async () => {
+                    if (!confirm('Delete this schedule?')) return;
+                    try {
+                      await remove(s.id);
+                      toast('Schedule deleted', 'info');
+                    } catch (e) {
+                      toast(`Could not delete: ${(e as Error).message}`, 'error');
+                    }
+                  }} className="row-action danger" aria-label="Delete schedule" title="Delete">
                     <Trash2 size={14} strokeWidth={1.6} />
                   </button>
                   <button onClick={() => { populateFromSchedule(s); setOpen(true); }} className="row-action" aria-label="Edit schedule" title="Edit">
@@ -299,32 +372,60 @@ export default function Recurring() {
             placeholder="e.g. Rent · Salary · SIP" aria-label="Description" />
         </div>
 
-        {/* Category tiles — expense/income only (investment carries no category). */}
         {type !== 'investment' && (
           <div className="mt-4">
-            <div className="mono-label mb-1.5">Category</div>
-            <div className="flex gap-1.5 flex-wrap">
-              {(type === 'expense' ? EXPENSE_CATEGORIES : INCOME_CATEGORIES).map(c => (
-                <CategoryChip key={c.id} emoji={c.icon} label={c.label}
-                  on={c.id === category} onClick={() => setCategory(c.id)} />
-              ))}
-            </div>
+            <CategoryPicker type={type} value={category} onChange={setCategory} />
           </div>
         )}
 
-        {/* Owner — member initial chips, matches Add Transaction's member row. */}
+        {/* Account — v10.20.6. THE FORM HAD NO ACCOUNT FIELD AT ALL.
+            Every transaction moves an account (binding money-model rule), and
+            the DB enforces it per type via `ck_txn_accounts_by_type`. A schedule
+            created here carried no account, so the transaction the engine
+            generated from it was rejected by the cloud with 23514 and lived only
+            on the device that made it — verified against production. Backfilled
+            schedules inherited an account from their source transaction, which
+            is why only form-created ones were affected. */}
         <div className="mt-4">
-          <div className="mono-label mb-1.5">
-            Owner {type === 'investment' ? <span className="text-ink-dim">·attributed to</span> : null}
-          </div>
-          <div className="flex gap-1.5 flex-wrap">
-            <Chip on={!ownerMemberId} onClick={() => setOwnerMemberId('')}>Household</Chip>
-            {members.map(m => (
-              <Chip key={m.id} on={m.id === ownerMemberId} onClick={() => setOwnerMemberId(m.id)}>
-                {memberInitials(m.name)}
-              </Chip>
+          <Field label={type === 'income' ? 'Deposit to' : type === 'investment' ? 'Invest from' : 'Pay from'}>
+          <Select value={accountId} onChange={event => setAccountId(event.target.value)} required>
+            <option value="">Choose account</option>
+            {accounts.filter(a => a.isArchived !== true).map(a => (
+              <option key={a.id} value={a.id}>{a.name}</option>
             ))}
+          </Select>
+          </Field>
+          {!accountId && (
+            <div className="mt-1.5 text-[0.7rem] text-terra">
+              Pick an account — without one this schedule&apos;s transactions cannot sync.
+            </div>
+          )}
+        </div>
+
+        {/* An investment is spend-neutral: it moves money BETWEEN two accounts,
+            so it needs a destination as well as a source. */}
+        {type === 'investment' && (
+          <div className="mt-4">
+            <Field label="Invest into" hint={investmentAssets.length === 0 ? 'Add an investment in Net Worth first.' : undefined}>
+            <Select value={toAccountId} onChange={event => setToAccountId(event.target.value)} required disabled={investmentAssets.length === 0}>
+              <option value="">Choose investment</option>
+              {investmentAssets.map(a => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </Select>
+            </Field>
           </div>
+        )}
+
+        <div className="mt-4">
+          <Field label="Owner" hint={type === 'investment' ? 'Attributed to' : undefined}>
+          <Select value={ownerMemberId} onChange={event => setOwnerMemberId(event.target.value)}>
+            <option value="">Household</option>
+            {members.map(m => (
+              <option key={m.id} value={m.id}>{m.name}</option>
+            ))}
+          </Select>
+          </Field>
         </div>
 
         {/* Recurrence frequency */}
@@ -360,8 +461,9 @@ export default function Recurring() {
             {monthlyMode === 'dom' ? (
               <div className="flex items-center gap-2">
                 <span className="text-[0.84rem] text-ink-mid">Day</span>
-                <input type="number" min={1} max={31} value={dayOfMonth}
-                  onChange={e => setDayOfMonth(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
+                <input type="number" min={1} max={31} value={domText}
+                  onChange={e => setDomText(e.target.value)}
+                  onBlur={() => setDomText(String(clampDom(parseInt(domText, 10))))}
                   className="input h-[34px] py-0 px-2.5 text-[12.5px] w-20" aria-label="Day of month" />
                 <span className="text-[0.84rem] text-ink-mid">of each month</span>
               </div>

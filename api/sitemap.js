@@ -3,7 +3,7 @@
 // AI crawlers can discover and rank the content on finance keywords/longtail.
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://dmxqkvploojokffuhxnz.supabase.co';
 const ANON = process.env.VITE_SUPABASE_ANON_KEY || '';
-const BASE = 'https://vyact-twentyx.vercel.app';
+const BASE = 'https://vyact.app';
 
 export default async function handler(req, res) {
   let cards = [];

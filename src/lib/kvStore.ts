@@ -134,8 +134,94 @@ export async function kvRemove(key: string): Promise<void> {
   memoryFallback.delete(key);
 }
 
+// ── Cache generation + purge (v10.20.8) ─────────────────────────────────────
+//
+// The entity cache lives HERE — IndexedDB first, localStorage only as a
+// fallback and one-time migration source (kvSet deletes the localStorage copy
+// after a successful IDB write). A purge that sweeps only localStorage
+// therefore clears nothing on a normal browser. That was the flaw in
+// v10.20.7's cacheInvalidation: its unit tests passed because vitest runs in
+// node with a localStorage polyfill and NO IndexedDB, so they exercised the
+// fallback path and never the real one.
+
+let generation = 0;
+
+/**
+ * Monotonic counter, bumped by every purge.
+ *
+ * A cloud read that was already in flight when the session changed must not be
+ * allowed to write its result into the new session's cache. Callers capture
+ * this before issuing the request and check it before caching the response.
+ */
+export function cacheGeneration(): number { return generation; }
+
+/** False once a purge has happened since `gen` was captured. */
+export function isCacheGenerationCurrent(gen: number): boolean {
+  return gen === generation;
+}
+
+/** Every key held in the cache, across whichever backends are in play. */
+export async function kvKeys(): Promise<string[]> {
+  const keys = new Set<string>();
+  if (hasIDB()) {
+    try {
+      const idbKeys = await withStore<IDBValidKey[]>('readonly', s => s.getAllKeys());
+      for (const k of idbKeys) if (typeof k === 'string') keys.add(k);
+    } catch { /* fall through to the other backends */ }
+  }
+  for (const k of memoryFallback.keys()) keys.add(k);
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const raw = localStorage.key(i);
+      if (!raw) continue;
+      // Stored under the `vt_`/`ff_` namespaces; kv keys are the bare suffix.
+      if (raw.startsWith('vt_') || raw.startsWith('ff_')) keys.add(raw.slice(3));
+    }
+  } catch { /* storage unavailable */ }
+  return [...keys];
+}
+
+/**
+ * Remove every cached key matching `shouldRemove`, from ALL backends, and bump
+ * the generation so in-flight reads cannot repopulate what was just cleared.
+ *
+ * Returns the number of keys removed. Awaited by the caller — hydration must
+ * not begin until the old session's data is actually gone.
+ */
+export async function kvPurgeWhere(shouldRemove: (key: string) => boolean): Promise<number> {
+  const keys = await kvKeys();
+  let removed = 0;
+  for (const k of keys) {
+    if (!shouldRemove(k)) continue;
+    await kvRemove(k);          // clears IDB + both localStorage namespaces + memory
+    removed++;
+  }
+  // Bump AFTER the deletes, so a racing read that captured the old generation
+  // is rejected even if it resolves during the purge.
+  generation++;
+  return removed;
+}
+
 /** Test-only: drop all in-memory state so unit tests start clean. */
 export function _resetKvForTests(): void {
   memoryFallback.clear();
   dbPromise = null;
+  generation = 0;
+}
+
+/**
+ * Test-only: close the open IndexedDB connection and reset state.
+ *
+ * `_resetKvForTests` only drops the promise; the underlying connection stays
+ * OPEN, so a test that then calls `indexedDB.deleteDatabase('vyact')` blocks
+ * forever waiting for it. Await this instead when a test needs a genuinely
+ * empty database.
+ */
+export async function _closeKvForTests(): Promise<void> {
+  const p = dbPromise;
+  dbPromise = null;
+  memoryFallback.clear();
+  generation = 0;
+  if (!p) return;
+  try { (await p).close(); } catch { /* already closed or never opened */ }
 }

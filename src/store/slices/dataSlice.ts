@@ -7,7 +7,7 @@ import type { Store } from '../../store';
 import type {
   Transaction, Budget, BudgetAllocation, Goal, Member, Debt, Asset, Account, SavedView,
   Profile, ExchangeRates, HouseholdMeta,
-  RecurringSchedule, PartPaymentChoice,
+  RecurringSchedule, PartPaymentChoice, RecordLoanPaymentInput,
 } from '../../types';
 import { LocalStorageAdapter, type DataAdapter } from '../../lib/dataAdapter';
 import { HybridAdapter } from '../../lib/hybridAdapter';
@@ -16,8 +16,7 @@ import { DEFAULT_RATES } from '../../constants';
 import { isCloudEnabled, supabase } from '../../lib/supabase';
 import { applyPayment } from '../../lib/amortization';
 import { autoMigrateAnonToHousehold } from '../../lib/migration';
-import { backfillSchedulesFromTransactions } from '../../lib/recurring';
-import { uid, setNumberSystem } from '../../lib/format';
+import { uid, setNumberSystem, nowMonthKey } from '../../lib/format';
 import { readNumberSystemPref, writeNumberSystemPref } from '../../lib/numberSystemPref';
 import {
   registerOnboardingSync, hydrateOnboardingFromCloud,
@@ -25,8 +24,13 @@ import {
 } from '../../lib/onboardingState';
 import { accountValueOf } from '../../lib/accountBalance';
 import { mergeProgress, writeLocalEducationProgress, readLocalEducationProgress } from '../../lib/educationProgress';
-import { unexpected } from '../../lib/faults';
+import { expected, unexpected } from '../../lib/faults';
+import { computeNetWorth } from '../../lib/netWorth';
+import {
+  hasPositionData, mergeSnapshot, shouldRecordSnapshot, snapshotFromProjection, type NetWorthSnapshot,
+} from '../../lib/netWorthSnapshots';
 import { readLocalJson, readLocalString, setLocalString, removeLocal } from '../localJson';
+import { syncPush } from '../../lib/webPush';
 
 export interface DataSlice {
   // ── data ────────────────────────────────────────────────────
@@ -49,6 +53,8 @@ export interface DataSlice {
    *  scoped on the server via RLS; the array here is whatever the
    *  current user can see (their own + shared rows from household). */
   savedViews: SavedView[];
+  /** v10.30.0 — recorded monthly Net Worth snapshots, months ascending (never reconstructed). */
+  netWorthSnapshots: NetWorthSnapshot[];
   profile: Profile;
   rates: ExchangeRates;
 
@@ -63,6 +69,8 @@ export interface DataSlice {
   refresh: () => Promise<void>;
   /** v9.5.0 — budgets-only refetch, fired by the realtime accelerator (cheap; budgets are small). */
   refetchBudgets: () => Promise<void>;
+  /** v10.30.0 — record this month's Net Worth snapshot once the position is loaded (first write wins). */
+  recordNetWorthSnapshot: () => Promise<void>;
   switchHousehold: (id: string) => Promise<void>;
   createHousehold: (name: string, type: HouseholdMeta['type'], baseCurrency: string) => Promise<HouseholdMeta>;
   deleteHousehold: (id: string) => Promise<void>;
@@ -92,6 +100,15 @@ export interface DataSlice {
   // v7 — debt payment with re-amortisation
   recordDebtPayment: (debtId: string, amount: number, choice?: PartPaymentChoice) => Promise<{ message: string; debt: Debt | null }>;
 
+  /**
+   * Audit F2 — ONE explicit command for recording a loan payment (EMI).
+   * Books the interest leg as the visible expense, the principal leg as a
+   * system transfer into the debt-linked loan account, and the re-amortised
+   * debt — atomically via the record_loan_payment RPC when cloud+online;
+   * sequentially (queued) when offline/local-only.
+   */
+  recordLoanPayment: (input: RecordLoanPaymentInput) => Promise<{ message: string; expense: Transaction | null }>;
+
   // auth lifecycle (CloudAuthSlice) + sync surface / theme / toast (SyncSlice)
   // are folded in via `extends` (TD-25).
 }
@@ -110,6 +127,14 @@ const defaultProfile: Profile = {
 // stale, out-of-order completions (see refresh()).
 let refreshSeq = 0;
 
+// v10.30.0 — at most one Net Worth snapshot attempt per (household, month) per
+// window, so a viewer, an offline device or a database without the table never
+// calls the recorder on every 90-second refresh.
+const SNAPSHOT_RETRY_MS = 10 * 60_000;
+let snapshotAttempt: { household: string; month: string; at: number } | null = null;
+/** Local-only household id that was filled with the first-run demo data. */
+const DEMO_SEEDED_KEY = 'demo_seeded_household';
+
 // Adapter selector: HybridAdapter when cloud env is set, otherwise LocalStorageAdapter.
 // The store calls adapter methods; the rest of the app doesn't know which is in use.
 const initialAdapter: DataAdapter = (isCloudEnabled() && supabase)
@@ -122,6 +147,7 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
   currentHouseholdId: 'local',
   transactions: [], budgets: [], budgetAllocations: [], goals: [], members: [], debts: [], assets: [], accounts: [],
   savedViews: [],
+  netWorthSnapshots: [],
   profile: defaultProfile,
   rates: { ...DEFAULT_RATES },
 
@@ -189,6 +215,9 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
       for (const [code, rate] of Object.entries(seed.exchangeRates)) {
         await adapter.upsertRate(active, code, rate);
       }
+      // v10.30.0 — demo rows carry no marker, so remember that this household
+      // began as the demo: its invented figures must never become recorded history.
+      try { setLocalString(DEMO_SEEDED_KEY, active); } catch { /* noop */ }
       await get().refresh();
     }
     // v6.4: One-shot anon → cloud migration when the user signs in for the
@@ -224,6 +253,9 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     await get().runRecurringEngine();
     void get().refreshNotifications();
     void get().refreshSharedSplits();
+    // v10.48.0 — keep this device's push registration right (active household, a
+    // subscription the browser replaced or an update wiped). Silent; never prompts.
+    if (get().cloudEnabled && active && active !== 'local') void syncPush(active, get().notificationPrefs);
 
     // Every household gets a default Cash account from day one (idempotent —
     // no-op once one exists). Runs after refresh()/seeding so `accounts` is
@@ -231,6 +263,7 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     try { await get().ensureDefaultCashAccount(); } catch { /* best-effort */ }
 
     set({ loading: false });
+    void get().recordNetWorthSnapshot();
   },
 
   refresh: async () => {
@@ -244,7 +277,7 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     const seq = ++refreshSeq;
     const seqHid = currentHouseholdId;
     const isStale = () => seq !== refreshSeq || get().currentHouseholdId !== seqHid;
-    const [transactions, budgets, goals, members, debts, assets, accounts, savedViews, recurringList, budgetAllocations, profile, rates] = await Promise.all([
+    const [transactions, budgets, goals, members, debts, assets, accounts, savedViews, recurringList, budgetAllocations, profile, rates, netWorthSnapshots] = await Promise.all([
       adapter.list<Transaction>('transactions', currentHouseholdId),
       adapter.list<Budget>('budgets',           currentHouseholdId),
       adapter.list<Goal>('goals',               currentHouseholdId),
@@ -260,6 +293,12 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
         .catch((e) => { unexpected(e, 'refresh:budgetAllocations'); return get().budgetAllocations; }),
       adapter.getProfile(currentHouseholdId),
       adapter.getRates(currentHouseholdId),
+      // v10.30.0 — recorded Net Worth history. A failed read shows no history;
+      // it is never data loss (the rows stay where they are).
+      typeof adapter.listNetWorthSnapshots === 'function'
+        ? adapter.listNetWorthSnapshots(currentHouseholdId)
+          .catch((e): NetWorthSnapshot[] => { expected(e, 'refresh:netWorthSnapshots'); return []; })
+        : Promise.resolve([] as NetWorthSnapshot[]),
     ]);
     // v6.4: hydrate per-budget local period metadata (DB schema lacks an
     // extras column on budgets so period info is a client-side overlay).
@@ -303,28 +342,40 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
       transactions, budgets: hydratedBudgets, goals, members, debts, assets, accounts, savedViews,
       recurringSchedules: recurringList,
       budgetAllocations,
+      netWorthSnapshots,
       profile: mergedProfile,
       rates,
-      lastSyncedAt: Date.now(),   // R4 (sync fix): drives "last synced" status
+      // Audit F8 — "last synced" means THIS pull completed and was applied.
+      // It is stamped here, after the stale-guard, never on a cached read.
+      lastSyncedAt: Date.now(),
     });
     setNumberSystem(get().profile.numberSystem === 'indian' ? 'indian' : 'western');
+    void get().recordNetWorthSnapshot();
 
-    // v7.3 — Backfill RecurringSchedule rows for legacy txns whose `recurring`
-    // field is set but never produced a schedule. v8.9 — recurring is now a
-    // household-scoped, synced entity, so persist new rows through the adapter
-    // (was localStorage-only) so they reach the cloud + other devices.
-    const { schedules: nextSchedules, added } = backfillSchedulesFromTransactions(
-      transactions,
-      recurringList,
-    );
-    if (added > 0) {
-      const fresh = nextSchedules.filter(s => !recurringList.some(r => r.id === s.id));
-      for (const s of fresh) {
-        try { await adapter.upsert('recurring', currentHouseholdId, s); } catch { /* best-effort */ }
-      }
-      set({ recurringSchedules: nextSchedules });
-      get().toast(`Recovered ${added} recurring schedule${added === 1 ? '' : 's'} from existing transactions`, 'info');
-    }
+    // ── Recurring migrations: RETIRED (v10.20.7) ────────────────────────────
+    //
+    // Two migrations used to run here on every load. Both are gone, and this is
+    // a deliberate reset rather than a tidy-up.
+    //
+    // 1. backfillSchedulesFromTransactions (v7.3) recreated a schedule for any
+    //    transaction marked `recurring` whose signature matched nothing. It had
+    //    NO concept of a deliberate deletion, so deleting a schedule and
+    //    reloading brought it back — announced by a "Recovered 1 recurring
+    //    schedule" toast that read as helpful. That is the whole of the
+    //    long-running "deletion doesn't work" report. 45 transactions in
+    //    production still carry a `recurring` marker, so this would have kept
+    //    resurrecting schedules on any device that had not run it yet.
+    //
+    // 2. The v10.20.5 re-key rewrote unstorable ids. It has served its purpose
+    //    and its remaining risk is duplication: re-keying changes the primary
+    //    key, so it inserts rather than updates.
+    //
+    // Nothing replaces them. `recurring_schedules` is now an ordinary synced
+    // entity: what the cloud holds is what exists, and a delete is final. The
+    // stale caches those migrations fed on are cleared at the session boundary
+    // by lib/cacheInvalidation.ts, so no device re-uploads a schedule the cloud
+    // does not have.
+
   },
 
   // v9.5.0 — budgets-only refetch (the realtime accelerator's onChange). Unlike
@@ -343,6 +394,32 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     set({ budgets, budgetAllocations });
   },
 
+  recordNetWorthSnapshot: async () => {
+    const { adapter, currentHouseholdId, loading, cloudEnabled } = get();
+    if (typeof adapter.recordNetWorthSnapshot !== 'function') return;
+    if (!cloudEnabled && readLocalString(DEMO_SEEDED_KEY, null) === currentHouseholdId) return;
+    const month = nowMonthKey();
+    if (snapshotAttempt && snapshotAttempt.household === currentHouseholdId && snapshotAttempt.month === month
+        && Date.now() - snapshotAttempt.at < SNAPSHOT_RETRY_MS) return;
+    const state = get();
+    const projection = computeNetWorth(
+      { assets: state.assets, accounts: state.accounts, debts: state.debts, transactions: state.transactions },
+      state.profile.baseCurrency, state.rates,
+    );
+    if (!shouldRecordSnapshot({ loading, hasPosition: hasPositionData(projection), snapshots: state.netWorthSnapshots, month })) return;
+    // A cache-first adapter may still be serving rows the cloud has not confirmed
+    // this session; recording those would lock a stale month in (first write wins).
+    if (typeof adapter.positionIsCloudFresh === 'function' && !adapter.positionIsCloudFresh(currentHouseholdId)) return;
+    snapshotAttempt = { household: currentHouseholdId, month, at: Date.now() };
+    try {
+      const stored = await adapter.recordNetWorthSnapshot(currentHouseholdId, snapshotFromProjection(projection, month));
+      if (!stored || get().currentHouseholdId !== currentHouseholdId) return;
+      set({ netWorthSnapshots: mergeSnapshot(get().netWorthSnapshots.filter(row => row.month !== stored.month), stored) });
+    } catch (error) {
+      expected(error, 'netWorthSnapshots.record');
+    }
+  },
+
   switchHousehold: async (id) => {
     const { adapter, cloudEnabled } = get();
     await adapter.setActiveHousehold(id);
@@ -353,7 +430,10 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     await get().refresh();
     void get().refreshNotifications();   // reload the new household's notifications (cross-device)
     void get().refreshSharedSplits();
+    // v10.48.0 — this device's pushes follow the household it has open.
+    if (cloudEnabled && id !== 'local') void syncPush(id, get().notificationPrefs);
     try { await get().ensureDefaultCashAccount(); } catch { /* best-effort */ }
+    void get().recordNetWorthSnapshot();
     get().toast('Switched profile', 'success');
   },
 
@@ -372,9 +452,19 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
 
   deleteHousehold: async (id) => {
     const { adapter, currentHouseholdId } = get();
-    if (id === currentHouseholdId) await get().switchHousehold('local');
+
+    // DELETE FIRST, THEN SWITCH. The old order switched to 'local' before
+    // attempting the delete, so a refused delete left the user evicted from a
+    // household that still existed — and because the adapter could not tell a
+    // refusal from a success, it then reported "Profile deleted" anyway.
+    //
+    // `deleteHousehold` now throws WriteNotAppliedError when the server changes
+    // nothing, so an unauthorised delete surfaces as an error and the user stays
+    // exactly where they were.
     await adapter.deleteHousehold(id);
-    set({ households: await adapter.listHouseholds() });
+
+    if (id === currentHouseholdId) await get().switchHousehold('local');
+    set({ households: await get().adapter.listHouseholds() });
     get().toast('Profile deleted', 'warning');
   },
 
@@ -387,6 +477,9 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
   // ── CRUD ─────────────────────────────────────────────────────
   upsertTransaction: async (t) => {
     const { adapter, currentHouseholdId, transactions, accounts } = get();
+    if (t.id && transactions.find(row => row.id === t.id)?.emiSplit) {
+      throw new Error('Loan payment corrections require an atomic reversal; individual legs cannot be edited');
+    }
 
     // Money-Model B1.1 (A2) — no transaction without an account. Default the
     // funding source to the system Cash account so the rule never blocks fast entry.
@@ -411,6 +504,25 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
       t = { ...t, accountId: fromUuid ?? t.accountId, toAccountId: undefined };
     } else if (t.type === 'income') {
       t = { ...t, accountId: undefined, toAccountId: toUuid ?? fromUuid ?? t.accountId };
+    } else if (t.type === 'investment' && t.assetId) {
+      // v10.26.0 (R4) — an investment moves money between an ACCOUNT and an
+      // investment ASSET. A withdrawal names only the receiving account; a buy
+      // names only the paying one. Either way the asset must exist, or the
+      // money would leave an account and arrive nowhere.
+      if (!get().assets.some(a => a.id === t.assetId)) {
+        throw new Error('Choose the investment this money moves into or out of');
+      }
+      const withdrawal = !!t.toAccountId && !t.accountId;
+      t = withdrawal
+        ? { ...t, category: '', accountId: undefined, paymentMethod: undefined, toAccountId: toUuid ?? t.toAccountId }
+        : { ...t, category: '', accountId: fromUuid ?? t.accountId, toAccountId: undefined };
+      // v10.27.0 — a local-only build (Money Map off) offers legacy encoded
+      // picker values ('cash' / 'asset:<id>') that may not resolve to an account
+      // uuid. The encoded value still folds (debitAccountOf reads paymentMethod),
+      // exactly as transfers already do, so a buy must not be refused for it.
+      if (!(withdrawal ? t.toAccountId : (t.accountId ?? t.paymentMethod))) {
+        throw new Error(withdrawal ? 'Choose the account the money arrives in' : 'Choose the account the money is paid from');
+      }
     } else if (t.type === 'transfer' || t.type === 'investment') {
       // v9 D1 — transfers/investments are ONE row with both FKs; no category.
       t = { ...t, category: '', accountId: fromUuid ?? t.accountId, toAccountId: toUuid ?? t.toAccountId };
@@ -420,51 +532,43 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
       }
     }
 
-    // v9 §4.1/§6.3 — loan_emi SYSTEM_SPLIT: book the interest portion as the
-    // expense (counts as spend) and a system transfer leg for the principal
-    // (reduces the linked debt; excluded from spend). Best-effort sequential —
-    // the principal leg + debt update follow the expense write.
-    // v9.4.2 — now uses applyPayment() for full re-amortisation (tenure / EMI /
-    // advance) and paymentLog recording, converging the two payment paths.
-    if (!t.id && t.type === 'expense' && t.category === 'loan_emi' && t.linkedDebtId && t.amount) {
-      const debt = get().debts.find(d => d.id === t.linkedDebtId);
-      if (debt) {
-        // Read the part-payment strategy from the transient form field.
-        const partChoice = (t as any)._partPaymentChoice as PartPaymentChoice | undefined;
-        // Full re-amortisation: applyPayment handles interest/principal split,
-        // balance reduction, tenure/EMI recalculation, and paymentLog.
-        const result = applyPayment(debt, t.amount, partChoice);
-        const { interest, principal } = result.log;
-        const emiSplit = { interest, principal, debt_id: debt.id, partPaymentChoice: partChoice };
-
-        // 1) interest leg — the visible expense (only this counts as spend, R-AGG-6)
-        const expense = await adapter.upsert('transactions', currentHouseholdId, {
-          ...t, id: uid(), amount: interest, emiSplit,
-          _partPaymentChoice: undefined,  // strip transient field
-        });
-        // 2) principal leg — system transfer into the loan (liability) account
-        //    (display-kind loan_principal). Find-or-create a kind='loan' account
-        //    linked to the debt so the leg has a real destination.
-        let loanAcc = get().accounts.find(a => a.kind === 'loan' && a.assetId === debt.id);
-        if (!loanAcc) {
-          loanAcc = await get().upsertAccount({
-            id: uid(), kind: 'loan', name: debt.name, currency: debt.currency,
-            assetId: debt.id, isDefault: false, isArchived: false,
-          });
-        }
-        const principalLeg = await adapter.upsert('transactions', currentHouseholdId, {
-          ...t, id: uid(), type: 'transfer' as const, category: '', amount: principal,
-          toAccountId: loanAcc.id, description: `${t.description || 'EMI'} — principal`,
-          emiSplit, linkedTxnId: (expense as Transaction).id,
-          _partPaymentChoice: undefined,
-        });
-        // 3) persist the re-amortised debt (balance, remainingMonths, EMI, paymentLog)
-        await get().upsertDebt(result.debt);
-        set({ transactions: [...get().transactions, expense as Transaction, principalLeg as Transaction] });
-        // Surface the re-amortisation message as a toast.
-        if (result.message) get().toast(result.message, 'success');
-        return expense as Transaction;
+    // v10.25.0 (R3) — a payment mode is one the PAYING account is used with
+    // (income: the receiving account). An investment never carries one. The
+    // form only offers the account's modes; for every other writer a mode the
+    // account does not use is DROPPED, never an error — the same rule as
+    // whatsapp_log_transaction. A recurring schedule saved with "UPI" must keep
+    // posting after UPI is removed from its account; the mode is descriptive,
+    // the money is not.
+    if (t.paymentMode) {
+      const payingId = t.type === 'income' ? t.toAccountId : t.accountId;
+      const paying = accounts.find(a => a.id === payingId);
+      if (t.type === 'investment'
+          || (paying?.paymentModes?.length && !paying.paymentModes.includes(t.paymentMode))) {
+        t = { ...t, paymentMode: null };
       }
+    }
+
+    // Audit F2 — a NEW loan_emi expense is NEVER stored as a plain expense.
+    // The old branch keyed create-vs-edit on `!t.id`, but the form pre-assigns
+    // an id, so it was unreachable and EMIs landed as raw expenses. The
+    // explicit command above is the primary path; this safety net catches any
+    // other create path (recurring engine, imports). Create-vs-edit is decided
+    // by presence in the store collection — not by whether the caller
+    // pre-assigned an id.
+    const isNewTxn = !t.id || !transactions.some(x => x.id === t.id);
+    if (isNewTxn && t.type === 'expense' && t.category === 'loan_emi' && t.linkedDebtId && t.amount) {
+      const res = await get().recordLoanPayment({
+        debtId: t.linkedDebtId,
+        fundingAccountId: t.accountId ?? t.paymentMethod,
+        amount: t.amount,
+        currency: t.currency,
+        date: t.date,
+        description: t.description,
+        memberId: t.memberId,
+        partPaymentChoice: (t as { _partPaymentChoice?: PartPaymentChoice })._partPaymentChoice,
+      });
+      if (!res.expense) throw new Error('Loan payment produced no spend leg');
+      return res.expense;
     }
 
     // TD-03 phase A (PR #11): when this is an EDIT of an existing txn
@@ -477,12 +581,18 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
     const saved = await adapter.upsert('transactions', currentHouseholdId, t, expectedUpdatedAt);
     const idx = transactions.findIndex(x => x.id === saved.id);
     set({ transactions: idx >= 0 ? transactions.map(x => x.id === saved.id ? saved as Transaction : x) : [...transactions, saved as Transaction] });
+    // v10.48.0 — an expense can cross a budget line's 80% / 100%: raise it now,
+    // not at the next reload (TD-39).
+    if (saved.type === 'expense') void get().refreshNotifications();
     return saved as Transaction;
   },
   removeTransaction: async (id) => {
     const { adapter, currentHouseholdId, transactions } = get();
     // v7.0.3 — Transfer pair: deleting either half removes the other half too.
     const target = transactions.find(x => x.id === id);
+    if (target?.emiSplit) {
+      throw new Error('Loan payment corrections require an atomic reversal; individual legs cannot be deleted');
+    }
     const tag = target?.note?.match(/__tg:[A-Za-z0-9_-]+/)?.[0];
     if (tag) {
       const pair = transactions.filter(x => x.note?.includes(tag));
@@ -568,36 +678,117 @@ export const createDataSlice: StateCreator<Store, [], [], DataSlice> = (set, get
   },
 
   // ── v7: DEBT PAYMENT WITH RE-AMORTISATION ────────────────────
+  // Audit F2: recordDebtPayment is now a thin alias over the ONE command.
+  // The old body wrote a principal transfer with NO destination account —
+  // ck_txn_accounts_by_type rejects that row in cloud (23514), so it lived
+  // only on the device that made it.
   recordDebtPayment: async (debtId, amount, choice) => {
-    const debt = get().debts.find(d => d.id === debtId);
-    if (!debt) return { message: 'Debt not found', debt: null };
-    const result = applyPayment(debt, amount, choice);
-    await get().upsertDebt(result.debt);
+    if (!get().debts.find(d => d.id === debtId)) return { message: 'Debt not found', debt: null };
+    await get().recordLoanPayment({ debtId, amount, partPaymentChoice: choice });
+    return { message: '', debt: get().debts.find(d => d.id === debtId) ?? null };
+  },
 
-    // Generate the two transactions per v5 design: interest = expense, principal = transfer
-    const linkId = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    const date = new Date().toISOString().split('T')[0];
-    if (result.log.interest > 0.005) {
-      await get().upsertTransaction({
-        type: 'expense', amount: +result.log.interest.toFixed(2), date,
-        description: `${debt.name} — interest`,
-        category: 'debt_interest',
-        currency: debt.currency,
-        linkedDebtId: debt.id,
-        linkedTxnId: linkId,
-      });
+  recordLoanPayment: async (input) => {
+    const { adapter, currentHouseholdId, cloudEnabled } = get();
+    const actorId = get().session?.user.id;
+    const rpc = typeof adapter.recordLoanPayment === 'function'
+      ? adapter.recordLoanPayment.bind(adapter) : null;
+    const online = typeof navigator === 'undefined' || navigator.onLine;
+    if (cloudEnabled && (!rpc || !online)) throw new Error('Loan payments require an online connection');
+    const debt = get().debts.find(d => d.id === input.debtId);
+    if (!debt) throw new Error('Debt not found');
+    if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error('Amount must be greater than 0');
+    const date = input.date || new Date().toISOString().split('T')[0];
+
+    // Re-amortisation math — the parity-tested port. The server VALIDATES this
+    // decomposition's shape; it never computes it.
+    const result = applyPayment(debt, input.amount, input.partPaymentChoice, date);
+    const { interest, principal } = result.log;
+    if (!cloudEnabled && (interest > input.amount || principal > debt.currentBalance)) {
+      throw new Error('Payment must cover the interest and cannot exceed the outstanding balance plus interest');
     }
-    if (result.log.principal > 0.005) {
-      await get().upsertTransaction({
-        type: 'transfer', amount: +result.log.principal.toFixed(2), date,
-        description: `${debt.name} — principal`,
-        category: 'debt_principal',
-        currency: debt.currency,
-        linkedDebtId: debt.id,
-        linkedTxnId: linkId,
-      });
+    const emiSplit = { interest, principal, debt_id: debt.id, partPaymentChoice: input.partPaymentChoice };
+    const currency = input.currency || debt.currency;
+    const description = input.description?.trim() || `${debt.name} EMI`;
+
+    // Funding account: explicit id, encoded picker value, else the Cash default.
+    const accounts = get().accounts;
+    const funding = input.fundingAccountId
+      ? accounts.find(a => a.id === input.fundingAccountId || accountValueOf(a) === input.fundingAccountId)
+      : accounts.find(a => a.kind === 'cash' && !a.isArchived);
+    if (!funding || funding.isArchived || !['cash', 'bank'].includes(funding.kind)) {
+      throw new Error('Choose an active bank or cash funding account');
     }
-    return { message: result.message, debt: result.debt };
+    if (currency !== debt.currency || funding.currency !== debt.currency) {
+      throw new Error('Loan payments must use the loan and funding account currency');
+    }
+
+    // Build the legs locally; every field is known client-side, the RPC is the
+    // persistence boundary (it assigns no numbers of its own).
+    const expense: Transaction | null = interest > 0 ? {
+      id: uid(), type: 'expense', amount: interest, currency, date,
+      description, category: 'loan_emi', memberId: input.memberId,
+      accountId: funding.id, debtId: debt.id, linkedDebtId: debt.id, emiSplit,
+    } : null;
+    const transferLeg: Transaction | null = principal > 0 ? {
+      id: uid(), type: 'transfer', amount: principal, currency, date,
+      description: `${description} — principal`, category: '', memberId: input.memberId,
+      accountId: funding.id, debtId: debt.id, linkedDebtId: debt.id,
+      emiSplit, linkedTxnId: expense?.id,
+    } : null;
+
+    if (cloudEnabled && rpc && online) {
+      // Cloud + online: the atomic RPC is the durability boundary (like
+      // upsertBudgetWithAllocations) — nothing here goes through the queue.
+      const res = await rpc(currentHouseholdId, {
+        operationId: input.operationId ?? uid(),
+        debtId: debt.id,
+        fundingAccountId: funding.id,
+        amount: input.amount,
+        currency, date, interest, principal,
+        memberId: input.memberId,
+        description,
+        newBalance: result.debt.currentBalance,
+        newRemainingMonths: result.debt.remainingMonths ?? null,
+        newMinimumPayment: result.debt.minimumPayment,
+        paymentLogEntry: result.log,
+      }, { expense: expense ?? undefined, transfer: transferLeg ?? undefined, debt: result.debt });
+      if (get().currentHouseholdId === currentHouseholdId && get().session?.user.id === actorId) {
+        set(state => ({
+          transactions: [...state.transactions.filter(row => !res.transactions.some(saved => saved.id === row.id)), ...res.transactions],
+          debts: state.debts.map(row => row.id === res.debt.id ? res.debt : row),
+          accounts: [...state.accounts.filter(row => row.id !== res.loanAccount.id), res.loanAccount],
+        }));
+        get().toast('Payment recorded', 'success');
+      }
+      return { message: 'Payment recorded', expense: res.transactions.find(row => row.type === 'expense') ?? res.transactions[0] ?? null };
+    }
+
+    // Offline / local-only fallback — sequential optimistic writes, each leg a
+    // queued op. Documented non-atomic (audit F2): the atomic boundary requires
+    // the server. Legs write through the adapter DIRECTLY (not
+    // upsertTransaction) so the loan_emi safety net doesn't re-enter this
+    // command.
+    const written: Transaction[] = [];
+    if (expense) written.push(await adapter.upsert('transactions', currentHouseholdId, expense) as Transaction);
+    if (transferLeg) {
+      let loanAcc = accounts.find(a => a.kind === 'loan' && a.debtId === debt.id);
+      if (!loanAcc) {
+        // debtId — NOT assetId: the asset_id FK points at assets and rejected
+        // debt ids with 23503 (the old branch could never have synced).
+        loanAcc = await get().upsertAccount({
+          id: uid(), kind: 'loan', name: debt.name, currency: debt.currency,
+          openingBalance: -debt.currentBalance,
+          debtId: debt.id, isDefault: false, isArchived: false,
+        });
+      }
+      written.push(await adapter.upsert('transactions', currentHouseholdId,
+        { ...transferLeg, toAccountId: loanAcc.id }) as Transaction);
+    }
+    await get().upsertDebt(result.debt);
+    set({ transactions: [...get().transactions, ...written] });
+    if (result.message) get().toast(result.message, 'success');
+    return { message: result.message, expense: expense ?? transferLeg };
   },
 
 });
