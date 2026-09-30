@@ -4,11 +4,17 @@ name: Sync upstream React
 # is ahead of what this Android fork was last synced to, merges the changes in
 # (preserving the Android overlay) and opens a PR for review.
 #
-# Run manually (Actions -> Run workflow) or weekly via cron.
+# Run manually (Actions -> Run workflow).
+#
+# The weekly cron was switched off on 30 Sep 2026: Authen27/Vyact went private,
+# so the anonymous `git clone` below fails and every Monday run would just fail
+# and spend Actions minutes. Before a manual run works again, the clone needs a
+# credential: a read-only fine-grained token for Authen27/Vyact (Contents: read),
+# saved as a repo secret and used in the clone URL. Restore the schedule then:
+#   schedule:
+#     - cron: '0 6 * * 1' # Mondays 06:00 UTC
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: '0 6 * * 1' # Mondays 06:00 UTC
 
 permissions:
   contents: write
