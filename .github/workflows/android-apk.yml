@@ -47,7 +47,7 @@ jobs:
           java-version: 21
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       # First run scaffolds the native android/ project; subsequent runs reuse it.
       - name: Add Capacitor Android platform (if missing)
@@ -165,7 +165,7 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
 
       - name: Add Capacitor Android platform (if missing)
         run: if [ ! -d android ]; then npx cap add android; fi
