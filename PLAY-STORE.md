@@ -162,7 +162,8 @@ Vyact 0.5 — a new look, built around how you actually use it
   the middle to add an expense, income, transfer or investment, and Ask Pip
   right beside them.
 - Pip, your money assistant, opens from the Ask tab without leaving the page
-  you're on.
+  you're on — and now answers in the Android app (it could show "can't reach
+  the assistant" before).
 - Insights: "Play highlights" turns your month into a few swipeable cards, and
   Learn is a library of short, plain-English money lessons.
 - Splits has a clearer net position: what you're owed, what you owe, and who.
