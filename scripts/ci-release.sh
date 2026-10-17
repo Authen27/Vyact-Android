@@ -7,7 +7,7 @@
 # screenshots breaks, after the expensive part has already run. Release assets are stored
 # separately, so each run publishes its files to ONE prerelease tagged ci-<run_id>:
 #
-#   ci-release.sh put <file>...      upload (creates the release on first use; missing files are skipped)
+#   ci-release.sh put <file>...      upload (creates the release on first use; missing/empty files are skipped)
 #   ci-release.sh get <glob> [dir]   download matching assets of THIS run's release (default dir .)
 #   ci-release.sh prune [keep]       delete all but the newest <keep> (default 4) ci-* releases + tags
 #
@@ -32,8 +32,9 @@ case "$cmd" in
   put)
     ensure_release
     for f in "$@"; do
-      if [ -e "$f" ]; then gh release upload "$TAG" "$f" --repo "$REPO" --clobber; echo "ci-release: put $f"
-      else echo "ci-release: skip (missing) $f"; fi
+      # -s: GitHub rejects a zero-byte asset ("Bad Content-Length"), and a failed adb pull leaves one.
+      if [ -s "$f" ]; then gh release upload "$TAG" "$f" --repo "$REPO" --clobber; echo "ci-release: put $f"
+      else echo "ci-release: skip (missing or empty) $f"; fi
     done ;;
   get)
     gh release download "$TAG" --repo "$REPO" --pattern "${1:?pattern required}" --dir "${2:-.}" --clobber ;;

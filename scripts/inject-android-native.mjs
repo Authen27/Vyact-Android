@@ -20,6 +20,29 @@ if (existsSync(PKG_DIR)) {
 cpSync('native/android', 'android', { recursive: true });
 console.log('Injected native widget sources.');
 
+// 2b) Window + splash background = the app's own canvas (Nocturne, res/values/vyact_colors.xml).
+//    Capacitor's SystemBars only lets the page draw under the status bar on WebView >= 140; on an
+//    older WebView it pads the window instead and the strip behind the clock shows the theme's
+//    windowBackground — white by default, which also swallows the (light, on a dark app) status-bar
+//    icons. It is also what shows before the WebView paints. Idempotent.
+const STYLES = 'android/app/src/main/res/values/styles.xml';
+if (existsSync(STYLES)) {
+  let styles = readFileSync(STYLES, 'utf8');
+  if (!styles.includes('vyact_canvas')) {
+    styles = styles
+      .replace('<item name="android:background">@null</item>',
+        '<item name="android:background">@null</item>\n        <item name="android:windowBackground">@color/vyact_canvas</item>')
+      .replace('<item name="android:background">@drawable/splash</item>',
+        '<item name="android:background">@drawable/splash</item>\n        <item name="windowSplashScreenBackground">@color/vyact_canvas</item>');
+    if (!styles.includes('windowSplashScreenBackground') || !styles.includes('android:windowBackground')) {
+      console.error('FAIL: styles.xml no longer matches the template this patch expects — update step 4.');
+      process.exit(1);
+    }
+    writeFileSync(STYLES, styles);
+    console.log('Themed window + splash background (Nocturne).');
+  }
+}
+
 // 3) Register the widget receivers + config activity before </application>.
 let xml = readFileSync(MANIFEST, 'utf8');
 if (!xml.includes('ExpenseWidgetProvider')) {

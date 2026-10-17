@@ -241,11 +241,15 @@ jobs:
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
+            adb shell input keyevent 3
+            adb logcat -c
             adb shell monkey -p com.vyact.app -c android.intent.category.LAUNCHER 1
             sleep 2
             adb exec-out screencap -p > ui-launch.png
             sleep 33
             adb exec-out screencap -p > ui-dashboard.png
+            adb logcat -d > ui-logcat.txt
+            adb shell pidof com.vyact.app || echo "NOTE: app process is not running after launch"
             adb shell run-as com.vyact.app cat /data/data/com.vyact.app/shared_prefs/CapacitorStorage.xml > widget-prefs.xml 2>/dev/null || true
             adb shell cmd statusbar expand-notifications || true
             sleep 2
@@ -258,7 +262,7 @@ jobs:
 
       - name: Publish UI screenshots
         if: always()
-        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml widget-prefs.xml audit-*.png
+        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml ui-logcat.txt widget-prefs.xml audit-*.png
 
       - name: Upload UI screenshots
         if: always()
