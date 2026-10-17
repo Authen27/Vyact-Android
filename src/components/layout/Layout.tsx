@@ -11,6 +11,7 @@ import AddFab from './AddFab';
 import SyncConflictBanner from './SyncConflictBanner';
 import NativeNavBridge from './NativeNavBridge'; // ANDROID-OVERLAY
 import WidgetSync from './WidgetSync';           // ANDROID-OVERLAY
+import SmsPromptBridge from './SmsPromptBridge'; // ANDROID-OVERLAY — bank-message prompts (SMS sideload build)
 import OfflineStrip from './OfflineStrip';
 import { PageActionContext, type PageAction } from './pageAction';
 
@@ -42,6 +43,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     <div className="relative min-h-screen" style={{ background: 'var(--canvas)' }}>
       <NativeNavBridge />
       <WidgetSync />
+      <SmsPromptBridge />
       <TopBar onOpenPalette={() => setPalette(true)} />
       {/* Board M1 — mobile chrome scrolls with the page (no fixed bar). */}
       <MobileHeader />

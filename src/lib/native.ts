@@ -70,6 +70,15 @@ export function consumePendingAction(): string | null {
   return a;
 }
 
+// A tap on a detected-bank-message notification (vyact://sms/<id>, SMS sideload build) that cold-starts
+// the app fires before React mounts; SmsPromptBridge picks the id up on its first render.
+let pendingSmsId: string | null = null;
+export function consumePendingSms(): string | null {
+  const id = pendingSmsId;
+  pendingSmsId = null;
+  return id;
+}
+
 // The app's files ship inside the APK, so a service worker adds nothing here — and a worker left
 // registered by an OLDER build (0.2–0.4 registered one) keeps answering from its own precache after
 // an update, so the first launches of a new version would show the previous UI. main.tsx no longer
@@ -155,6 +164,14 @@ export function initNativeShell(): void {
       } finally {
         void Browser.close().catch(() => {});
       }
+      return;
+    }
+
+    // Detected bank message → the pre-filled Add-Transaction form (see SmsPromptBridge).
+    const sms = /^vyact:\/\/sms\/([^?#]+)/.exec(url);
+    if (sms) {
+      pendingSmsId = decodeURIComponent(sms[1]);
+      window.dispatchEvent(new CustomEvent('vyact:sms', { detail: pendingSmsId }));
       return;
     }
 

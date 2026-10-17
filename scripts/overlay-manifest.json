@@ -11,7 +11,8 @@
     "src/components/layout/MobileHeader.tsx",
     "src/components/layout/TopBar.tsx",
     "src/components/layout/SubNav.tsx",
-    "src/store/slices/notifySlice.ts"
+    "src/store/slices/notifySlice.ts",
+    "src/pages/Settings.tsx"
   ],
   "additive": [
     ".github/workflows/android-apk.yml",
@@ -35,16 +36,21 @@
     "scripts/inject-android-native.mjs",
     "scripts/overlay-manifest.json",
     "scripts/patch-android-manifest.mjs",
+    "scripts/patch-android-sms.mjs",
     "scripts/patch-build-gradle.mjs",
     "scripts/responsive-audit.sh",
     "scripts/set-android-version.mjs",
+    "scripts/sms-emulator-test.sh",
     "scripts/sync-from-upstream.mjs",
     "scripts/tap-label.sh",
     "scripts/ui-find.mjs",
     "src/android-overlay.css",
     "src/components/layout/NativeNavBridge.tsx",
+    "src/components/layout/SmsPromptBridge.tsx",
     "src/components/layout/WidgetSync.tsx",
+    "src/components/settings/SmsDetectionCard.tsx",
     "src/lib/native.ts",
+    "src/lib/sms/",
     "src/lib/widgets.ts"
   ]
 }

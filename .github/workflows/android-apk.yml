@@ -3,7 +3,12 @@ name: Android Debug APK
 # Produces an installable debug APK as a downloadable artifact.
 # Run it from the GitHub UI (Actions tab -> "Run workflow") or on push to main.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      sms_enabled:
+        description: 'SIDELOAD ONLY - add bank-message detection (declares RECEIVE_SMS) and publish vyact-sideload-sms.apk. Never ship this build to Play.'
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -54,6 +59,13 @@ jobs:
           distribution: temurin
           java-version: 21
 
+      # The Java message parser (what raises the notification while the app is closed) must agree with the
+      # TypeScript one (what pre-fills the form) on every shared fixture. Plain javac, a few seconds.
+      - name: SMS parser parity (Java vs the shared fixtures)
+        run: |
+          javac -encoding UTF-8 -d "$RUNNER_TEMP/smsparse" native/sms/android/app/src/main/java/com/vyact/app/SmsLeanParser.java native/tools/SmsParityCheck.java
+          java -cp "$RUNNER_TEMP/smsparse" com.vyact.app.SmsParityCheck native/sms-fixtures.tsv
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
@@ -70,6 +82,11 @@ jobs:
       - name: Inject native widgets (providers + layouts + manifest)
         run: node scripts/inject-android-native.mjs
 
+      # Only when dispatched with sms_enabled. Push builds and the Play bundle never contain any SMS code.
+      - name: Add bank-message detection (SMS sideload build)
+        if: ${{ inputs.sms_enabled }}
+        run: node scripts/patch-android-sms.mjs
+
       - name: Generate launcher icon + splash (pip)
         run: |
           npm i -D @capacitor/assets@latest sharp@latest
@@ -84,6 +101,10 @@ jobs:
         run: |
           bash scripts/ci-release.sh prune 4
           bash scripts/ci-release.sh put android/app/build/outputs/apk/debug/app-debug.apk
+          if [ "${{ inputs.sms_enabled }}" = "true" ]; then
+            cp android/app/build/outputs/apk/debug/app-debug.apk vyact-sideload-sms.apk
+            bash scripts/ci-release.sh put vyact-sideload-sms.apk
+          fi
 
       - name: Upload APK artifact
         continue-on-error: true # best effort: the release asset above is the hand-off
@@ -204,6 +225,11 @@ jobs:
       - name: Inject native widgets (providers + layouts + manifest)
         run: node scripts/inject-android-native.mjs
 
+      # Only when dispatched with sms_enabled. Push builds and the Play bundle never contain any SMS code.
+      - name: Add bank-message detection (SMS sideload build)
+        if: ${{ inputs.sms_enabled }}
+        run: node scripts/patch-android-sms.mjs
+
       - name: Generate launcher icon + splash (pip)
         run: |
           npm i -D @capacitor/assets@latest sharp@latest
@@ -238,6 +264,8 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           disk-size: 4096M
+          env:
+            SMS_ENABLED: ${{ inputs.sms_enabled }}
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
@@ -258,11 +286,13 @@ jobs:
             bash scripts/tap-label.sh "Ask Pip" "Ask" || true
             sleep 3
             adb exec-out screencap -p > ui-drawer.png
+            bash scripts/sms-emulator-test.sh || touch sms-failed.flag
             bash scripts/responsive-audit.sh || true
+            test ! -f sms-failed.flag
 
       - name: Publish UI screenshots
         if: always()
-        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml ui-logcat.txt widget-prefs.xml audit-*.png
+        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml ui-logcat.txt widget-prefs.xml sms-shade.png sms-form.png sms-form.xml audit-*.png
 
       - name: Upload UI screenshots
         if: always()

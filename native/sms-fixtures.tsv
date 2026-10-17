@@ -1,0 +1,46 @@
+# Shared SMS-detection fixtures. One row: sender <TAB> message <TAB> expected.
+# expected is "-" (the message must be ignored) or direction|amount|currency|counterparty
+# (counterparty may be empty). Run by src/lib/__tests__/smsParser.test.ts (the TypeScript parser)
+# and by native/tools/SmsParityCheck.java in CI (the Java parser) — both must agree on every row.
+# Add a row whenever a real message is mis-read; do not "fix" a row to match the code.
+HDFCBK	Rs.1,200.00 debited from a/c XX1234 on 12-10-26 to VPA swiggy@icici (UPI Ref 123456). Avl bal Rs.45,000.00	debit|1200.00|INR|swiggy@icici
+AX-SBIINB	Dear Customer, Rs 500.00 credited to your A/c XX9876 on 12Oct26 by UPI/ref 123. -SBI	credit|500.00|INR|
+CHASE	Chase: You spent $12.50 at STARBUCKS on 10/17 with card ending 1234.	debit|12.50|USD|STARBUCKS
+AMEX	Large purchase: $1,249.99 at BEST BUY on your Platinum card ending 1008	debit|1249.99|USD|BEST BUY
+VENMO	John Smith paid you $20.00 for dinner	credit|20.00|USD|
+227898	You paid John Smith $20.00 with Zelle	debit|20.00|USD|
+BANK	Your salary of $3,250.00 has been deposited to your checking account	credit|3250.00|USD|
+BARCLAYS	£45.20 spent on your debit card at TESCO STORES on 17/10.	debit|45.20|GBP|TESCO STORES
+N26	You paid €15.90 to Spotify AB on your card ending 4321.	debit|15.90|EUR|Spotify AB
+HDFCBK	482913 is your OTP for transaction of Rs 1,200.00 at AMAZON. Do not share.	-
+AX-OFFERS	Pre-approved loan of Rs 5,00,000! Apply now. T&C apply	-
+ICICIB	Your credit card statement is generated. Total amount due Rs 12,345.00 by 05-Nov. Pay now to avoid charges.	-
+HDFCBK	Your transaction of Rs 899.00 at FLIPKART failed. Amount will be refunded if debited.	-
+SBIUPI	Rs 250.00 debited. Avl Bal Rs 12,000.00 as on 17-10	debit|250.00|INR|
++14155550123	I paid you $40 for the tickets	-
+BANK	Deposit of $1,500.00 received on 10/17. Available balance $4,200.00	credit|1500.00|USD|
+PNBSMS	Rs 2,000.00 withdrawn at ATM on 17-10-26 from a/c XX5566. Avl Bal Rs 8,000	debit|2000.00|INR|ATM
+PAYTMB	Paid Rs.350 to Ramesh Kumar from Paytm Payments Bank a/c. UPI Ref 998877	debit|350|INR|Ramesh Kumar
+AMZN	Refund of Rs 799.00 for your order has been credited to your account	credit|799.00|INR|
+PAYTM	Cashback of Rs 20 credited to your wallet	credit|20|INR|
+HDFCBK	Rs 4,500.00 will be debited on 05-Nov for your EMI. Maintain balance.	-
+CITI	Your card ending 1234 was declined for $55.00 at SHELL	-
+BANK	Debited 500 from your account	-
+DBS	SGD 18.50 spent at GRAB on card 1234	debit|18.50|SGD|GRAB
+ENBD	AED 120.00 debited at CARREFOUR using card ending 7788	debit|120.00|AED|CARREFOUR
+ANZ	Purchase of 33.10 AUD at WOOLWORTHS	debit|33.10|AUD|WOOLWORTHS
+AXISBK	INR 3,000.00 spent on Axis Card XX1234 at UBER on 17-10-26. Available limit INR 50,000.00	debit|3000.00|INR|UBER
+HDFCBK	Payment of Rs 15,000.00 received towards your Credit Card XX4321 on 17-10-26	credit|15000.00|INR|
+SBICRD	Congratulations! You have won cashback. Click here to claim Rs 100	-
+HDFCBK	Rs 1,200.00 reversed to your a/c XX1234 for failed txn	-
+ICICIB	Acct XX123 credited with INR 85,000.00 on 01-Oct-26. Info: SALARY OCT. Avl Bal INR 90,000.00	credit|85000.00|INR|SALARY OCT
+ALERT	We have sent you a reminder to update your profile	-
+PHONEPE	Rs 500 requested by Amit. Approve to pay.	-
+HDFCBK	Rs 15,000.00 debited from a/c XX1234 towards credit card XX4321 payment	debit|15000.00|INR|
+UBIN	A/c XX1122 Dr. Rs.500.00 on 17-10.	-
+CHASE	Chase: A $82.00 transaction was made at TRADER JOES on card ending 1234	debit|82.00|USD|TRADER JOES
+BOA	Bank of America: Card ending 1234 charged $45.00 at WALGREENS	debit|45.00|USD|WALGREENS
+WELLS	Wells Fargo: Direct deposit of $2,100.50 posted to account ending 8899	credit|2100.50|USD|
+KOTAK	Rs. 1,25,000 credited to a/c X1234	credit|125000|INR|
+MOM	Dinner at 8? I'll pay $20	-
+SWIGGY	Order #123 delivered. Rs 450 charged to your card.	debit|450|INR|

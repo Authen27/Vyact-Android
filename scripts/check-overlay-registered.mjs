@@ -9,6 +9,9 @@
 //      made git silently skip native/android/**)
 //   4. .gitignore anchors /android/ and /ios/; no stray vite.config.js / vite.config.d.ts at the root
 //      (Vite resolves .js before .ts, so a stale emit silently replaces vite.config.ts)
+//   5. the Play bundle can never contain SMS: no SMS source under native/android/ (only native/sms/ is
+//      copied, and only by patch-android-sms.mjs), no RECEIVE_SMS in the always-run patch scripts, and
+//      android-release.yml (the Play AAB) neither takes sms_enabled nor runs the SMS patch
 //
 // Usage (repo root):  node scripts/check-overlay-registered.mjs     Exit 0 = ok, 1 = problems.
 
@@ -68,6 +71,27 @@ for (const bare of ['android/', 'ios/', '**/android/', '**/ios/', 'android', 'io
 }
 for (const f of ['vite.config.js', 'vite.config.d.ts']) {
   if (existsSync(f)) problems.push(`${f} exists at the repo root — Vite would load it instead of vite.config.ts. Delete it.`);
+}
+
+// 5) Play safety: SMS exists only in the opt-in sideload build.
+const walkFiles = (dir) => readdirSync(dir).flatMap(n => {
+  const p = join(dir, n);
+  return statSync(p).isDirectory() ? walkFiles(p) : [p];
+});
+for (const p of walkFiles('native/android')) {
+  if (/sms/i.test(p.split(/[\\/]/).pop())) problems.push(`${p} is SMS code under native/android/ — it would ship in every build, Play included. Keep it in native/sms/.`);
+  else {
+    // MainActivity looks the optional plugin up BY NAME (that string is the only allowed reference).
+    const banned = /MainActivity\.java$/.test(p) ? /RECEIVE_SMS|READ_SMS/ : /RECEIVE_SMS|READ_SMS|SmsBridge/;
+    if (banned.test(read(p))) problems.push(`${p} mentions an SMS permission/plugin — only native/sms/ and scripts/patch-android-sms.mjs may.`);
+  }
+}
+for (const p of ['scripts/patch-android-manifest.mjs', 'scripts/inject-android-native.mjs', 'scripts/patch-build-gradle.mjs']) {
+  if (existsSync(p) && /RECEIVE_SMS|READ_SMS|READ_CALL_LOG|patch-android-sms/.test(read(p))) problems.push(`${p} runs in every build but mentions SMS — it must not.`);
+}
+const playWorkflow = '.github/workflows/android-release.yml';
+if (existsSync(playWorkflow) && /sms_enabled|patch-android-sms|RECEIVE_SMS/.test(read(playWorkflow))) {
+  problems.push('android-release.yml (the Play bundle) references the SMS build — Play must never get it until the Permissions Declaration is approved.');
 }
 
 if (problems.length) {

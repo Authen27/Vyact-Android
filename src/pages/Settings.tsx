@@ -17,6 +17,7 @@ import WhatsAppIcon from '../components/whatsapp/WhatsAppIcon';
 import { transactionsCsv, downloadCsv } from '../lib/transactionsCsv';
 import { buildBackup } from '../lib/backup';
 import PushNotifications from '../components/settings/PushNotifications';
+import SmsDetectionCard from '../components/settings/SmsDetectionCard'; // ANDROID-OVERLAY — renders nothing outside the SMS sideload build
 import { POLICY_VERSION } from './Privacy';
 import Chip from '../components/ui/Chip';
 import { Select } from '../components/ui/Input';
@@ -598,6 +599,7 @@ export default function Settings() {
               </div>
             </div>
           </SettingRow>
+          <SmsDetectionCard /> {/* ANDROID-OVERLAY */}
         </SettingsGroup>
 
         {/* ── Data & security (board E · .set-group grouped list) ── */}
