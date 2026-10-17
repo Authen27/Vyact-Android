@@ -52,7 +52,7 @@ public class SmsReceiver extends BroadcastReceiver {
     ensureChannel(ctx);
 
     boolean debit = "debit".equals(r.dir);
-    String money = r.currency + " " + r.amountText;
+    String money = r.currency.isEmpty() ? r.amountText : r.currency + " " + r.amountText; // a bank may state no currency
     String who = r.counterparty;
     String title = (debit ? "Spent " : "Received ") + money + (who != null ? (debit ? " at " : " from ") + who : "") + "?";
 

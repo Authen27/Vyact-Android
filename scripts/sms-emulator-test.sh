@@ -66,17 +66,17 @@ else
   fail "could not tap the notification"
 fi
 
-# 5 — Ignore dismisses and forgets
+# 5 — a differently worded message (no currency, "debited by", "trf to") is read too; Ignore dismisses and forgets
 adb shell input keyevent 3
 sleep 1
-adb emu sms send 227898 'Chase: You spent $7.25 at BLUE BOTTLE on 10/17 with card ending 1234.'
+adb emu sms send 227898 'Acct XX1234 debited by 7.25 on 17-10 trf to BLUE BOTTLE'
 sleep 6
-[ "$(count 'Spent USD 7.25')" -ge 1 ] && ok "second SMS raised a notification" || fail "second SMS raised nothing"
+[ "$(count 'Spent 7.25 at BLUE BOTTLE')" -ge 1 ] && ok "second SMS raised a notification" || fail "second SMS raised nothing"
 adb shell cmd statusbar expand-notifications
 sleep 2
 if bash scripts/tap-label.sh "Ignore"; then
   sleep 3
-  [ "$(count 'Spent USD 7.25')" = "0" ] && ok "Ignore removed the notification" || fail "notification still present after Ignore"
+  [ "$(count 'Spent 7.25 at BLUE BOTTLE')" = "0" ] && ok "Ignore removed the notification" || fail "notification still present after Ignore"
 else
   fail "could not tap Ignore"
 fi

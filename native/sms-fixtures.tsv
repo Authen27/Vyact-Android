@@ -25,7 +25,7 @@ AMZN	Refund of Rs 799.00 for your order has been credited to your account	credit
 PAYTM	Cashback of Rs 20 credited to your wallet	credit|20|INR|
 HDFCBK	Rs 4,500.00 will be debited on 05-Nov for your EMI. Maintain balance.	-
 CITI	Your card ending 1234 was declined for $55.00 at SHELL	-
-BANK	Debited 500 from your account	-
+BANK	Debited 500 from your account	debit|500||
 DBS	SGD 18.50 spent at GRAB on card 1234	debit|18.50|SGD|GRAB
 ENBD	AED 120.00 debited at CARREFOUR using card ending 7788	debit|120.00|AED|CARREFOUR
 ANZ	Purchase of 33.10 AUD at WOOLWORTHS	debit|33.10|AUD|WOOLWORTHS
@@ -37,10 +37,48 @@ ICICIB	Acct XX123 credited with INR 85,000.00 on 01-Oct-26. Info: SALARY OCT. Av
 ALERT	We have sent you a reminder to update your profile	-
 PHONEPE	Rs 500 requested by Amit. Approve to pay.	-
 HDFCBK	Rs 15,000.00 debited from a/c XX1234 towards credit card XX4321 payment	debit|15000.00|INR|
-UBIN	A/c XX1122 Dr. Rs.500.00 on 17-10.	-
+UBIN	A/c XX1122 Dr. Rs.500.00 on 17-10.	debit|500.00|INR|
 CHASE	Chase: A $82.00 transaction was made at TRADER JOES on card ending 1234	debit|82.00|USD|TRADER JOES
 BOA	Bank of America: Card ending 1234 charged $45.00 at WALGREENS	debit|45.00|USD|WALGREENS
 WELLS	Wells Fargo: Direct deposit of $2,100.50 posted to account ending 8899	credit|2100.50|USD|
 KOTAK	Rs. 1,25,000 credited to a/c X1234	credit|125000|INR|
 MOM	Dinner at 8? I'll pay $20	-
 SWIGGY	Order #123 delivered. Rs 450 charged to your card.	debit|450|INR|
+ENBD	Your a/c XX9981 is credited with AED 3,500.00 on 17-Oct by NEFT-ACME LLC	credit|3500.00|AED|
+SBIINB	Acct XX1234 debited by 500.00 on 12-Oct-26 trf to RAHUL	debit|500.00||RAHUL
+BOI	A/c XX7788 Cr. Rs.1,000.00 on 17-10-26 by transfer from RAMESH	credit|1000.00|INR|RAMESH
+KOTAK	Rs 750.00 Dr. from A/c X1234 on 17-10 to MERCHANT	debit|750.00|INR|MERCHANT
+HDFCBK	Rs 8,000.00 sent from HDFC Bank A/c XX1234 to rahul@okhdfc UPI Ref 4455	debit|8000.00|INR|rahul@okhdfc
+SBI	Your a/c no. XXXXXXXX1234 is debited for Rs.2,500.00 on 17-10-26 and a/c XX9876 credited (IMPS Ref no 123)	debit|2500.00|INR|
+BANKX	Your a/c ending 4455 has been debited 1200.50 on 17-10-26 at SHELL PETROL	debit|1200.50||SHELL PETROL
+BANKX	Your a/c has been credited on 17/10/26 with Rs 500	credit|500|INR|
+ICICIB	ICICI Bank Acct XX123 credited:Rs. 5,000.00 on 17-Oct-26 Info: UPI-234-RAVI. Avl Bal:Rs. 9,000.00	credit|5000.00|INR|UPI-234-RAVI
+SBIINB	Interest of Rs 1,234.00 credited to your account XX1234	credit|1234.00|INR|
+HDFCBK	Thank you for using your HDFC Bank Card ending 1234 for INR 450.00 at SWIGGY on 17-10-26	debit|450.00|INR|SWIGGY
+BBPS	Bill payment of Rs 1,240.00 for Electricity successful. Txn ID 8877	debit|1240.00|INR|
+JIO	Recharge of Rs 299 successful for 9876543210	debit|299|INR|
+BANKX	Payment of Rs 640.00 to ZOMATO was processed on your card ending 8899	debit|640.00|INR|ZOMATO
+ING	ING: EUR 89,00 spent at ALBERT HEIJN with card ending 4321	debit|89.00|EUR|ALBERT HEIJN
+BANKE	EUR 1.234,56 credited to your account NL12	credit|1234.56|EUR|
+PAYTM	Paid Rs500/- to Ramesh	debit|500|INR|Ramesh
+PAYPAL	You sent $25.00 USD to Maria	debit|25.00|USD|Maria
+WISE	You received 250.00 GBP from ACME LTD	credit|250.00|GBP|ACME LTD
+MAYBANK	Maybank: MYR 55.40 spent at 7-ELEVEN using card ending 1122	debit|55.40|MYR|7-ELEVEN
+HSBC	HSBC: HKD 320.00 charged at CITYSUPER	debit|320.00|HKD|CITYSUPER
+AMEX	Your AmEx card was charged USD 45.00 at HILTON	debit|45.00|USD|HILTON
+CITI	Citi Alert: A $16.49 withdrawal was made at ATM on card ending 5566	debit|16.49|USD|ATM
+WELLS	Zelle: You received 100.00 from MARK in your account	credit|100.00||MARK
+ALERT	Debited 500 today	-
+BANKX	Acct 1234 credited. Ref 998877	-
+AMZN	Get cashback of Rs 50 on your next order. Use code SAVE50	-
+HDFCBK	You have spent Rs 12,500 this month on your card	-
+BAJAJ	Your EMI of Rs 4,500 is due on 05-Nov	-
+GPAY	Amit has requested Rs 300 from you. Pay now	-
+BANKX	Txn alert: Rs 450.00 at AMAZON on card XX1234	debit|450.00|INR|AMAZON
+CHASE	Online transfer of $200.00 to your savings account completed	debit|200.00|USD|
+PAYTM	Money added to your wallet: Rs 500	credit|500|INR|
+HDFCBK	Rs.500.00 has been deducted from your account	debit|500.00|INR|
+SBI	Your SBI a/c XX1234 has a debit of Rs 500.00	debit|500.00|INR|
+BANKX	Payment Received: Rs 1,000 from Ravi Kumar	credit|1000|INR|Ravi Kumar
+VISA	Your Visa ending 1234 was used for a $12.50 purchase at TARGET ONLINE STORE	debit|12.50|USD|TARGET ONLINE STORE
+BANKX	You have transferred Rs 5,000 to Anita Sharma via IMPS	debit|5000|INR|Anita Sharma
