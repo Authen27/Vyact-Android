@@ -111,6 +111,11 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Node 22 for scripts/pip-native-probe.mjs (global WebSocket + fetch).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Download APK
         run: bash scripts/ci-release.sh get app-debug.apk .
 
@@ -144,7 +149,8 @@ jobs:
             if grep -Eq "FATAL EXCEPTION|FATAL SIGNAL|AndroidRuntime: FATAL" logcat.txt; then echo "FAIL: fatal native crash"; tail -n 150 logcat.txt; exit 1; fi
             if grep -Eq "Unable to open asset URL: https://localhost/assets/" logcat.txt; then echo "FAIL: app bundle asset failed to load (white-screen)"; tail -n 80 logcat.txt; exit 1; fi
             if grep -Eq "js\.error|Uncaught Error" logcat.txt; then echo "FAIL: uncaught JS error during boot (app likely blank)"; grep -E "Uncaught|js\.error|Capacitor/Console" logcat.txt | tail -n 30; exit 1; fi
-            echo "SMOKE OK: launched, process alive, no native crash, no uncaught JS error"
+            node scripts/pip-native-probe.mjs
+            echo "SMOKE OK: launched, process alive, no native crash, no uncaught JS error, Pip's gateway reachable from the app"
 
       - name: Publish smoke logs + screenshot
         if: always()

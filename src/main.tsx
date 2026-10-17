@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import Userback from '@userback/widget';
 import { SpeedInsights } from '@vercel/speed-insights/react';
+import './lib/nativeFetch'; // ANDROID-OVERLAY — MUST precede ./App: Pip's gateway call is sent natively (see the file)
 import App from './App';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { registerPwa, forceReloadForUpdate } from './lib/pwa';

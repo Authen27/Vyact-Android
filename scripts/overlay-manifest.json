@@ -36,6 +36,7 @@
     "scripts/overlay-manifest.json",
     "scripts/patch-android-manifest.mjs",
     "scripts/patch-build-gradle.mjs",
+    "scripts/pip-native-probe.mjs",
     "scripts/responsive-audit.sh",
     "scripts/set-android-version.mjs",
     "scripts/sync-from-upstream.mjs",
@@ -45,6 +46,7 @@
     "src/components/layout/NativeNavBridge.tsx",
     "src/components/layout/WidgetSync.tsx",
     "src/lib/native.ts",
+    "src/lib/nativeFetch.ts",
     "src/lib/widgets.ts"
   ]
 }
