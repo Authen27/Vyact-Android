@@ -292,7 +292,7 @@ jobs:
 
       - name: Publish UI screenshots
         if: always()
-        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml ui-logcat.txt widget-prefs.xml sms-shade.png sms-form.png sms-form.xml audit-*.png
+        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml ui-logcat.txt widget-prefs.xml sms-shade.png sms-form.png sms-form.xml sms-logcat.txt audit-*.png
 
       - name: Upload UI screenshots
         if: always()

@@ -29,13 +29,16 @@ adb shell run-as $PKG cp /data/local/tmp/vyact_sms.xml shared_prefs/vyact_sms.xm
 adb shell pm grant $PKG android.permission.RECEIVE_SMS
 adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS
 adb shell dumpsys package $PKG | grep -q "android.permission.RECEIVE_SMS: granted=true" && ok "RECEIVE_SMS granted" || fail "RECEIVE_SMS not granted"
+echo "--- prefs file the receiver will read:"
+adb shell run-as $PKG cat shared_prefs/vyact_sms.xml
+adb shell dumpsys package $PKG | grep -iE "SmsReceiver|SMS_RECEIVED" | head -5
 adb logcat -c
 
 # 2 — a bank-style message raises the notification
 adb emu sms send 227898 'Chase: You spent $12.50 at STARBUCKS on 10/17 with card ending 1234.'
-sleep 6
+sleep 8
 first=$(count "Spent USD 12.50 at STARBUCKS")
-[ "$first" -ge 1 ] && ok "bank SMS raised a notification" || { fail "no notification for the bank SMS"; adb logcat -d | grep -iE "SmsReceiver|vyact" | tail -20; }
+[ "$first" -ge 1 ] && ok "bank SMS raised a notification" || { fail "no notification for the bank SMS"; echo "--- logcat (sms / vyact):"; adb logcat -d | grep -iE "SmsReceiver|SmsStore|vyact_sms|SMS_RECEIVED|InboundSms|Telephony|com.vyact.app" | tail -40; echo "--- notifications for the app:"; notifs | grep -E "pkg=$PKG" | head -5; }
 
 # 3 — repeat, OTP and promo are ignored
 before=$(count "pkg=$PKG")
@@ -79,5 +82,6 @@ else
 fi
 adb shell cmd statusbar collapse
 
+adb logcat -d > sms-logcat.txt
 echo "SMS-TEST done: $fails failure(s)"
 [ "$fails" = "0" ]
