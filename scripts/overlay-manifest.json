@@ -28,6 +28,7 @@
     "native/",
     "scripts/capture-store-screenshots.sh",
     "scripts/check-overlay-registered.mjs",
+    "scripts/ci-release.sh",
     "scripts/create-demo-split.sh",
     "scripts/gen-assets.mjs",
     "scripts/gen-play-assets.mjs",

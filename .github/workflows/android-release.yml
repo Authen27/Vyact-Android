@@ -12,8 +12,13 @@ on:
         required: false
         default: ''
 
+# contents: write lets scripts/ci-release.sh publish the AAB and hand the R8 APK to the smoke job as
+# release assets. Actions *artifacts* share an account-wide quota that, once hit, fails every upload.
 permissions:
-  contents: read
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   release:
@@ -130,7 +135,17 @@ jobs:
           grep -iE "warning|missing class|note:" "$RUNNER_TEMP/r8-build.log" | sort -u | head -50 >> "$GITHUB_STEP_SUMMARY" || echo "(none)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Publish AAB + R8 files (release assets, independent of the artifact quota)
+        run: |
+          ls android/app/build/outputs/bundle/release/*.aab >/dev/null  # hard-fail if the bundle is missing
+          bash scripts/ci-release.sh prune 4
+          bash scripts/ci-release.sh put android/app/build/outputs/bundle/release/*.aab
+          if [ "${{ steps.ks.outputs.signed }}" = "true" ]; then
+            bash scripts/ci-release.sh put android/app/build/outputs/mapping/release/mapping.txt android/app/build/outputs/apk/release/*.apk
+          fi
+
       - name: Upload AAB
+        continue-on-error: true # best effort: the release asset above is the deliverable
         uses: actions/upload-artifact@v4
         with:
           name: vyact-release-aab
@@ -140,6 +155,7 @@ jobs:
 
       - name: Upload R8 mapping (for de-obfuscating future crash reports)
         if: steps.ks.outputs.signed == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: vyact-r8-mapping
@@ -149,6 +165,7 @@ jobs:
 
       - name: Upload R8-minified release APK (for the smoke-test job)
         if: steps.ks.outputs.signed == 'true'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: vyact-release-apk-r8
@@ -162,12 +179,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download R8-minified release APK
-        uses: actions/download-artifact@v4
-        continue-on-error: true # no-op if the AAB was unsigned (no APK artifact)
-        with:
-          name: vyact-release-apk-r8
-          path: .
+        continue-on-error: true # no-op if the AAB was unsigned (no APK was published)
+        run: bash scripts/ci-release.sh get '*.apk' .
 
       - name: Skip if no APK (unsigned build — nothing to smoke-test)
         id: check
@@ -193,6 +209,12 @@ jobs:
       # plugin bridge (WidgetBridgePlugin.refresh(), called from
       # src/lib/widgets.ts) still works post-shrinking — the exact class of
       # bug an R8 config can introduce with a clean build log and a broken app.
+      - name: Free disk space
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost || true
+          df -h / | tail -1
+
       - name: Boot emulator, install R8 build, verify it runs
         if: steps.check.outputs.skip == 'false'
         uses: reactivecircus/android-emulator-runner@v2
@@ -203,6 +225,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
+          disk-size: 4096M
           script: |
             adb install -r "${{ steps.check.outputs.apk }}"
             adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
@@ -218,8 +241,13 @@ jobs:
             if grep -q "widget sync failed" r8-logcat.txt; then echo "FAIL: WidgetBridgePlugin reflection call broke under R8 — add/verify keep rules in native/android/app/proguard-rules.pro"; exit 1; fi
             echo "R8 SMOKE OK: minified build launched, process alive, no crash, no JS error, native plugin bridge intact."
 
+      - name: Publish R8 smoke evidence
+        if: always() && steps.check.outputs.skip == 'false'
+        run: bash scripts/ci-release.sh put r8-logcat.txt r8-smoke-screenshot.png
+
       - name: Upload R8 smoke evidence
         if: always() && steps.check.outputs.skip == 'false'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: vyact-r8-smoke-evidence

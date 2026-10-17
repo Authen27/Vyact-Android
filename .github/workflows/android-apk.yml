@@ -7,6 +7,14 @@ on:
   push:
     branches: [main]
 
+# contents: write lets scripts/ci-release.sh hand files between jobs (and to us) as release assets.
+# Actions *artifacts* share an account-wide quota that, once hit, fails every upload — see that script.
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -72,7 +80,13 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
+      - name: Hand the APK to the smoke job (release asset, independent of the artifact quota)
+        run: |
+          bash scripts/ci-release.sh prune 4
+          bash scripts/ci-release.sh put android/app/build/outputs/apk/debug/app-debug.apk
+
       - name: Upload APK artifact
+        continue-on-error: true # best effort: the release asset above is the hand-off
         uses: actions/upload-artifact@v4
         with:
           name: vyact-debug-apk
@@ -95,11 +109,18 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Download APK artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: vyact-debug-apk
-          path: .
+      - uses: actions/checkout@v4
+
+      - name: Download APK
+        run: bash scripts/ci-release.sh get app-debug.apk .
+
+      # The emulator wants ~5 GB for its data partition; a runner that has just built an Android app
+      # (SDK, Gradle caches, node_modules) no longer has it ("Not enough space to create userdata
+      # partition"), so drop toolchains this job never uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost || true
+          df -h / | tail -1
 
       - name: Boot emulator, install, launch, capture logs
         uses: reactivecircus/android-emulator-runner@v2
@@ -110,6 +131,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
+          disk-size: 4096M
           script: |
             adb install -r app-debug.apk
             adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
@@ -124,8 +146,13 @@ jobs:
             if grep -Eq "js\.error|Uncaught Error" logcat.txt; then echo "FAIL: uncaught JS error during boot (app likely blank)"; grep -E "Uncaught|js\.error|Capacitor/Console" logcat.txt | tail -n 30; exit 1; fi
             echo "SMOKE OK: launched, process alive, no native crash, no uncaught JS error"
 
+      - name: Publish smoke logs + screenshot
+        if: always()
+        run: bash scripts/ci-release.sh put logcat.txt smoke-screenshot.png
+
       - name: Upload smoke logs + screenshot
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: vyact-smoke-logs
@@ -193,6 +220,14 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The emulator wants ~5 GB for its data partition; a runner that has just built an Android app
+      # (SDK, Gradle caches, node_modules) no longer has it ("Not enough space to create userdata
+      # partition"), so drop toolchains this job never uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost || true
+          df -h / | tail -1
+
       - name: Boot emulator + screenshot app chrome
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -202,6 +237,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
+          disk-size: 4096M
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb shell pm grant com.vyact.app android.permission.POST_NOTIFICATIONS || true
@@ -220,8 +256,13 @@ jobs:
             adb exec-out screencap -p > ui-drawer.png
             bash scripts/responsive-audit.sh || true
 
+      - name: Publish UI screenshots
+        if: always()
+        run: bash scripts/ci-release.sh put ui-launch.png ui-dashboard.png ui-notifications.png ui-drawer.png ui-dump.xml widget-prefs.xml audit-*.png
+
       - name: Upload UI screenshots
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: vyact-ui-validation
