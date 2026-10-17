@@ -13,7 +13,7 @@ import {
   addShareToSplit, removeShare, deleteSharedSplit,
   type NewSharedSplitParticipant,
 } from '../../lib/sharedSplits';
-import { sendSplitEmail } from '../../lib/splitEmail';
+import { sendSplitEmail, splitEmailNotice } from '../../lib/splitEmail';
 import type { SharedSplitShare } from '../../types';
 
 export interface SharedSplitsSlice {
@@ -68,7 +68,11 @@ export const createSharedSplitsSlice: StateCreator<Store, [], [], SharedSplitsSl
     const created = await createSharedSplit({ ownerHouseholdId: currentHouseholdId, ...input });
     set({ sharedSplitsOwned: [created, ...get().sharedSplitsOwned] });
     // v10.15 — email each participant that a split was shared with them.
-    void sendSplitEmail({ splitId: created.id, event: 'shared' });
+    // v10.60.0 — say so when the email didn't go out; the split itself is saved either way.
+    void sendSplitEmail({ splitId: created.id, event: 'shared' }).then(r => {
+      const notice = splitEmailNotice(r);
+      if (notice) get().toast(notice, 'info');
+    });
     return created;
   },
 
@@ -92,12 +96,21 @@ export const createSharedSplitsSlice: StateCreator<Store, [], [], SharedSplitsSl
       if (!want.has(s.email.toLowerCase()) && !s.paid) await removeShare(s.id);
     }
     // Add new emails; bump amounts on existing unpaid shares. Paid shares are never touched.
+    let added = 0;
     for (const [email, share] of want) {
       const cur = byEmail.get(email);
-      if (!cur) await addShareToSplit(existing.id, email, share);
+      if (!cur) { await addShareToSplit(existing.id, email, share); added++; }
       else if (!cur.paid && cur.share !== share) await updateShareAmount(cur.id, share);
     }
     await get().refreshSharedSplits();
+    // W1c (v10.64.0, audit BE-FN-09): people added while editing get the invite the form promised.
+    // The server mails each share once per event, so only the new people are emailed.
+    if (added) {
+      void sendSplitEmail({ splitId: existing.id, event: 'shared' }).then(r => {
+        const notice = splitEmailNotice(r);
+        if (notice) get().toast(notice, 'info');
+      });
+    }
   },
 
   deleteSharedSplitForTxn: async (txnId) => {

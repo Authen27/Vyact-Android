@@ -1,17 +1,13 @@
 // Aurora top app bar (v10, handoff §6.1) — replaces the left sidebar.
 // Sticky glass bar: 3px rail gradient, pip wordmark, sliding section pill
 // (Track · Plan · Analyze), Jump-to ⌘K search button, notifications, account.
-import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Search, ChevronDown, Sparkles } from 'lucide-react';
+import { Search, Sparkles } from 'lucide-react';
 import Brand from './Brand';
 import AccountMenu from './AccountMenu';
 import NotificationCenter from './NotificationCenter';
-import HouseholdSheet from './HouseholdSheet';
 import { useStore } from '../../store';
 import { SECTIONS, sectionForPath } from './navModel';
-import { PROFILE_TYPES } from '../../constants';
-import type { ProfileTypeKey } from '../../types';
 
 const IS_MAC = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
 
@@ -59,20 +55,14 @@ export function SectionTabs() {
 }
 
 export default function TopBar({ onOpenPalette }: { onOpenPalette: () => void }) {
-  const [hhOpen, setHhOpen] = useState(false);
-  const households = useStore(s => s.households);
-  const currentHouseholdId = useStore(s => s.currentHouseholdId);
   const openAsk = useStore(s => s.openAsk);
-  const activeHousehold = households.find(h => h.id === currentHouseholdId);
-  const activeName = activeHousehold?.name || 'Household';
-  const typeLabel = PROFILE_TYPES[(activeHousehold?.type ?? 'family') as ProfileTypeKey]?.label ?? 'Family';
 
   return (
     /* Board M1 — phones have no fixed top bar; MobileHeader (in Layout) owns
        the mobile chrome, so this whole bar is ≥sm only. */
     <header
       className="hidden sm:block sticky top-0 z-50 border-b border-line"
-      // paddingTop (not just relying on `sticky top-0`) clears the Android status
+      // ANDROID-OVERLAY — paddingTop (not just relying on `sticky top-0`) clears the Android status
       // bar in landscape / on a tablet, where this bar (not MobileHeader) renders.
       style={{
         background: 'var(--glass)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)',
@@ -108,34 +98,19 @@ export default function TopBar({ onOpenPalette }: { onOpenPalette: () => void })
               color rather than a semantic status color. */}
           <button
             onClick={openAsk}
-            aria-label="Ask Vyact"
+            aria-label="Ask Pip"
             className="hidden sm:flex items-center gap-1.5 h-10 px-3.5 rounded-pill border-none cursor-pointer"
-            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--accent)' }}
+            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--accent-text)' }}
           >
             <Sparkles size={15} />
             <span className="font-display font-semibold text-[13px]">Ask</span>
           </button>
           <NotificationCenter />
-          {/* Household chip — switches the DATA context (distinct from the
-              avatar/account menu). Board D1: house icon + household TYPE, not
-              the name (the avatar identifies the person; the sheet shows the
-              full household identity on open). */}
-          <button
-            onClick={() => setHhOpen(true)}
-            aria-label={`Switch household — ${activeName}`}
-            className="flex items-center gap-1.5 h-10 px-3 rounded-pill border-none cursor-pointer text-ink-mid"
-            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-dim" aria-hidden>
-              <path d="M4 11l8-7 8 7M6 10v9h12v-9" />
-            </svg>
-            <span className="font-mono text-[9px] tracking-[0.15em] uppercase text-ink-dim">{typeLabel}</span>
-            <ChevronDown size={12} className="flex-shrink-0 text-ink-dim" />
-          </button>
+          {/* Aurora 4.0 HDR2 — no household chip: the avatar carries a household badge and its
+              menu holds the switcher, as on phones. */}
           <AccountMenu />
         </div>
       </div>
-      <HouseholdSheet open={hhOpen} onClose={() => setHhOpen(false)} />
     </header>
   );
 }

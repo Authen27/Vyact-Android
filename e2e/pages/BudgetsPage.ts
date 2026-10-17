@@ -4,7 +4,7 @@ import type { Page, Locator } from '@playwright/test';
  * Page Object for `/budgets`. Add/Edit flows open the global BudgetFormModal
  * (see pages/BudgetFormModal.ts).
  *
- * Each budget renders as a `.rounded-xl` card containing the category label,
+ * Each budget renders as a `[data-testid=budget-card]` containing the category label,
  * a progress bar, a "left"/"over" remainder, and "Edit"/"Del" buttons
  * (src/pages/Budgets.tsx). Scope to the card so per-budget assertions don't
  * collide when several budgets are present.
@@ -25,7 +25,11 @@ export class BudgetsPage {
 
   /** The budget card whose text contains `label` (category display name). */
   card(label: string): Locator {
-    return this.page.locator('div.rounded-xl').filter({ hasText: label });
+    // The Aurora redesign replaced .rounded-xl with .rounded-r3 + neu shadows, so
+    // the old class selector matched nothing and every budget assertion timed
+    // out. Keyed on a stable testid now rather than a styling class — the same
+    // precedent as txn-row and schedule-row.
+    return this.page.getByTestId('budget-card').filter({ hasText: label });
   }
 
   /** Loose text match for "is this budget present at all". */

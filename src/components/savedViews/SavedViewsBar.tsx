@@ -15,6 +15,8 @@ import { Bookmark, BookmarkPlus, Trash2, Users, ChevronDown, Check } from 'lucid
 import type { SavedView, SavedViewPage } from '../../types';
 import { useStore } from '../../store';
 import { FEATURES } from '../../config/features';
+import { confirmSheet } from '../../lib/confirmSheet';
+import { deleteSavedViewRequest } from '../../lib/confirmCopy';
 
 const PRIVATE_FILTER_KEYS = new Set(['search', 'q', 'description', 'memberId', 'memberIds', 'txnId', 'transactionId']);
 
@@ -87,7 +89,7 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
   };
 
   const del = async (v: SavedView) => {
-    if (!confirm(`Delete saved view "${v.name}"?`)) return;
+    if (!(await confirmSheet(deleteSavedViewRequest({ name: v.name })))) return;
     try { await removeView(v.id); toast('View deleted', 'success'); }
     catch (err) { toast(`Delete failed: ${(err as Error).message}`, 'error'); }
   };
@@ -99,7 +101,7 @@ function SavedViewsBarInner({ page, filters, onApply }: SavedViewsBarProps) {
           type="button"
           className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] flex items-center gap-1.5 flex-shrink-0"
           style={picker || views.length
-            ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
+            ? { color: 'var(--accent-text)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
             : { color: 'var(--ff-ink-3)', background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
           onClick={() => setPicker(p => !p)}
           aria-haspopup="listbox"

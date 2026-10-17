@@ -5,15 +5,69 @@
 // Only categories + amounts + date ranges + aggregates.
 
 import type {
-  Transaction, Budget, Goal, Debt, Asset, Profile, ExchangeRates,
+  Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, Account, Profile, ExchangeRates,
 } from '../types';
 import {
-  monthlyData, totalAssets, totalLiabilities, computePulseScore,
-  liquidAssets, totalMonthlyDebtPayment, spendByCategory, reportableTxns, effectiveAmount,
+  monthlyData, computePulseScore,
+  spendByCategory, reportableTxns,
 } from './calculations';
-import { nowMonthKey, getMonthKey } from './format';
-import { GeminiChatBackend } from './geminiBackend';
+import { budgetLinesNow } from './budgetProgress';
+import { computeNetWorth, cardDues } from './netWorth';
+import { computeAccountBalance } from './accountBalance';
+import { monthsOfCover, spendBaseline, type ClassificationMap } from './spendBaseline';
+import { convert } from './format';
+import { nowMonthKey, getMonthKey, today } from './format';
+// Type-only, and one-directional: askVyactResponses does not import this module,
+// so the transcript can carry chips without creating an import cycle.
+import type { AssistantChip } from './askVyactResponses';
 
+
+/**
+ * v10.38 — the household's typical monthly spending, and how much history that
+ * average actually rests on.
+ *
+ * WHY IT EXISTS. "Months of cover" and the emergency floor were each computed
+ * from a different denominator: the status seam divided by THIS month's expense
+ * (so cover looked huge on the 2nd and shrank all month), while affordability and
+ * runway used a 6-month mean. One definition, stated to the user, and
+ * `monthsConsidered` says how much history it rests on — an answer may never imply
+ * more history than the household has.
+ *
+ * Track E, E4 (v10.98.0; owner, E-5): the definition is `lib/spendBaseline.ts`, the one the
+ * Reports runway reads: the last 3 COMPLETED months that contain spending, the LIVE need/want
+ * map, and an unmapped category is not essential. Pass the live map (`classifications`);
+ * without it the built-in NEEDS_WANTS_MAP applies.
+ */
+export interface SpendBasis {
+  /** Completed months the averages rest on; 0 when only the current month exists. */
+  monthsConsidered: number;
+  /** Those months, ascending ('YYYY-MM'), so an answer can name them. */
+  baselineMonths: string[];
+  /** True when the figures come from the current, still-incomplete month. */
+  partialMonthOnly: boolean;
+  averageMonthly: number;
+  averageEssential: number;
+  averageDiscretionary: number;
+}
+
+/**
+ * Average monthly spend over the shared baseline (`spendBaseline`). A household with no
+ * completed month falls back to the current month with `partialMonthOnly: true`.
+ */
+export function spendBasis(
+  txns: Transaction[], baseCurrency: string, rates: ExchangeRates,
+  opts: { classifications?: ClassificationMap; tz?: string | null } = {},
+): SpendBasis {
+  const b = spendBaseline(txns, { classifications: opts.classifications, baseCurrency, rates, now: today(opts.tz) });
+  return {
+    monthsConsidered: b.months.length,
+    baselineMonths: b.months,
+    partialMonthOnly: b.partialMonthOnly,
+    averageMonthly: b.averageMonthly,
+    averageEssential: b.averageEssential,
+    averageDiscretionary: b.averageDiscretionary,
+  };
+}
 
 // The structure sent to the LLM. NO PII. NO descriptions.
 export interface SafeSummary {
@@ -42,112 +96,127 @@ export interface SafeSummary {
     totalAssets: number;
     totalLiabilities: number;
     netWorth: number;
-    liquidityMonths: number;             // liquid / monthly expenses
+    /**
+     * v10.38 — THE canonical liquid figure: `computeNetWorth().liquidAssets`,
+     * i.e. live account balances plus liquid-tier assets, the same projection the
+     * Dashboard and Net Worth pages render.
+     *
+     * 🔴 Ask Vyact's affordability and runway seams used to call
+     * `calculations.liquidAssets(assets)` instead — the assets ARRAY only, at its
+     * static `value`, with no account balances. On a real household that read
+     * ₹24,000 against this field's ₹11.7 lakh, so the same app reported 1.2 and
+     * 68.6 months of cover for the same money in the same minute. Every seam
+     * reads this field now; `askVyactFacts.test.ts` fails if one diverges again.
+     */
+    liquidAssets: number;
+    /**
+     * Track E, E4 (E-9) — TWO labelled cover figures, each `monthsOfCover` (one decimal):
+     * "at your usual spending" (÷ spendBasis.averageMonthly; 0 with no spending basis) and
+     * "on essentials only" (÷ spendBasis.averageEssential; null with no essential spending).
+     * Net Worth shows the first, the Reports runway the second, and Pip names which it states.
+     */
+    liquidityMonths: number;
+    essentialMonths: number | null;
     debtToAssetPct: number;
+    /**
+     * v10.39.1 (P19) — credit-card outstanding, from the same liability rows
+     * (`cardDues`). `liquidAssets − cardDues` is what is FREE to spend: a card bill
+     * is paid out of the liquid money, so quoting the gross figure as spendable
+     * overstates it by exactly the bill.
+     */
+    cardDues: number;
   };
-  budgets: { category: string; limit: number; spentPct: number }[];
+  /** v10.38 — the ONE spend baseline every cover/floor figure divides by. */
+  spendBasis: SpendBasis;
+  /**
+   * v10.39 — WHERE THE MONEY SITS, not just how much of it there is.
+   *
+   * Three questions in one validation session died on the absence of this: "₹58k or
+   * ₹33k — which is right?", "which account am I spending from?", "what should I
+   * sell?". A total nobody can decompose is a figure you have to take on trust, and
+   * the household had just caught the app being wrong about that very total.
+   *
+   * 🔴 EGRESS NOTE. These are ACCOUNT AND ASSET NAMES, which the customer wrote
+   * ("Federal Bank", "Emergency cash"). Until now facts carried category labels and
+   * debt *types* only, never anything user-authored. This is a deliberate, narrow
+   * widening — names and amounts, no account numbers, no masked digits, no
+   * descriptions — made because a liquidity figure that cannot be traced to the
+   * accounts holding it is not checkable. Do not extend it to transaction
+   * descriptions or merchant text: those remain excluded.
+   */
+  holdings: {
+    name: string;
+    source: 'account' | 'asset';
+    liquidity: 'liquid' | 'short' | 'long';
+    value: number;
+  }[];
+  /**
+   * v10.38.1 — data-quality signals the assistant may RAISE but must never
+   * silently correct.
+   *
+   * `cashBalanceNegative` was found on a real household: physical cash computed to
+   * −₹342, which cannot happen — it means spends were recorded against cash that
+   * was never recorded as received. Clamping it to zero would fabricate money and
+   * hide the gap; saying so lets the customer fix the cause.
+   */
+  dataQuality: {
+    cashBalanceNegative: boolean;
+  };
+  /**
+   * W5 (P1) — `annual` marks a line whose limit covers more than one month. Its `spentPct` is
+   * over its OWN period (as the Budgets screen and the threshold alert read it), and Pip gives
+   * no monthly verdict on it: it points to Budgets (owner decision).
+   */
+  budgets: { category: string; limit: number; spentPct: number; annual?: true }[];
+  /**
+   * Track E, E5 (owner, E-6) — this month's budget TOTAL against ALL its spending (lib/budgetProgress,
+   * the Budgets page's figures); absent without a month budget.
+   */
+  monthBudget?: { limit: number; spent: number; left: number };
+  /**
+   * Track E, E5 (owner, 14 Oct 2026) — spending in a category with nothing allocated: from this month's
+   * budget, else from the annual one (`annual`, over its year). Always over; never counted by Pulse.
+   */
+  budgetsNotPlanned: { category: string; spent: number; annual?: true }[];
   goals:   { type: string; targetPct: number; daysToDeadline: number | null }[];
   debts:   { type: string; balance: number; aprPct: number; monthsRemaining?: number }[];
 }
 
-// --- Sub-agent interface and registry ---
-export interface SubAgent {
-  id: string;
-  canHandle: (question: string) => boolean;
-  handle: (question: string, summary: SafeSummary, history: ChatMessage[]) => Promise<string>;
-}
-
-const subAgents: SubAgent[] = [];
-
-export function registerSubAgent(agent: SubAgent) {
-  subAgents.push(agent);
-}
-
-// Intent-based router
-async function routeToSubAgent(question: string, summary: SafeSummary, history: ChatMessage[]): Promise<string> {
-  const agent = subAgents.find(a => a.canHandle(question));
-  if (agent) return agent.handle(question, summary, history);
-  // fallback to default stub
-  return defaultStubAgent.handle(question, summary, history);
-}
-
-// No specialised sub-agents are registered yet — every question falls through to
-// the data-driven defaultStubAgent below. Register real ones here when wired (v8).
-
-// --- Default stub agent (pattern-matcher, as before) ---
-const defaultStubAgent: SubAgent = {
-  id: 'default',
-  canHandle: () => true,
-  async handle(question, summary, history) {
-    // Pattern-match common questions against the summary.
-    const q = question.toLowerCase();
-    const total = summary.pulseScore.total ?? 0;
-
-    if (/(spend|spent|spending).*month/.test(q) || /this month/.test(q)) {
-      return `This month (${summary.thisMonth.monthKey}) you've spent ${formatMoney(summary.thisMonth.expense, summary.baseCurrency)} ` +
-        `against ${formatMoney(summary.thisMonth.income, summary.baseCurrency)} of income  a ` +
-        `${(summary.thisMonth.netSavingsRate * 100).toFixed(0)}% savings rate. ` +
-        `Your top expense categories: ${summary.thisMonth.topCategories.slice(0, 3).map(c => c.category).join(', ')}.`;
-    }
-    if (/pulse|score/.test(q)) {
-      const c = summary.pulseScore.components;
-      return `Your Family Pulse Score is ${total}/100. ` +
-        `Components: Budgets ${c.budget}, Savings ${c.savings}, Goals ${c.goals}, Trend ${c.trend}, Debt ${c.debt}. ` +
-        `${total >= 80 ? 'Excellent — keep it going.' : total >= 65 ? 'Good — small wins compound.' : 'Room to improve. Check the Planner page for prioritised recommendations.'}`;
-    }
-    if (/net.*worth|wealth/.test(q)) {
-      return `Net worth: ${formatMoney(summary.netWorth.netWorth, summary.baseCurrency)}. ` +
-        `Assets ${formatMoney(summary.netWorth.totalAssets, summary.baseCurrency)} minus ` +
-        `Liabilities ${formatMoney(summary.netWorth.totalLiabilities, summary.baseCurrency)}. ` +
-        `Liquidity coverage: ${summary.netWorth.liquidityMonths.toFixed(1)} months of expenses. ` +
-        `Debt-to-asset: ${summary.netWorth.debtToAssetPct.toFixed(0)}%.`;
-    }
-    if (/emergency|fund|savings goal/.test(q)) {
-      const eg = summary.goals.find(g => g.type === 'emergency');
-      if (eg) return `Your emergency fund is ${eg.targetPct.toFixed(0)}% complete. ${eg.daysToDeadline !== null ? `${eg.daysToDeadline} days to deadline.` : ''}`;
-      return 'No emergency fund tracked. The standard recommendation: 36 months of expenses in liquid savings.';
-    }
-    if (/debt|owe|loan/.test(q)) {
-      if (!summary.debts.length) return "You're debt-free  no debts tracked.";
-      const total = summary.debts.reduce((s, d) => s + d.balance, 0);
-      const highApr = summary.debts.sort((a, b) => b.aprPct - a.aprPct)[0];
-      return `Total debt: ${formatMoney(total, summary.baseCurrency)} across ${summary.debts.length} accounts. ` +
-        `Highest APR: ${highApr.type} at ${highApr.aprPct}% (${formatMoney(highApr.balance, summary.baseCurrency)}). ` +
-        `Avalanche strategy targets this debt first.`;
-    }
-    if (/budget/.test(q)) {
-      const over = summary.budgets.filter(b => b.spentPct > 100);
-      const near = summary.budgets.filter(b => b.spentPct > 80 && b.spentPct <= 100);
-      if (over.length) return `${over.length} budgets exceeded this month: ${over.map(b => b.category).join(', ')}.`;
-      if (near.length) return `${near.length} budgets near their limit: ${near.map(b => b.category).join(', ')}.`;
-      return `All ${summary.budgets.length} budgets are on track this month.`;
-    }
-    if (/help|what.*ask/.test(q)) {
-      return `I can answer questions about your spending, savings rate, Pulse Score, net worth, debts, and goals. Try: "How much did I spend this month?" or "What's my net worth?"`;
-    }
-
-    // Generic fallback summary
-    return `(stub mode · backend not yet wired) ` +
-      `This month: ${formatMoney(summary.thisMonth.income, summary.baseCurrency)} in, ${formatMoney(summary.thisMonth.expense, summary.baseCurrency)} out. ` +
-      `Pulse Score: ${total}/100. ` +
-      `When the Supabase Edge Function lands in v8, this will route through Claude Haiku and answer richer questions.`;
-  }
-};
-
+// NOTE (v10.20): the SubAgent registry, its intent router and the default
+// pattern-matching stub agent were REMOVED with the ChatBackend cluster they
+// served. Nothing outside this file ever registered an agent, and the stub
+// shipped stale user-facing copy ("backend not yet wired"). The agent service
+// in supabase/functions/_shared/agent/ is the extension point now.
 
 export function buildSafeSummary(
   txns: Transaction[], budgets: Budget[], goals: Goal[],
   debts: Debt[], assets: Asset[], profile: Profile, rates: ExchangeRates,
+  accounts: Account[] = [], allocations: BudgetAllocation[] = [],
+  /** W3a — whose calendar month this is: the device's when absent, the household's on the server. */
+  tz?: string | null,
+  /** Track E, E4 — the live need/want map (`useCategoryClassifications` / the server's rows). */
+  classifications?: ClassificationMap,
 ): SafeSummary {
   const cur = profile.baseCurrency;
-  const mk = nowMonthKey();
+  const mk = nowMonthKey(tz);
   const month = monthlyData(txns, mk, cur, rates);
-  const ta = totalAssets(assets, cur, rates);
-  const tl = totalLiabilities(debts, cur, rates);
-  const liquid = liquidAssets(assets, cur, rates);
-  const monthlyExpFor6m = monthlyData(txns, mk, cur, rates).expense;
-  const liquidityMonths = monthlyExpFor6m > 0 ? liquid / monthlyExpFor6m : 0;
-  const pulse = computePulseScore(txns, budgets, goals, debts, cur, rates);
+  // Audit F3 — the assistant's net worth comes from the SAME canonical
+  // projection the Dashboard and Net Worth pages render (live account balances
+  // on both sides, unlinked assets/debts, receivables excluded), not the
+  // static assets/debts arrays that used to disagree with the UI.
+  const nwProjection = computeNetWorth({ assets, accounts, debts, transactions: txns }, cur, rates);
+  const ta = nwProjection.totalAssets;
+  const tl = nwProjection.totalLiabilities;
+  const liquid = nwProjection.liquidAssets;
+  // v10.38 — cover divides by the TYPICAL month (see SpendBasis), not by this
+  // month's partial expense, which made cover look enormous early in a month and
+  // disagreed with the floor every other seam used.
+  // Track E, E4 (E-9) — both labelled figures, rounded once, by the helper every screen uses.
+  const basis = spendBasis(txns, cur, rates, { classifications, tz });
+  const liquidityMonths = monthsOfCover(liquid, basis.averageMonthly) ?? 0;
+  const essentialMonths = monthsOfCover(liquid, basis.averageEssential);
+  // Audit F5 — Pulse sees the allocation-derived budget lines.
+  const pulse = computePulseScore(txns, budgets, goals, debts, cur, rates, allocations, tz);
 
   // Top 5 expense categories this month — by category id only (no merchants)
   const spend = spendByCategory(txns, mk, cur, rates);
@@ -162,37 +231,53 @@ export function buildSafeSummary(
     return { monthKey: m, income: round2(md.income), expense: round2(md.expense) };
   });
 
-  // Budgets with usage % only — no spending detail
-  const safeBudgets = budgets.map(b => {
-    const limitBase = b.limit * ((rates[b.currency] || 1) / (rates[cur] || 1));
-    const spent = spend[b.category ?? ''] || 0;
-    return {
-      category: b.category ?? '',
-      limit: round2(limitBase),
-      spentPct: limitBase > 0 ? round2(spent / limitBase * 100) : 0,
-    };
-  });
+  // Budgets with usage % only — no spending detail.
+  // Audit F5: read the CURRENT month's allocation-derived category lines (a
+  // container budget is not a category line). Audit F4: convert() — the ONE
+  // FX path (USD-based rate table, dinero-exact); the old `rates[c]/rates[cur]`
+  // was the INVERSE ratio and skipped unknown rates silently.
+  // W5 (P1; audit FE-PIP-01): an annual line was divided by THIS month's spend, so a Travel
+  // budget 97% used by September read as 0% in October. It is measured over its own period.
+  // Track E, E5 (owner, E-6): the ONE budget-progress basis (lib/budgetProgress), the Budgets page's.
+  const budgetNow = budgetLinesNow(budgets, allocations, txns, { baseCurrency: cur, rates, now: today(tz) });
+  const safeBudgets = budgetNow.lines.map(l => ({
+    category: l.category,
+    limit: l.limit,
+    spentPct: round2(l.pct ?? 0),
+    ...(l.annual ? { annual: true as const } : {}),
+  }));
 
-  // Goals with progress only
+  // Goals with progress only (audit F4: central conversion).
   const safeGoals = goals.map(g => {
-    const tgt = g.target * ((rates[g.currency] || 1) / (rates[cur] || 1));
-    const pct = tgt > 0 ? (g.current / g.target) * 100 : 0;
+    const tgt = convert(g.target, g.currency, cur, rates);
+    const pct = tgt > 0 ? (convert(g.current, g.currency, cur, rates) / tgt) * 100 : 0;
     const daysToDeadline = g.deadline
       ? Math.ceil((new Date(g.deadline).getTime() - Date.now()) / 86400000)
       : null;
     return { type: g.type, targetPct: round2(pct), daysToDeadline };
   });
 
-  // Debts with balance + APR only — no lender name, no account number
-  const safeDebts = debts.map(d => ({
-    type: d.type,
-    balance: round2(d.currentBalance * ((rates[d.currency] || 1) / (rates[cur] || 1))),
-    aprPct: d.interestRate,
-    monthsRemaining: d.remainingMonths,
-  }));
+  // Debts with balance + APR only — no lender name, no account number.
+  // Audit F4: the old `* rates[d.currency] / rates[cur]` inverted the ratio
+  // (an INR debt came out 83× too small against a USD base).
+  // v10.38.1 — RECEIVABLES ARE NOT YOUR DEBTS.
+  //
+  // `direction: 'owed_to_me'` is money someone owes the household. Net worth has
+  // excluded it from liabilities since v10.17, but this mapping passed every debt
+  // through, so the assistant listed a ₹1,245 receivable among "your debts" and
+  // advised on clearing it. Same filter as `liveLiabilityRows`, so the assistant's
+  // debt list and the liability side cannot disagree about what a debt is.
+  const safeDebts = debts
+    .filter(d => d.direction !== 'owed_to_me')
+    .map(d => ({
+      type: d.type,
+      balance: round2(convert(d.currentBalance, d.currency, cur, rates)),
+      aprPct: d.interestRate,
+      monthsRemaining: d.remainingMonths,
+    }));
 
   return {
-    asOf: new Date().toISOString().split('T')[0],
+    asOf: today(tz),
     baseCurrency: cur,
     household: { type: profile.household, members: 0 /* caller sets */ },
     pulseScore: pulse,
@@ -208,10 +293,29 @@ export function buildSafeSummary(
       totalAssets: round2(ta),
       totalLiabilities: round2(tl),
       netWorth: round2(ta - tl),
-      liquidityMonths: round2(liquidityMonths),
+      liquidAssets: round2(liquid),
+      liquidityMonths,
+      essentialMonths,
       debtToAssetPct: ta > 0 ? round2(tl / ta * 100) : 0,
+      cardDues: cardDues(nwProjection),
+    },
+    spendBasis: basis,
+    // The SAME rows the projection totalled, so a breakdown can never disagree with
+    // the total it decomposes (asserted by askVyactFacts).
+    holdings: nwProjection.assetRows.map(r => ({
+      name: r.name,
+      source: r.source === 'asset' ? 'asset' as const : 'account' as const,
+      liquidity: (r.liquidity ?? 'liquid') as 'liquid' | 'short' | 'long',
+      value: round2(r.value),
+    })),
+    dataQuality: {
+      cashBalanceNegative: accounts.some(a =>
+        a.kind === 'cash' && !a.isArchived
+        && computeAccountBalance(a, txns, cur, rates) < 0),
     },
     budgets: safeBudgets,
+    ...(budgetNow.month ? { monthBudget: { limit: budgetNow.month.limit, spent: budgetNow.month.spent, left: budgetNow.month.left } } : {}),
+    budgetsNotPlanned: budgetNow.notPlanned.map(l => ({ category: l.category, spent: l.spent, ...(l.annual ? { annual: true as const } : {}) })),
     goals: safeGoals,
     debts: safeDebts,
   };
@@ -219,59 +323,66 @@ export function buildSafeSummary(
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
-// ── Chat backend client ──────────────────────────────────────
-// In v7.5 this calls a Supabase Edge Function. Until that's wired up,
-// we use a local stub that returns deterministic responses based on the
-// summary. This is a SAFE FALLBACK: no data leaves the device.
+// ── Chat message shape ───────────────────────────────────────────────────────
+//
+// v10.20: the ChatBackend cluster that lived here — ChatBackend, StubChatBackend,
+// SupabaseChatBackend (which only ever threw), selectChatBackend, the SubAgent
+// registry and the browser-direct Gemini client — was REMOVED. It was a second,
+// parallel chat path, reachable only when Ask Vyact was switched off, and it
+// shipped its provider key in the browser bundle where anyone could read it.
+//
+// Ask Vyact is now the single assistant, and its key lives server-side in the
+// ask-vyact Edge Function. See askVyactModelCall.ts.
 
-export interface ChatMessage { role: 'user' | 'assistant'; content: string; }
-
-export interface ChatBackend {
-  ask(question: string, summary: SafeSummary, history: ChatMessage[]): Promise<string>;
-  isReal(): boolean;  // false = stub, true = real backend wired
-}
-
-
-export class StubChatBackend implements ChatBackend {
-  isReal() { return false; }
-
-  async ask(question: string, summary: SafeSummary, history: ChatMessage[] = []): Promise<string> {
-    return routeToSubAgent(question, summary, history);
-  }
-}
-
-function formatMoney(n: number, currency: string): string {
-  try {
-    return new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 0 }).format(n);
-  } catch {
-    return `${currency} ${n.toFixed(0)}`;
-  }
-}
-
-// Real backend stub — wires to Supabase Edge Function in v8
-export class SupabaseChatBackend implements ChatBackend {
-  isReal() { return true; }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async ask(_question: string, _summary: SafeSummary, _history: ChatMessage[]): Promise<string> {
-    // TODO(v8): const { data, error } = await supabase.functions.invoke('ai-chat', { body: { question, summary, history } });
-    throw new Error('SupabaseChatBackend not yet wired — use StubChatBackend until v8.');
-  }
-}
-
-// TD-07 — backend factory. Selects the Gemini backend when a free-tier
-// API key is configured at build time (`VITE_GEMINI_API_KEY`), otherwise
-// falls back to the deterministic pattern-matching stub so the app still
-// works offline / without keys. Kept in this file so callers don't have
-// to know which concrete backend exists.
-export function selectChatBackend(): ChatBackend {
-  // `import.meta.env` is the Vite-injected env; guarded so unit tests in
-  // plain node (without a Vite transform) don't crash on the access.
-  let key: string | undefined;
-  try {
-    key = (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_GEMINI_API_KEY;
-  } catch { /* import.meta not available — fall through to stub */ }
-  if (key && key.trim()) {
-    return new GeminiChatBackend(key.trim());
-  }
-  return new StubChatBackend();
+/** A turn in the visible chat transcript. */
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  /**
+   * Assistant turns only — the one-tap follow-ups offered with this reply (#62).
+   *
+   * Stored ON the message rather than in component state because the transcript
+   * is persisted to localStorage: keeping them together means reopening Ask
+   * Vyact restores the reply and its chips as one unit, and a message can never
+   * be paired with another turn's chips.
+   *
+   * Already normalised and capped at three by `runAssistant` — a renderer shows
+   * them as given. Old transcripts predate the field and simply have none.
+   */
+  chips?: AssistantChip[];
+  /**
+   * Audit 6.5 — a per-turn id set when the reply row is created. The streaming
+   * writer targets the row by this id (never "the last item"), so a message
+   * appended mid-stream cannot be corrupted by an in-flight stream. Optional;
+   * persisted transcripts carry it harmlessly.
+   */
+  turnId?: string;
+  /**
+   * v10.38 — the money-shaped figures this assistant turn was allowed to use.
+   *
+   * Carried so the NEXT turn's invented-figure guard can accept a figure the user
+   * is challenging ("you said ₹1,200 — that doesn't sound right"). The guard is
+   * per-turn, so without this a follow-up citing the previous answer's number was
+   * discarded wholesale — which is exactly how a correction to a contradictory
+   * figure was lost during v10.37 validation. Figures only; never prose.
+   */
+  allowedFigures?: string[];
+  /**
+   * v10.36 — analysis steps printed live while the turn is in flight, then kept
+   * (collapsed) with the reply. Deterministic progress labels from the pipeline,
+   * never model-authored text.
+   */
+  steps?: string[];
+  /** Wall-clock time from send until the answer was ready — "Analysed in Ns". */
+  thinkingMs?: number;
+  /**
+   * True while the turn is in flight. Stripped when the transcript is reloaded,
+   * so a turn interrupted mid-flight never renders as permanently thinking.
+   */
+  pending?: boolean;
+  /** v10.54.0 — the person's 👍 (1) / 👎 (-1) on this answer, if any. Kept with the
+   *  transcript so the buttons show it after a reload; stored in ai_feedback too. */
+  feedback?: 1 | -1;
+  /** v10.107.0 — an in-app page this reply points to (Learn's lessons on a concept). Rendered as a button. */
+  link?: { label: string; to: string };
 }

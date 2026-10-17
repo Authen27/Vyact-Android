@@ -47,7 +47,7 @@ export default function HouseholdSheet({ open, onClose }: { open: boolean; onClo
       footer={
         <button
           className="w-full text-left mono-label py-1.5"
-          style={{ color: 'var(--accent)' }}
+          style={{ color: 'var(--accent-text)' }}
           onClick={() => { onClose(); navigate('/households'); }}
         >
           Manage members &amp; invites →
@@ -106,7 +106,7 @@ export default function HouseholdSheet({ open, onClose }: { open: boolean; onClo
                 <div className="mono-label mt-0.5 text-[9px]">{sub}</div>
               </div>
               {on
-                ? <span className="mono-label px-2 py-0.5 rounded-pill flex-shrink-0" style={{ background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent)' }}>Active</span>
+                ? <span className="mono-label px-2 py-0.5 rounded-pill flex-shrink-0" style={{ background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent-text)' }}>Active</span>
                 : <ChevronRight size={16} className="text-ink-dim flex-shrink-0" />}
             </button>
           );

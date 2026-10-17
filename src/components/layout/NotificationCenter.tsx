@@ -5,15 +5,18 @@ import { useState } from 'react';
 import { Bell } from 'lucide-react';
 import { useStore } from '../../store';
 import NotificationSheet from './NotificationSheet';
+import { useInvitationNotifs } from './useInvitationNotifs';
 
 export default function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const notifications = useStore(s => s.notifications);
   const currentHouseholdId = useStore(s => s.currentHouseholdId);
+  // v10.95.0 (#9) — invitation cards wait on the person, so they count toward the badge.
+  const invitationCards = useInvitationNotifs();
 
   const unread = notifications.filter(
     n => n.status === 'unread' && (!n.householdId || n.householdId === currentHouseholdId),
-  ).length;
+  ).length + invitationCards.length;
 
   return (
     <>
@@ -27,7 +30,7 @@ export default function NotificationCenter() {
         <Bell size={16} />
         {unread > 0 && (
           <span
-            className="absolute top-1.5 right-1.5 bg-coral text-white text-[0.55rem] font-mono font-bold rounded-full min-w-[14px] h-3.5 px-0.5 flex items-center justify-center"
+            className="absolute top-1.5 right-1.5 bg-coral text-[color:var(--accent-ink)] text-[11px] leading-none font-ui font-bold rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center"
             style={{ boxShadow: '0 0 0 2px var(--canvas)' }}
           >
             {unread > 9 ? '9+' : unread}

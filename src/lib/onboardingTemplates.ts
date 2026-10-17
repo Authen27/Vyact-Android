@@ -73,7 +73,7 @@ export const SEGMENTS: Record<Segment, SegmentTemplate> = {
       { key: 'utilities', label: 'Utilities' },
       { key: 'phone', label: 'Phone' },
       { key: 'subscriptions', label: 'Subscriptions' },
-      { key: 'transport', label: 'Transport' },
+      { key: 'transport', label: 'Travel' },
     ],
     visibleModules: ['Dashboard', 'Transactions', 'Budgets', 'Reports'],
     pulseBias: 'savings + control',

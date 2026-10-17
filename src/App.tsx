@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { MotionConfig } from 'framer-motion';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from './store';
 import { useTheme } from './hooks';
 import { onStorageEvent } from './lib/storageEvents';
@@ -8,25 +8,31 @@ import { isOnboardingEnabled } from './config/features';
 import { shouldOnboard, migrateExistingHousehold } from './lib/onboardingState';
 import Layout from './components/layout/Layout';
 import ToastHost from './components/ui/ToastHost';
+import ConfirmHost from './components/ui/ConfirmHostLazy';
+import DeferredFlush from './components/layout/DeferredFlush';
 import FaultsPanel from './components/dev/FaultsPanel';
-import SyncHealthIndicator from './components/sync/SyncHealthIndicator';
 import AuthGate from './components/auth/AuthGate';
 import UpdateBanner from './components/layout/UpdateBanner';
 import InstallBanner from './components/layout/InstallBanner';
+import DemoBanner, { IS_DEMO } from './components/layout/DemoBanner';
+import { isNative } from './lib/native'; // ANDROID-OVERLAY
+import HistoryRestoration from './components/layout/HistoryRestoration';
+import { bindAppNavigate } from './lib/appNavigation';
+import { isFormRoute } from './lib/formRoutes';
+import { titleFor } from './lib/pageTitle';
+// v10.50.0 — EAGER: dist/landing.html carries this page pre-rendered, and a lazy import
+// would replace that markup with the loading fallback on first paint.
+import Landing from './pages/Landing';
 
 
 import React, { Suspense } from 'react';
-const TransactionFormModal = React.lazy(() => import('./components/transactions/TransactionFormModal'));
-const BudgetFormModal = React.lazy(() => import('./components/budgets/BudgetFormModal'));
-const DebtFormModal = React.lazy(() => import('./components/debts/DebtFormModal'));
-const AssetFormModal = React.lazy(() => import('./components/assets/AssetFormModal'));
-const AccountFormModal = React.lazy(() => import('./components/accounts/AccountFormModal'));
-const SplitFormModal = React.lazy(() => import('./components/splits/SplitFormModal'));
+import { AppSkeleton, PageSkeleton, shapeForPath } from './components/ui/Skeleton';
+// v10.28.0 — the entity forms are routed pages (pages/FormPages.tsx), not root modals.
+const FormPages    = React.lazy(() => import('./pages/FormPages'));
 const Dashboard    = React.lazy(() => import('./pages/Dashboard'));
 const Transactions = React.lazy(() => import('./pages/Transactions'));
 const Reports      = React.lazy(() => import('./pages/Reports'));
 const Recurring    = React.lazy(() => import('./pages/Recurring'));
-const Planner      = React.lazy(() => import('./pages/Planner'));
 const Chat         = React.lazy(() => import('./pages/Chat'));
 const Onboarding   = React.lazy(() => import('./pages/Onboarding'));
 const NudgeBanner  = React.lazy(() => import('./components/onboarding/NudgeBanner'));
@@ -42,7 +48,10 @@ const Insights     = React.lazy(() => import('./pages/Insights'));
 const Privacy      = React.lazy(() => import('./pages/Privacy'));
 const Terms        = React.lazy(() => import('./pages/Terms'));
 const Cookies      = React.lazy(() => import('./pages/Cookies'));
-const E2EErrorTest = React.lazy(() => import('./pages/__e2e__ErrorTest'));
+// W6 (audit FE-UIS-12): not even the chunk ships in a production build (the import is dead code there).
+const E2EErrorTest = import.meta.env.MODE !== 'production'
+  ? React.lazy(() => import('./pages/__e2e__ErrorTest'))
+  : null;
 
 const SignIn        = React.lazy(() => import('./pages/auth/SignIn'));
 const SignUp        = React.lazy(() => import('./pages/auth/SignUp'));
@@ -57,53 +66,49 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <AuthGate>
-        <ScrollToTop />
+        <DemoBanner />
+        <HistoryRestoration />
+        <NavigationBridge />
         <AppShell />
-        <Suspense fallback={null}>
-          <RootModals />
-        </Suspense>
         <ToastHost />
-        <SyncHealthIndicator />
+        {/* Aurora 4.0 G4 — the app's confirmation sheet (no window.confirm/prompt), and the
+            commit-on-navigate for actions held for Undo. */}
+        <ConfirmHost />
+        <DeferredFlush />
+        {/* SyncHealthIndicator removed (v10.20.4, product decision).
+            It surfaced a "Some changes may not have synced" banner with a
+            Refresh action on every dead-lettered write. Two problems made it
+            worse than useless in practice:
+              · it interrupted the user for a condition they cannot act on, and
+              · its Refresh called `manualRefresh()`, which is a PULL — it can
+                never re-send a write that failed to push, so the offered
+                remedy did not address the message.
+            Faults are still recorded in the `lib/faults.ts` ring buffer, so
+            nothing is lost at the data layer and FaultsPanel (dev) still shows
+            them. What is gone is the interruption. */}
         {import.meta.env.DEV && <FaultsPanel />}
         <UpdateBanner />
-        <InstallBanner />
-        <Suspense fallback={null}>
-          <NudgeBanner />
-        </Suspense>
+        {/* v10.57.0 — the guest demo is not something to install or be nudged about. */}
+        {!IS_DEMO && <InstallBanner />}
+        {!IS_DEMO && (
+          <Suspense fallback={null}>
+            <NudgeBanner />
+          </Suspense>
+        )}
       </AuthGate>
     </MotionConfig>
   );
 }
 
-// v7.4.1 — Reset window scroll on every pathname change. Without this
-// react-router preserves the previous tab's scroll position, leaving
-// users mid-page when they jump to a new section.
-function ScrollToTop() {
-  const { pathname } = useLocation();
+// v10.28.0 — lets the store's openAdd*/openEdit* actions open the form pages.
+// A Zustand action cannot call useNavigate(), so the live function is bound here.
+function NavigationBridge() {
+  const navigate = useNavigate();
   useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [pathname]);
+    bindAppNavigate(navigate);
+    return () => bindAppNavigate(null);
+  }, [navigate]);
   return null;
-}
-
-function RootModals() {
-  const txnModalOpen = useStore(s => s.txnModalOpen);
-  const budgetModalOpen = useStore(s => s.budgetModalOpen);
-  const debtModalOpen = useStore(s => s.debtModalOpen);
-  const assetModalOpen = useStore(s => s.assetModalOpen);
-  const accountModalOpen = useStore(s => s.accountModalOpen);
-  const splitModalOpen = useStore(s => s.splitModalOpen);
-
-  return (
-    <>
-      {txnModalOpen ? <TransactionFormModal /> : null}
-      {budgetModalOpen ? <BudgetFormModal /> : null}
-      {debtModalOpen ? <DebtFormModal /> : null}
-      {assetModalOpen ? <AssetFormModal /> : null}
-      {accountModalOpen ? <AccountFormModal /> : null}
-      {splitModalOpen ? <SplitFormModal /> : null}
-    </>
-  );
 }
 
 function AppShell() {
@@ -118,6 +123,11 @@ function AppShell() {
   const profile = useStore(s => s.profile);
   const transactions = useStore(s => s.transactions);
   useTheme();
+
+  // v10.56.0 (B3) — each app route names itself; "/" keeps the landing page's own title.
+  useEffect(() => {
+    if (location.pathname !== '/') document.title = titleFor(location.pathname);
+  }, [location.pathname]);
 
   // Per-household onboarding trigger (spec §2). A household that already has data
   // or a recorded `onboardedAt` is an existing/returning one — migrate it to
@@ -154,13 +164,30 @@ function AppShell() {
     return unsub;
   }, []);
 
-  // v4.1 — Realtime subscription on the active household
+  // Resolve WHO I AM in the active household. Runs in BOTH modes.
+  //
+  // This used to live inside the realtime effect below, behind its
+  // `!cloudEnabled || !session` guard — so in local-only mode it never ran at
+  // all. `myRole` stayed at its initial `undefined`, `can()` fell through to
+  // its deny-by-default (`action === 'view'`), and every write-gated screen
+  // rendered read-only: no Add Budget, no delete household, no recurring edit.
+  // The "local-only: you own everything" fallback inside refreshHouseholds was
+  // dead code, because the only caller was gated on cloud being ON.
+  //
+  // It also blinded the whole e2e suite: Lane A builds in local-only mode, so
+  // no test could ever open the editors those screens gate. Fixing the product
+  // bug is what makes those journeys testable — hence Phase 0.
+  useEffect(() => {
+    void refreshHouseholds();
+  }, [cloudEnabled, session, currentHouseholdId, refreshHouseholds]);
+
+  // v4.1 — Realtime subscription on the active household. Cloud-only: there is
+  // nothing to subscribe to in local-only mode, and 'local' is not a real row.
   useEffect(() => {
     if (!cloudEnabled || !session || !currentHouseholdId || currentHouseholdId === 'local') return;
-    refreshHouseholds();
     const unsub = subscribeRealtime(currentHouseholdId);
     return unsub;
-  }, [cloudEnabled, session, currentHouseholdId, subscribeRealtime, refreshHouseholds]);
+  }, [cloudEnabled, session, currentHouseholdId, subscribeRealtime]);
 
   // Auth-only routes (rendered without Layout)
   const isAuthRoute = location.pathname.startsWith('/auth/') || location.pathname.startsWith('/invite/');
@@ -198,16 +225,29 @@ function AppShell() {
     );
   }
 
-  if (loading) {
+  // Landing page (rendered without Layout, and BEFORE the `loading` gate below,
+  // for the same reason legal docs are above) — an anonymous visitor or crawler
+  // hitting "/" must see content immediately, not an indefinite "Loading…"
+  // spinner (cloud-mode `loading` only resolves once init() runs, which never
+  // happens for a signed-out session).
+  // v10.57.0 (B20) — on the guest demo, "/" (the logo, a client-side link) opens the demo household.
+  // ANDROID-OVERLAY — the installed app has no marketing page: the Capacitor WebView launches at
+  // "/" (https://localhost/), which would otherwise show the public <Landing />. The app's own
+  // auth gate sends a signed-out user to sign-in from /dashboard. (A separate line, so upstream's
+  // own IS_DEMO line below stays byte-identical — it is asserted by publicPages.test.ts.)
+  if (isNative() && location.pathname === '/') return <Navigate to="/dashboard" replace />;
+  if (IS_DEMO && location.pathname === '/') return <Navigate to="/dashboard" replace />;
+  if (location.pathname === '/') {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="display-italic text-3xl text-coral mb-2">Vyact</div>
-          <div className="mono-label">Loading…</div>
-        </div>
-      </div>
+      <Suspense fallback={<LoadingFallback />}>
+        <Landing />
+      </Suspense>
     );
   }
+
+  // Aurora 4.0 LD1 — while the household loads, the screen shows its own shape in grey blocks
+  // (header bar, heroes, panels, rows) instead of a "Loading…" word on a blank page.
+  if (loading) return <AppSkeleton pathname={location.pathname} />;
 
   // Per-household onboarding (spec §2): a fresh household with the flag on is
   // routed into the flow on first entry. Existing households (data present /
@@ -229,16 +269,27 @@ function AppShell() {
     );
   }
 
+  // v10.28.0 — the entity forms (Add/Edit Transaction, Split, Debt, Budget,
+  // Account, Asset, and Reconcile Account) are focused full-screen pages. Like
+  // onboarding they render WITHOUT the Layout chrome: just the form, its Close
+  // control and the Save bar.
+  if (isFormRoute(location.pathname)) {
+    return (
+      <Suspense fallback={<div className="min-h-[100dvh]" style={{ background: 'var(--canvas)' }} />}>
+        <FormPages />
+      </Suspense>
+    );
+  }
+
   return (
     <Layout>
-      <Suspense fallback={<LoadingFallback />}>
+      <Suspense fallback={<PageSkeleton shape={shapeForPath(location.pathname)} />}>
         <Routes>
-          <Route path="/"             element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard"    element={<Dashboard />} />
           <Route path="/transactions" element={<Transactions />} />
           <Route path="/reports"      element={<Reports />} />
           <Route path="/recurring"    element={<Recurring />} />
-          <Route path="/planner"      element={<Planner />} />
+          <Route path="/planner"      element={<Navigate to="/insights?tab=for-you" replace />} />
           <Route path="/chat"         element={<Chat />} />
           <Route path="/households"   element={<Households />} />
           <Route path="/budgets"      element={<Budgets />} />
@@ -252,7 +303,9 @@ function AppShell() {
           <Route path="/privacy"      element={<Privacy />} />
           <Route path="/terms"        element={<Terms />} />
           <Route path="/cookies"      element={<Cookies />} />
-          <Route path="/__e2e_error"  element={<E2EErrorTest />} />
+          {/* W6 (audit FE-UIS-12): the page that always throws exists for Lane A (built in
+              'test' mode) only, never on vyact.app. */}
+          {import.meta.env.MODE !== 'production' && E2EErrorTest && <Route path="/__e2e_error" element={<E2EErrorTest />} />}
           <Route path="*"             element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </Suspense>

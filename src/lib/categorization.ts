@@ -8,9 +8,10 @@
 import { useEffect, useState } from 'react';
 import { supabase, isCloudEnabled } from './supabase';
 import { NEEDS_WANTS_MAP } from '../constants';
+import { classificationMap, type ClassificationMap, type NeedWant } from './spendBaseline';
 
-export type NeedWant = 'need' | 'want';
-export type ClassificationMap = Record<string, NeedWant>;
+// Track E, E4 — the merge lives in the pure spendBaseline module, so the server builds the same map.
+export type { ClassificationMap, NeedWant };
 
 let cache: ClassificationMap | null = null;
 let inflight: Promise<ClassificationMap> | null = null;
@@ -30,12 +31,7 @@ export async function loadCategoryClassifications(force = false): Promise<Classi
         .from('category_classifications')
         .select('category, classification');
       if (error || !data) { cache = fallback; return fallback; }
-      const map: ClassificationMap = { ...fallback };
-      for (const row of data as { category: string; classification: NeedWant }[]) {
-        if (row.classification === 'need' || row.classification === 'want') {
-          map[row.category] = row.classification;
-        }
-      }
+      const map = classificationMap(data as { category: string; classification: string }[]);
       cache = map;
       return map;
     } catch {

@@ -6,10 +6,12 @@
 //   3. Cloud enabled, user NOT authed — render auth screen, redirect attempts back to original URL.
 
 import { type ReactNode, useEffect } from 'react';
+import { unexpected } from '../../lib/faults';
 import { useLocation, Navigate } from 'react-router-dom';
 import { useStore } from '../../store';
 import { isCloudEnabled, supabase } from '../../lib/supabase';
 import { reactivateIfNeeded, acceptPolicies } from '../../lib/auth';
+import { trackSignUpOnce, setAnalyticsUser } from '../../lib/analytics';
 
 const PUBLIC_ROUTES = [
   '/auth/sign-in', '/auth/sign-up', '/auth/reset', '/auth/reset-password', '/auth/verified',
@@ -51,12 +53,27 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   // hold (Settings → Danger Zone) and record first-time ToS/Privacy consent
   // for flows that couldn't write it directly (OAuth redirect, email
   // verification pending) — see lib/auth.ts reactivateIfNeeded/acceptPolicies.
+  // v10.53.0 (#55) — GA4 user_id follows the session: a hash of the user id while signed
+  // in, cleared on sign-out.
+  useEffect(() => {
+    if (!isCloudEnabled()) return;
+    void setAnalyticsUser(session?.user?.id ?? null);
+  }, [session?.user?.id]);
+
   useEffect(() => {
     if (!isCloudEnabled() || !session?.user) return;
+    // v10.53.0 (#46) — after counting a sign-up, mark the account so a second device
+    // doesn't count it again (fire-and-forget; the per-device flag still holds).
+    if (trackSignUpOnce(session.user)) {
+      void supabase?.auth.updateUser({ data: { vy_signup_tracked: true } }).catch(() => {});
+    }
     (async () => {
       if (sessionStorage.getItem('pending_policy_accept')) {
-        await acceptPolicies(session.user.id).catch(() => {});
-        sessionStorage.removeItem('pending_policy_accept');
+        // W8a (XC-PRV-09): a failed write is reported, and the flag stays so the next load retries it.
+        try {
+          await acceptPolicies(session.user.id);
+          sessionStorage.removeItem('pending_policy_accept');
+        } catch (e) { unexpected(e, 'consent:record'); }
       }
       const reactivated = await reactivateIfNeeded().catch(() => false);
       if (reactivated) toast('Welcome back — your account has been reactivated.', 'success');
@@ -78,7 +95,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  const isPublic = PUBLIC_ROUTES.some(p => location.pathname.startsWith(p)) ||
+  // The landing page at "/" is public too, but it must be an EXACT match, not
+  // folded into PUBLIC_ROUTES' .startsWith() scan — every path in the app
+  // starts with "/", so adding it to that array would silently disable the
+  // sign-in gate for the entire app.
+  const isRoot = location.pathname === '/';
+  const isPublic = isRoot || PUBLIC_ROUTES.some(p => location.pathname.startsWith(p)) ||
                    location.pathname.startsWith('/invite/');
 
   // Not signed in + on a private route → bounce to sign-in

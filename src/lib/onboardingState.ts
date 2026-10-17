@@ -55,6 +55,10 @@ export interface OnboardingBaseline {
   segment: Segment;
   primaryConcern: string;       // 'spending' | 'debt' | 'runway'
   capturedAt: string;           // ISO
+  /** Aurora 4.0 FR2 — the fixed bills total from setup (the estimate hero subtracts it). */
+  fixedTotal?: number;
+  /** Aurora 4.0 ON3 — setup chose "I'll add bills later"; the checklist keeps that step open. */
+  billsLater?: boolean;
 }
 
 export interface HouseholdOnboarding {

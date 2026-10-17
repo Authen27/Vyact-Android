@@ -1,0 +1,50 @@
+/* Android shell overlay — additive, never edited upstream (see scripts/overlay-manifest.json).
+ *
+ * Every rule is scoped under html.is-native (class added by initNativeShell() in lib/native.ts),
+ * so this file is inert in a browser. The Capacitor WebView is edge-to-edge (viewport-fit=cover):
+ * the page draws under the status bar and the gesture/nav bar, and env(safe-area-inset-*) is the
+ * only thing that keeps controls clear of them.
+ *
+ * Upstream's own sheets already do this (MobileTabBar, PullDownSheet, FormPage, AccessibleDialog).
+ * The full-screen "reels" do not: ForYouReel and EvergreenReel are `fixed inset-0` dialogs whose
+ * Close button, progress rail and position pill sit at top-4 / top-5 — i.e. UNDER the status bar,
+ * where the Close button cannot be tapped — and whose card controls (Play/Text, the flip-back
+ * button, the "Swipe up" hint) sit under the nav bar. They are offset here, by selector, instead of
+ * by editing those files, so an upstream sync cannot wipe the fix. If upstream starts handling
+ * insets in the reels, delete the matching rule.
+ */
+
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+/* Reel chrome: Close (top-right), progress rail (top-left), position pill (top-centre). */
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.top-4 { top: calc(1rem + var(--sat)); }
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.top-5 { top: calc(1.25rem + var(--sat)); }
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.left-4 { left: calc(1rem + var(--sal)); }
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.right-4 { right: calc(1rem + var(--sar)); }
+
+/* Card controls near the bottom edge: Play / Text, and the "Swipe up" hint. */
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.bottom-6 { bottom: calc(1.5rem + var(--sab)); }
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.bottom-7 { bottom: calc(1.75rem + var(--sab)); }
+
+/* ForYouReel slides (and either reel's end panel): keep the background edge-to-edge, move the
+ * centred content clear of both bars. EvergreenReel's card sections are `relative` containing
+ * blocks for the absolutely-positioned controls above, so they must NOT be padded too — that
+ * would offset those controls twice. They have no `justify-center`, which is what this matches. */
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] section.snap-start.justify-center {
+  padding-top: var(--sat);
+  padding-bottom: var(--sab);
+}
+
+/* EvergreenReel card faces: the infographic's title scrim and the article text start below the bar. */
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .absolute.inset-x-0.top-0.pt-6 {
+  padding-top: calc(1.5rem + var(--sat));
+}
+html.is-native .fixed.inset-0.bg-bg[role="dialog"][aria-modal="true"] .overflow-y-auto.pt-16.pb-10 {
+  padding-top: calc(4rem + var(--sat));
+  padding-bottom: calc(2.5rem + var(--sab));
+}

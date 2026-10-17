@@ -13,8 +13,9 @@
 // Legacy values (the old PAYMENT_METHODS keys like 'visa') still resolve through
 // the PAYMENT_METHODS table for display, so historical data is never lost.
 
-import type { Asset, Debt, Account } from '../types';
+import type { Asset, Debt, Account, Transaction } from '../types';
 import { PAYMENT_METHODS } from '../constants';
+import { accountValueOf } from './accountBalance';
 
 // v10.17 — `investment` is distinguished so callers can wall investment
 // accounts out of non-investment pickers (expense/income/transfer/split/debt).
@@ -119,6 +120,42 @@ export function resolveAccount(
   return null;
 }
 
+/** W8a (audit FE-UIC-05) — the account an edit form opens on, in the picker's encoding. The ledger reads
+ *  the FK first (`debitAccountOf` / `creditAccountOf`), so the form must too: a row whose account was
+ *  changed elsewhere (a WhatsApp correction, a reconcile) keeps a stale `paymentMethod`, and the form used
+ *  to open on — and save back — that old account. */
+export function editSeedAccount(
+  t: Pick<Transaction, 'type' | 'accountId' | 'toAccountId' | 'paymentMethod'>,
+  accounts: Account[],
+): string {
+  const fk = t.type === 'income' ? (t.toAccountId ?? t.accountId) : t.accountId;
+  const acc = fk ? accounts.find(a => a.id === fk) : undefined;
+  if (acc) return accountValueOf(acc);
+  return t.paymentMethod ?? fk ?? '';
+}
+
+/** W7a (audit FE-UIC-16) — the account a transaction row names. The `accounts` FK wins: rows saved
+ *  since Money Map carry `accountId` / `toAccountId` (or an account id in `paymentMethod`), which the
+ *  legacy `asset:`/`debt:` resolver labelled "Linked account" or dropped. Transfers read "From → To";
+ *  a multi-account payment names each account. Falls back to the legacy resolver for old rows. */
+export function txnAccountLabel(
+  t: Pick<Transaction, 'type' | 'paymentMethod' | 'accountId' | 'toAccountId' | 'accountSplits'>,
+  accounts: Pick<Account, 'id' | 'name'>[],
+  assets: Asset[],
+  debts: Debt[],
+): string | null {
+  const name = (id?: string) => (id ? accounts.find(a => a.id === id)?.name : undefined);
+  const splits = (t.accountSplits ?? []).map(s => name(s.accountId)).filter((n): n is string => !!n);
+  if (splits.length > 1) return splits.join(' + ');
+  if (t.type === 'transfer') {
+    const from = name(t.accountId), to = name(t.toAccountId);
+    if (from && to) return `${from} → ${to}`;
+  }
+  const fk = name(t.accountId) ?? name(t.toAccountId) ?? name(t.paymentMethod);
+  if (fk) return fk;
+  return t.paymentMethod ? resolveAccount(t.paymentMethod, assets, debts)?.label ?? null : null;
+}
+
 /** Transaction types that must be tied to a real account (cash or linked). */
 export const ACCOUNT_REQUIRED_TYPES = ['expense', 'income', 'transfer'] as const;
 
@@ -163,10 +200,9 @@ export function buildAccountsFromStore(
       hasCash = true;
       value = 'cash';
     } else if (acc.kind === 'credit_card') {
-      // The Phase 1 backfill links credit-card accounts to debts via
-      // assetId === debt.id (one-to-one). When `assetId` is null (a user-
-      // created card with no debt yet) fall back to the account id itself.
-      value = `debt:${acc.assetId || acc.id}`;
+      // W4f (D30) — a card is an account; its picker value is exactly the ledger's own encoding
+      // (accountValueOf), never an `assetId = debt.id` bridge, so the two can never disagree.
+      value = accountValueOf(acc);
     } else {
       value = `asset:${acc.assetId || acc.id}`;
     }

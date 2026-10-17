@@ -1,0 +1,26 @@
+// Typechecking for the Playwright suite.
+//
+// 🔴 WHY THIS FILE EXISTS. `tsconfig.json` excludes `e2e` (and the unit tests),
+// so nothing ever type-checked the specs. That is the root cause of the class of
+// Lane A failure that has been mistaken for stale selectors for months: when a
+// spec called `txnModal.accountSelect` after the page object had dropped it, the
+// only symptom was `locator.click: Test timeout of 30000ms exceeded` — 30 seconds
+// of waiting, then an error naming the wrong problem. Typechecked, the same rot
+// surfaces in two seconds as `Property 'accountSelect' does not exist on type
+// 'TransactionFormModal'`, pointing at the exact line.
+//
+// This config is wired into the verification gate, so the specs cannot drift out
+// of sync with the page objects again without the build saying so.
+//
+// `lib` is raised to ES2022 (the app targets ES2020) purely so specs may use
+// `Array.prototype.at`; nothing here is bundled or shipped.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["e2e"],
+  "exclude": []
+}

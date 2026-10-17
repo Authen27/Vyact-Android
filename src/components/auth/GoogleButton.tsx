@@ -1,5 +1,8 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { signInOAuth } from '../../lib/auth';
+import { isCloudEnabled } from '../../lib/supabase';
+import { rememberNext } from '../../lib/postAuth';
 
 // Primary Google sign-in CTA. Always rendered — provider misconfiguration
 // surfaces as an inline error, not a missing button. signInOAuth redirects the
@@ -7,11 +10,19 @@ import { signInOAuth } from '../../lib/auth';
 // VerifiedAuth completes the session and routes to /dashboard. The Supabase
 // Google provider + client ID/secret + redirect allowlist are configured in the
 // Supabase dashboard (the secret lives only there, never in this repo).
-export default function GoogleButton({ requireAgreement = false, agreed = true }: { requireAgreement?: boolean; agreed?: boolean } = {}) {
+// W8a (audit XC-PRV-09): `consentByContinuing` (the sign-in page) — Google can CREATE an account from
+// there, so the button states the agreement and records it, like the sign-up checkbox.
+export default function GoogleButton({ requireAgreement = false, agreed = true, next, consentByContinuing = false }: { requireAgreement?: boolean; agreed?: boolean; next?: string | null; consentByContinuing?: boolean } = {}) {
   const [busy, setBusy] = useState(false);
   const [oauthError, setOauthError] = useState('');
 
   async function go() {
+    // Local-only build (no Supabase): there is no Google sign-in to start. Say so plainly —
+    // the raw "Cloud is not enabled" developer error used to fill the sign-in card here.
+    if (!isCloudEnabled()) {
+      setOauthError('Google sign-in coming soon — use email for now');
+      return;
+    }
     if (requireAgreement && !agreed) {
       setOauthError('Please accept the Terms of Service and Privacy Policy to continue');
       return;
@@ -21,7 +32,9 @@ export default function GoogleButton({ requireAgreement = false, agreed = true }
     try {
       // Consumed by AuthGate on session hydration to record ToS/Privacy acceptance —
       // OAuth redirects away from this page, so we can't write it here directly.
-      if (requireAgreement) sessionStorage.setItem('pending_policy_accept', '1');
+      if (requireAgreement || consentByContinuing) sessionStorage.setItem('pending_policy_accept', '1');
+      // v10.49.0 (#20) — Google returns to /auth/verified; land them where the link meant.
+      rememberNext(next);
       await signInOAuth('google');   // redirects away on success
       // If we reach here the redirect didn't fire — treat as an error.
       setBusy(false);
@@ -51,6 +64,11 @@ export default function GoogleButton({ requireAgreement = false, agreed = true }
         </svg>
         {busy ? 'Redirecting…' : 'Continue with Google'}
       </button>
+      {consentByContinuing && (
+        <p className="text-ink-dim text-[0.72rem] text-center mt-2">
+          By continuing with Google you agree to the <Link to="/terms" className="underline">Terms</Link> and <Link to="/privacy" className="underline">Privacy Policy</Link>.
+        </p>
+      )}
       {oauthError && (
         <p className="text-terra text-[0.78rem] text-center mt-2">{oauthError}</p>
       )}

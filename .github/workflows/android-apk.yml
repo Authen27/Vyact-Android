@@ -22,6 +22,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Fails the run if an Android edit was wiped by a sync, or an overlay file is unregistered or
+      # gitignored (scripts/overlay-manifest.json). Needs only Node — runs before anything is installed.
+      - name: Overlay guard
+        run: node scripts/check-overlay-registered.mjs
+
       - name: Install JS dependencies
         run: npm ci
 
@@ -210,7 +215,7 @@ jobs:
             sleep 2
             adb exec-out screencap -p > ui-notifications.png
             adb shell cmd statusbar collapse || true
-            adb shell input tap 70 130
+            bash scripts/tap-label.sh "Ask Pip" "Ask" || true
             sleep 3
             adb exec-out screencap -p > ui-drawer.png
             bash scripts/responsive-audit.sh || true
@@ -225,6 +230,7 @@ jobs:
             ui-dashboard.png
             ui-notifications.png
             ui-drawer.png
+            ui-dump.xml
             widget-prefs.xml
             audit-*.png
           if-no-files-found: warn

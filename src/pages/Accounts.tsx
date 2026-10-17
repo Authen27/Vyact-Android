@@ -1,529 +1,443 @@
-// Vyact v7.1.3 — Accounts page
+// Vyact v10.24.0 (Accounts R2) — the Accounts screen (design frames M1 / D1).
 //
-// Surfaces the first-class `accounts` table from the v7.1 Money Map
-// migration as a real CRUD list. Gated by `getMoneyMapMode() !== 'off'`
-// at the route level — when the flag is off the route renders an
-// empty-state explaining why.
+// Scope is narrowed to SPENDABLE accounts — the ones a transaction can be paid
+// from, in three groups of the same account card (Aurora 4.0 AC1):
+//   Cash         Cash in Hand, with Reconcile and Ledger on the card
+//   Bank         bank accounts
+//   Credit Card  cards, each showing what is free of its limit and when it's due
+// Loans are money you owe and live in Debts; investments are things you own and
+// live in Net Worth. Both are linked from here so the narrower scope stays legible.
 //
-// The list shows every non-deleted account; archived ones are dimmed
-// and grouped under a collapsed section. Default-per-currency is shown
-// as a chip. Linked to a backfilled asset/debt? We surface that with a
-// small caption so the user understands where the row came from.
-
-import { useMemo, useState, useEffect } from 'react';
+// Every figure is computed from the ledger (computeAccountBalance) or derived
+// from it (lib/accountsView.ts). A balance that has not been checked against a
+// statement for a while says so in words — "not reconciled in 41 days" —
+// instead of wearing a badge, and reconciling clears it.
+//
+// This screen used to sit behind the `money_map` feature flag. That flag was
+// meant to retire in v7.3; accounts have been the money model's foundation since
+// v9, so the gate is gone.
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion, type Variants } from 'framer-motion';
+import { ClipboardCheck, List } from 'lucide-react';
 import { useStore } from '../store';
-import { Panel } from '../components/ui/Card';
 import Button from '../components/ui/Button';
-import Money from '../components/ui/Money';
-import { Plus, Pencil, Archive, ArchiveRestore, Link as LinkIcon } from 'lucide-react';
-import type { Account, AccountKind, Transaction } from '../types';
-import { getMoneyMapMode } from '../lib/featureFlags';
-import { computeAccountBalance, accountValueOf, debitAccountOf, creditAccountOf } from '../lib/accountBalance';
-import { effectiveAmount } from '../lib/calculations';
-import { fmt } from '../lib/format';
+import EstimatedTag from '../components/ui/EstimatedTag';
+import { isEstimate } from '../lib/onboardingState';
+import AnimatedMoney from '../components/ui/AnimatedMoney';
+import { formPath } from '../lib/formRoutes';
+import { computeAccountBalance } from '../lib/accountBalance';
+import { accountLedgerRows } from '../lib/accountLedger';
+import { fmt, fmtNet, fmtSigned, dateKeyIn } from '../lib/format';
 import { getCat } from '../constants';
+import { spring } from '../lib/motion';
+import {
+  PAYMENT_MODE_LABEL, STALE_AFTER_DAYS, accountGroup, accountsSummary, cardFigures, nextDueDate, staleDays,
+} from '../lib/accountsView';
+import type { Account, Transaction } from '../types';
+import PageHead from '../components/ui/PageHead';
 
-// Board M5 — the four wallet types shown in the totals strip (loan accounts are
-// system-only and never surface here). Tapping a tile filters the wallet.
-const WALLET_KINDS: { kind: AccountKind; label: string }[] = [
-  { kind: 'bank',        label: 'Bank' },
-  { kind: 'credit_card', label: 'Cards' },
-  { kind: 'investment',  label: 'Invest' },
-  { kind: 'cash',        label: 'Cash' },
-];
-
-// v9 — strict kind enum (txn-redesign §2.2).
-const KIND_LABEL: Record<AccountKind, string> = {
-  bank: 'Bank',
-  cash: 'Cash',
-  credit_card: 'Credit Card',
-  investment: 'Investment',
-  loan: 'Loan',
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const ordinal = (n: number) => {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] || s[v] || s[0]}`;
 };
-const KIND_ICON: Record<AccountKind, string> = {
-  bank: '🏦', cash: '💵', credit_card: '💳', investment: '📈', loan: '🏛️',
+const fmtDay = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+/**
+ * Row entrance. Each row owns its own initial → animate, staggered by index.
+ * Not staggerContainer/staggerItem: accounts arrive after hydration, so the rows
+ * mount under a container whose entrance already settled — an inherited
+ * "hidden" is never animated out and the rows stay at opacity 0.
+ */
+const rowIn: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  visible: (i: number) => ({ opacity: 1, y: 0, transition: { ...spring, delay: Math.min(i, 8) * 0.05 } }),
 };
+const iconOf = (a: Account) => (a.kind === 'credit_card' ? '💳' : a.kind === 'cash' ? '💵' : '🏦');
+/** A balance with its sign: a card's is what it owes, and an overdrawn bank is negative too (W4d,
+ *  FE-UIC-04 — only cards used to keep the minus). */
+const signedMoney = (_a: Account, balance: number, currency: string) => fmtNet(balance, currency);
 
 export default function Accounts() {
   const accounts        = useStore(s => s.accounts);
-  const assets          = useStore(s => s.assets);
-  const debts           = useStore(s => s.debts);
   const transactions    = useStore(s => s.transactions);
-  const profile         = useStore(s => s.profile);
+  const baseCurrency    = useStore(s => s.profile.baseCurrency);
   const rates           = useStore(s => s.rates);
   const openAddAccount  = useStore(s => s.openAddAccount);
   const openEditAccount = useStore(s => s.openEditAccount);
   const upsertAccount   = useStore(s => s.upsertAccount);
-  const reconcileAccount = useStore(s => s.reconcileAccount);
   const toast           = useStore(s => s.toast);
+  const navigate = useNavigate();
+
+  // v10.28.0 — Reconcile is a page of its own; closing it comes back here.
+  const reconcile = (id: string) => navigate(formPath.accountReconcile(id));
+  const [ledgerId, setLedgerId]         = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const [kindFilter, setKindFilter] = useState<AccountKind | 'all'>('all');
+  const now = useMemo(() => new Date(), []);
 
-  const mode = getMoneyMapMode();
-  const flagOff = mode === 'off';
+  const view = useMemo(() => {
+    const balances = new Map<string, number>();
+    for (const a of accounts) balances.set(a.id, computeAccountBalance(a, transactions, baseCurrency, rates));
+    const onScreen = accounts.filter(a => accountGroup(a) !== null);
+    const live = onScreen.filter(a => !a.isArchived);
+    const order = (x: Account, y: Account) =>
+      (x.isDefault ? 0 : 1) - (y.isDefault ? 0 : 1) || x.name.localeCompare(y.name);
+    const cash = live.filter(a => a.kind === 'cash');
+    const banks = live.filter(a => a.kind === 'bank').sort(order);
+    const cards = live.filter(a => accountGroup(a) === 'credit_card').sort(order);
+    return {
+      balances,
+      cash,
+      banks,
+      cards,
+      archived: onScreen.filter(a => a.isArchived).sort(order),
+      summary: accountsSummary(live, a => balances.get(a.id) ?? 0),
+      bankTotal: round2(banks.reduce((sum, a) => sum + (balances.get(a.id) ?? 0), 0)),
+      stale: [...cash, ...banks, ...cards]
+        .map(a => ({ a, days: staleDays(a, now) }))
+        .filter((x): x is { a: Account; days: number } => x.days !== null),
+    };
+  }, [accounts, transactions, baseCurrency, rates, now]);
 
-  // Money-Model Epic 1 — computed balances, Fix-balance reconcile, and the
-  // per-account ledger are permanent.
-  const baseCur = profile.baseCurrency;
-  // v9 R-AGG-4 — balance includes the reconciliation offset (D2).
-  const balanceOf = (acc: Account): number =>
-    computeAccountBalance(acc, transactions, baseCur, rates);
-
-  async function handleReconcile(acc: Account, real: number) {
+  async function restore(a: Account) {
     try {
-      const delta = await reconcileAccount(acc, real);
-      const noun = acc.kind === 'investment' ? 'Value updated' : 'Balance fixed';
-      toast(delta === 0 ? 'Already up to date' : `${noun} (${delta > 0 ? '+' : ''}${delta})`, 'success');
+      await upsertAccount({ id: a.id, isArchived: false });
+      toast(`${a.name} restored`, 'success');
     } catch (e) {
-      toast(`Reconcile failed: ${(e as Error).message}`, 'error');
+      toast((e as Error).message, 'error');
     }
   }
 
-  const { active, archived } = useMemo(() => {
-    const a: Account[] = [];
-    const ar: Account[] = [];
-    for (const acc of accounts) (acc.isArchived ? ar : a).push(acc);
-    a.sort((x, y) => x.name.localeCompare(y.name));
-    ar.sort((x, y) => x.name.localeCompare(y.name));
-    return { active: a, archived: ar };
-  }, [accounts]);
-
-  // Board M5 — per-type totals for the wallet strip (computed from the ledger,
-  // like every balance on this page).
-  const kindTotals = useMemo(() => {
-    const tot: Record<string, number> = { bank: 0, credit_card: 0, investment: 0, cash: 0 };
-    const cnt: Record<string, number> = { bank: 0, credit_card: 0, investment: 0, cash: 0 };
-    for (const acc of active) {
-      if (acc.kind in tot) {
-        tot[acc.kind] += computeAccountBalance(acc, transactions, baseCur, rates);
-        cnt[acc.kind] += 1;
-      }
-    }
-    return { tot, cnt };
-  }, [active, transactions, baseCur, rates]);
-
-  const shownActive = kindFilter === 'all' ? active : active.filter(a => a.kind === kindFilter);
-
-  // Board D4 desktop — which account the right-hand ledger rail shows.
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
-  const selectedAccount = shownActive.find(a => a.id === selectedAccountId) ?? shownActive[0];
-
-  // Resolve assetId → human label so backfilled rows show their origin.
-  const linkLabel = (acc: Account): string | null => {
-    if (!acc.assetId) return null;
-    const ast = assets.find(a => a.id === acc.assetId);
-    if (ast) return `Linked to asset · ${ast.name}`;
-    const dbt = debts.find(d => d.id === acc.assetId);
-    if (dbt) return `Linked to card · ${dbt.name}`;
-    return 'Linked (origin removed)';
-  };
-
-  async function toggleArchive(acc: Account) {
-    try {
-      await upsertAccount({ ...acc, isArchived: !acc.isArchived });
-      toast(acc.isArchived ? 'Account restored' : 'Account archived', 'success');
-    } catch (e) {
-      toast(`Failed: ${(e as Error).message}`, 'error');
-    }
-  }
+  const row = (a: Account, i: number) => (
+    <motion.div key={a.id} custom={i} variants={rowIn} initial="hidden" animate="visible">
+      <AccountRow
+        acc={a}
+        balance={view.balances.get(a.id) ?? 0}
+        currency={baseCurrency}
+        now={now}
+        ledgerOpen={ledgerId === a.id}
+        onOpen={() => openEditAccount(a)}
+        onReconcile={() => reconcile(a.id)}
+        onToggleLedger={() => setLedgerId(id => (id === a.id ? null : a.id))}
+        transactions={transactions}
+        rates={rates}
+      />
+    </motion.div>
+  );
 
   return (
-    <div>
-      <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
-        <div>
-          <h1 className="display-italic text-4xl text-ink mb-1.5">Accounts</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            Money Map · Spendable Accounts
-          </p>
-        </div>
-        {!flagOff && (
-          <Button onClick={openAddAccount}>
-            <Plus size={14} /> Add Account
-          </Button>
-        )}
-      </div>
+    <div className="ui-pilot">
+      <PageHead title="Accounts" action={{ label: 'Add account', icon: true, entity: 'account', onClick: openAddAccount }} />
 
-      {flagOff && (
-        <Panel>
-          <div className="p-6 text-center">
-            <p className="text-ink-mid mb-2">Money Map is off.</p>
-            <p className="text-sm text-ink-dim">
-              Enable the <code className="font-mono">money_map</code> flag to manage
-              first-class accounts. Until then, the transaction picker continues
-              to derive accounts from Net Worth assets and credit cards.
-            </p>
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-7 lg:items-start">
+        <div className="min-w-0">
+          {/* Summary — one card on mobile, three tiles on desktop. */}
+          <div className="lg:hidden rounded-r3 px-4 py-3 flex items-center justify-between gap-3"
+            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+            <div className="min-w-0">
+              <div className="ui-label">Spendable now</div>
+              <AnimatedMoney amount={view.summary.spendableNow} currency={baseCurrency} className="num font-bold text-[27px] text-ink" />
+            </div>
+            <div className="text-right text-[12px] leading-[1.75] text-ink-dim">
+              <div>Available cash <span className="num font-semibold" style={{ color: 'var(--good-text)' }}>{fmtNet(view.summary.cashAvailable, baseCurrency)}</span></div>
+              <div>On card <span className="num font-semibold" style={{ color: 'var(--warn-text)' }}>{fmt(view.summary.cardOutstanding, baseCurrency)}</span></div>
+            </div>
           </div>
-        </Panel>
-      )}
-
-      {!flagOff && active.length === 0 && (
-        <Panel>
-          <div className="p-6 text-center">
-            <p className="text-ink-mid mb-3">No accounts yet.</p>
-            <p className="text-sm text-ink-dim mb-4">
-              Cloud households are seeded automatically by the Phase 1 backfill.
-              If your list is empty, add one manually or refresh after the
-              migration runs.
-            </p>
-            <Button onClick={openAddAccount}>
-              <Plus size={14} /> Add Your First Account
-            </Button>
+          <div className="hidden lg:grid grid-cols-3 gap-3">
+            <SummaryTile label="Available cash" amount={view.summary.cashAvailable} currency={baseCurrency} tone="sage" />
+            <SummaryTile label="Card outstanding" amount={view.summary.cardOutstanding} currency={baseCurrency} tone="honey" />
+            <SummaryTile label="Spendable now" amount={view.summary.spendableNow} currency={baseCurrency} />
           </div>
-        </Panel>
-      )}
 
-      {/* Board M5 — type-totals strip: bank · cards · investment · cash. Tap a
-          tile to filter the wallet to that type (tap again to clear). */}
-      {!flagOff && active.length > 0 && (
-        <div className="grid grid-cols-4 gap-2 mb-3">
-          {WALLET_KINDS.map(({ kind, label }) => {
-            const on = kindFilter === kind;
-            const total = kindTotals.tot[kind] ?? 0;
-            return (
-              <button key={kind} type="button" onClick={() => setKindFilter(on ? 'all' : kind)}
-                aria-pressed={on}
-                className="rounded-r2 p-2.5 text-left border-none cursor-pointer transition-[box-shadow] min-w-0"
-                style={on
-                  ? { background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))', boxShadow: 'var(--neu-inset)' }
-                  : { background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
-                <div className="font-mono text-[8px] tracking-wider uppercase text-ink-dim mb-1 truncate">{label} · {kindTotals.cnt[kind] ?? 0}</div>
-                <div className={`num text-[13.5px] font-bold truncate ${total < 0 ? 'text-terra' : 'text-ink'}`}>{total < 0 ? '−' : ''}{fmt(total, baseCur)}</div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Mobile / tablet — wallet cards with the ledger expanding inline.
-          `grid-cols-1` is load-bearing: without an explicit track the implicit
-          column sizes to max-content, so a wallet card can't shrink and the
-          page scrolls sideways on phones. */}
-      {!flagOff && active.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 lg:hidden">
-          {shownActive.map(acc => (
-            <AccountRow
-              key={acc.id}
-              acc={acc}
-              linkLabel={linkLabel(acc)}
-              balance={balanceOf(acc)}
-              baseCur={baseCur}
-              txns={transactions}
-              rates={rates}
-              onEdit={() => openEditAccount(acc)}
-              onArchive={() => toggleArchive(acc)}
-              onReconcile={(real) => handleReconcile(acc, real)}
-              ledgerEnabled
-            />
-          ))}
-          {shownActive.length === 0 && (
-            <p className="col-span-full text-center text-ink-dim text-sm py-8">No {WALLET_KINDS.find(w => w.kind === kindFilter)?.label.toLowerCase()} accounts.</p>
+          {/* The region keeps the name "Cash in Hand" (one per household); the group heading says Cash.
+              No count or total — the card itself carries the one balance. */}
+          {view.cash.length > 0 && (
+            <section aria-label="Cash in Hand">
+              <GroupBar icon="💵" name="Cash" tone="sage" />
+              <div className="flex flex-col gap-3">
+                {view.cash.map(row)}
+              </div>
+            </section>
           )}
-        </div>
-      )}
 
-      {/* Board D4 desktop — wallet grid (left) + the selected account's ledger
-          in a persistent right rail. Clicking a card moves it into the rail. */}
-      {!flagOff && active.length > 0 && (
-        <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_520px] lg:gap-6 lg:items-start">
-          <div className="grid grid-cols-2 gap-3 content-start">
-            {shownActive.map(acc => {
-              const bal = balanceOf(acc);
-              const on = selectedAccount?.id === acc.id;
-              const estimated = !!acc.confidence && acc.confidence !== 'confirmed';
-              return (
-                <button key={acc.id} type="button" onClick={() => setSelectedAccountId(acc.id)}
-                  className="text-left rounded-r3 px-4 py-3.5 border-none cursor-pointer"
-                  style={on
-                    ? { background: 'var(--canvas)', boxShadow: 'var(--neu), 0 0 0 1.5px var(--accent)' }
-                    : { background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-                  <div className="flex items-center gap-3">
-                    <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-[15px] flex-shrink-0"
-                      style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>{KIND_ICON[acc.kind]}</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="font-bold text-[14px] text-ink truncate">{acc.name}</span>
-                        {acc.isDefault && <span className="text-honey text-[12px]" title={`Default for ${acc.currency}`}>★</span>}
-                        {estimated && (
-                          <span className="font-mono text-[8.5px] tracking-wider uppercase px-1.5 py-px rounded"
-                            style={{ border: '1px dashed color-mix(in srgb, hsl(var(--honey)) 55%, transparent)', color: 'hsl(var(--honey))' }}>est</span>
-                        )}
-                      </div>
-                      <div className="num text-[9.5px] text-ink-dim truncate">
-                        {WALLET_KINDS.find(w => w.kind === acc.kind)?.label.toLowerCase() ?? acc.kind} · {acc.currency}
-                        {linkLabel(acc) ? ` · ${linkLabel(acc)!.toLowerCase()}` : ''}
-                      </div>
+          <section aria-label="Bank">
+            <GroupBar icon="🏦" name="Bank" count={view.banks.length} unit={['account', 'accounts']}
+              total={fmtNet(view.bankTotal, baseCurrency)} tone="sage" />
+            <div className="flex flex-col gap-3">
+              {view.banks.map(row)}
+            </div>
+            {view.banks.length === 0 && <p className="text-[0.84rem] text-ink-dim px-1">No bank accounts yet.</p>}
+          </section>
+
+          <section aria-label="Credit Card">
+            <GroupBar icon="💳" name="Credit Card" count={view.cards.length} unit={['card', 'cards']}
+              total={view.summary.cardOutstanding > 0 ? `−${fmt(view.summary.cardOutstanding, baseCurrency)}` : fmt(0, baseCurrency)}
+              tone="honey" />
+            <div className="flex flex-col gap-3">
+              {view.cards.map(row)}
+            </div>
+            {view.cards.length === 0 && <p className="text-[0.84rem] text-ink-dim px-1">No credit cards yet.</p>}
+          </section>
+
+          {/* The narrowed scope, made legible: where the other account types went. */}
+          <div className="mt-5 lg:grid lg:grid-cols-2 lg:gap-3">
+            <CrossLink icon="🏛️" title="Loans" description="Money you owe — in Debts" onClick={() => navigate('/debts')} />
+            <CrossLink icon="📈" title="Investments" description="Things you own — in Net Worth" onClick={() => navigate('/networth')} />
+          </div>
+
+          {view.archived.length > 0 && (
+            <div className="mt-2 lg:mt-3">
+              <button type="button" aria-expanded={showArchived} onClick={() => setShowArchived(s => !s)}
+                className="w-full flex items-center gap-3 px-1 py-3 text-left text-[13px] text-ink-mid border-t border-line lg:border-0 lg:rounded-r3 lg:px-4 lg:opacity-60 lg:[background:var(--canvas)] lg:[box-shadow:var(--neu-sm)]">
+                <span aria-hidden>🗄️</span>
+                <span className="font-semibold">Archived · {view.archived.length}</span>
+                <span className="text-ink-dim text-[12px] truncate">— {view.archived.map(a => a.name).join(', ')}</span>
+                <span className="ml-auto text-ink-dim" aria-hidden>{showArchived ? '▾' : '▸'}</span>
+              </button>
+              {showArchived && (
+                <div className="flex flex-col gap-2 mt-2">
+                  {view.archived.map(a => (
+                    <div key={a.id} className="flex items-center gap-3 rounded-r3 px-4 py-3 opacity-60"
+                      style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+                      <span aria-hidden>{iconOf(a)}</span>
+                      <span className="flex-1 min-w-0 truncate text-[0.9rem] text-ink">{a.name}</span>
+                      <span className="num text-[0.9rem] text-ink-mid">{signedMoney(a, view.balances.get(a.id) ?? 0, baseCurrency)}</span>
+                      <button type="button" onClick={() => restore(a)}
+                        className="min-h-[44px] px-1 text-[12px] font-medium text-ink-mid hover:text-ink">Restore</button>
                     </div>
-                    <Money amount={bal} currency={baseCur} maxChars={11}
-                      className={`num font-bold text-[16px] flex-shrink-0 ${bal < 0 ? 'text-terra' : 'text-ink'}`} />
-                  </div>
-                </button>
-              );
-            })}
-            {shownActive.length === 0 && (
-              <p className="col-span-full text-center text-ink-dim text-sm py-8">No {WALLET_KINDS.find(w => w.kind === kindFilter)?.label.toLowerCase()} accounts.</p>
-            )}
-          </div>
-
-          {selectedAccount && (
-            <div className="rounded-r3 p-5 lg:sticky lg:top-[124px]" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-              <div className="flex items-center gap-3 mb-3">
-                <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-[15px] flex-shrink-0"
-                  style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>{KIND_ICON[selectedAccount.kind]}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-[15px] text-ink truncate">{selectedAccount.name} · ledger</div>
-                  <div className="num text-[10px] text-ink-dim">computed balance · running</div>
+                  ))}
                 </div>
-                <Money amount={balanceOf(selectedAccount)} currency={baseCur} maxChars={11}
-                  className={`num font-bold text-[17px] ${balanceOf(selectedAccount) < 0 ? 'text-terra' : 'text-ink'}`} />
-              </div>
-              <DeskReconcile
-                key={selectedAccount.id}
-                acc={selectedAccount}
-                balance={balanceOf(selectedAccount)}
-                onReconcile={(real) => handleReconcile(selectedAccount, real)}
-              />
-              <AccountLedger
-                account={selectedAccount}
-                accountValue={accountValueOf(selectedAccount)}
-                txns={transactions}
-                baseCur={baseCur}
-                rates={rates}
-              />
-              <div className="flex items-center gap-3 pt-3 mt-1 border-t border-line">
-                {selectedAccount.isDefault && (
-                  <span className="font-mono text-[9px] tracking-wider uppercase text-honey">★ Default for {selectedAccount.currency}</span>
-                )}
-                <button className="font-mono text-[9px] tracking-wider uppercase text-ink-dim hover:text-ink"
-                  onClick={() => openEditAccount(selectedAccount)}>Edit</button>
-                <button className="font-mono text-[9px] tracking-wider uppercase text-ink-dim hover:text-ink"
-                  onClick={() => toggleArchive(selectedAccount)}>Archive</button>
-              </div>
+              )}
             </div>
           )}
         </div>
-      )}
 
-      {/* Board M5 — the honest note on how balances and the default work. */}
-      {!flagOff && active.length > 0 && (
-        <p className="text-[11px] text-ink-dim leading-snug mt-4 px-1">
-          Balances are computed from the ledger — never typed over. ★ marks the default per currency (it pre-fills Add Transaction); change it from any account's edit sheet.
-        </p>
-      )}
-
-      {!flagOff && archived.length > 0 && (
-        <div className="mt-6">
-          <button
-            type="button"
-            onClick={() => setShowArchived(s => !s)}
-            className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim hover:text-ink-mid mb-2"
-          >
-            {showArchived ? '▾' : '▸'} Archived ({archived.length})
-          </button>
-          {showArchived && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 opacity-70">
-              {archived.map(acc => (
-                <AccountRow
-                  key={acc.id}
-                  acc={acc}
-                  linkLabel={linkLabel(acc)}
-                  balance={null}
-                  baseCur={baseCur}
-                  txns={transactions}
-                  rates={rates}
-                  onEdit={() => openEditAccount(acc)}
-                  onArchive={() => toggleArchive(acc)}
-                  ledgerEnabled={false}
-                />
-              ))}
+        {/* Desktop rail. */}
+        <aside className="hidden lg:flex flex-col gap-3.5">
+          <div className="rounded-r3 px-[22px] py-5" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+            <div className="ui-label mb-3" style={{ color: 'var(--warn-text)' }}>
+              Needs your attention
             </div>
-          )}
-        </div>
-      )}
-
-      {!flagOff && mode === 'shadow' && (
-        <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim mt-6">
-          Shadow mode · changes apply to the canonical accounts table; legacy
-          assets / debts continue to drive the picker until <code>money_map</code> = on.
-        </p>
-      )}
+            {view.stale.length === 0 ? (
+              <p className="text-[12.5px] text-ink-dim leading-snug">
+                Every balance has been checked against a statement in the last {STALE_AFTER_DAYS} days.
+              </p>
+            ) : (
+              <>
+                {view.stale.map(({ a, days }) => (
+                  <button key={a.id} type="button" onClick={() => reconcile(a.id)}
+                    className="w-full flex items-center gap-2.5 py-2 text-left text-[12.5px] text-ink-mid hover:text-ink">
+                    <span aria-hidden>{iconOf(a)}</span>
+                    <span className="flex-1 min-w-0 truncate">{a.name} · {days} days stale</span>
+                    <span className="text-[12px] font-medium" style={{ color: 'var(--warn-text)' }}>Reconcile</span>
+                  </button>
+                ))}
+                <Button full className="mt-3" onClick={() => reconcile(view.stale[0].a.id)}>
+                  {view.stale.length === 1 ? 'Reconcile it' : `Reconcile ${view.stale[0].a.name} first`}
+                </Button>
+              </>
+            )}
+          </div>
+        </aside>
+      </div>
     </div>
   );
 }
 
-function AccountRow(props: {
-  acc: Account;
-  linkLabel: string | null;
-  balance: number | null;       // null → balance column hidden (flag off / archived)
-  baseCur: string;
-  txns: Transaction[];
-  rates: Record<string, number>;
-  onEdit: () => void;
-  onArchive: () => void;
-  onReconcile?: (real: number) => void;   // undefined → reconcile hidden
-  ledgerEnabled: boolean;
+function SummaryTile({ label, amount, currency, tone }: { label: string; amount: number; currency: string; tone?: 'sage' | 'honey' }) {
+  return (
+    <div className="rounded-r3 p-4 min-w-0" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+      <div className="ui-label mb-2">{label}</div>
+      <span style={tone ? { color: `hsl(var(--${tone}))` } : undefined}>
+        <AnimatedMoney amount={amount} currency={currency} className="num font-bold text-[22px]" />
+      </span>
+    </div>
+  );
+}
+
+function GroupBar({ icon, name, count, unit, total, tone }: {
+  icon: string; name: string; count?: number; unit?: [string, string]; total?: string; tone: 'sage' | 'honey';
 }) {
-  const { acc, linkLabel, balance, baseCur, txns, rates, onEdit, onArchive, onReconcile, ledgerEnabled } = props;
-  const [fixing, setFixing] = useState(false);
-  const [fixVal, setFixVal] = useState('');
-  const [showLedger, setShowLedger] = useState(false);
+  return (
+    <div className="flex items-center gap-3 px-1 pt-4 pb-3">
+      <span className="w-[26px] h-[26px] rounded-r2 flex items-center justify-center text-[13px] flex-shrink-0"
+        style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }} aria-hidden>{icon}</span>
+      <h2 className="font-bold text-[14px] text-ink">{name}</h2>
+      {count !== undefined && unit && <span className="text-[12px] text-ink-dim">{count} {count === 1 ? unit[0] : unit[1]}</span>}
+      {total !== undefined && <span className="ml-auto num font-bold text-[15px]" style={{ color: `hsl(var(--${tone}))` }}>{total}</span>}
+    </div>
+  );
+}
 
-  const value = accountValueOf(acc);
-  const estimated = acc.confidence && acc.confidence !== 'confirmed';
+function CrossLink({ icon, title, description, onClick }: { icon: string; title: string; description: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="w-full flex items-center gap-3 px-1 py-3 text-left text-[13px] text-ink-mid border-t border-line lg:border-0 lg:rounded-r3 lg:p-4 lg:[background:var(--canvas)] lg:[box-shadow:var(--neu-sm)]">
+      <span className="text-[14px] lg:w-[34px] lg:h-[34px] lg:rounded-r2 lg:flex lg:items-center lg:justify-center lg:[background:var(--sunken)] lg:[box-shadow:var(--neu-inset)]" aria-hidden>{icon}</span>
+      <span className="min-w-0">
+        <span className="font-semibold text-ink">{title}</span>
+        <span className="text-ink-dim"> — </span>
+        <span className="text-ink-dim text-[12px]">{description.replace(/^[^—]*— /, '')}</span>
+      </span>
+      <span className="ml-auto text-[15px]" style={{ color: 'var(--accent-text)' }} aria-hidden>→</span>
+    </button>
+  );
+}
 
-  // Board M5 — each wallet card footers its own action language: bank/card →
-  // ledger, cash → balance check, investment → update value. Cash & investment
-  // open the reconcile input; the rest toggle the ledger.
-  const isReconcileAction = acc.kind === 'cash' || acc.kind === 'investment';
-  const actionLabel = acc.kind === 'cash' ? 'balance check' : acc.kind === 'investment' ? 'update value' : 'ledger';
-  const actionColor = acc.kind === 'cash' ? 'hsl(var(--honey))' : 'var(--ff-ink-4)';
-  const runAction = () => {
-    if (isReconcileAction) { setFixing(f => !f); setFixVal(balance != null ? String(balance) : ''); }
-    else setShowLedger(s => !s);
-  };
-  const actionAvailable = ledgerEnabled && (!isReconcileAction || Boolean(onReconcile));
+function AccountRow({ acc, balance, currency, now, ledgerOpen, onOpen, onReconcile, onToggleLedger, transactions, rates }: {
+  acc: Account; balance: number; currency: string; now: Date; ledgerOpen: boolean;
+  onOpen: () => void; onReconcile: () => void; onToggleLedger: () => void;
+  transactions: Transaction[]; rates: Record<string, number>;
+}) {
+  const isCard = acc.kind === 'credit_card';
+  const isCash = acc.kind === 'cash';
+  const days = staleDays(acc, now);
+  const figures = isCard ? cardFigures(acc.creditLimit, balance) : null;
+  const due = isCard && acc.paymentDueDay ? fmtDay(nextDueDate(acc.paymentDueDay, now)) : null;
+
+  let line: React.ReactNode;
+  let phoneLine: React.ReactNode = null;
+  if (isCard) {
+    phoneLine = figures
+      ? `${fmtNet(figures.available, currency)} free of ${fmt(figures.limit, currency)}`
+      : 'Add the credit limit to see what’s free';
+    if (days !== null) phoneLine = <><span style={{ color: 'var(--warn-text)' }}>not reconciled in {days} days</span> · {phoneLine}</>;
+    line = figures
+      ? [
+          `${fmtNet(figures.available, currency)} free of ${fmt(figures.limit, currency)}`,
+          acc.billingCycleDay ? `cycle ${ordinal(acc.billingCycleDay)}` : null,
+          due ? `due ${due}` : null,
+        ].filter(Boolean).join(' · ')
+      : 'Add the credit limit to see what’s free';
+    if (days !== null) line = <><span style={{ color: 'var(--warn-text)' }}>not reconciled in {days} days</span> · {line}</>;
+  } else if (days !== null) {
+    line = <span style={{ color: 'var(--warn-text)' }}>not reconciled in {days} days</span>;
+  } else if (isCash) {
+    line = 'Notes and coins you hold';
+  } else {
+    line = acc.paymentModes?.length
+      ? acc.paymentModes.map(m => PAYMENT_MODE_LABEL[m]).join(' · ')
+      : 'Add the payment modes you use';
+  }
+  const stale = days !== null;
 
   return (
-    <div className="rounded-r3 p-4 relative" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+    <div className="rounded-r3 p-4 min-w-0"
+      style={{ background: 'var(--canvas)', boxShadow: acc.isDefault ? 'var(--neu), 0 0 0 1.5px var(--accent)' : 'var(--neu)' }}>
       <div className="flex items-center gap-3">
-        {/* Board M5 — kind tile (inset). */}
-        <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-[15px] flex-shrink-0"
-          style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} aria-hidden>
-          {KIND_ICON[acc.kind]}
-        </span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="text-ink font-semibold text-[14.5px] truncate">{acc.name}</span>
-            {acc.isDefault && <span className="text-honey text-[12px] flex-shrink-0" title="Default account">★</span>}
-            {balance !== null && estimated && (
-              <span className="font-mono text-[0.55rem] tracking-wider uppercase text-honey border border-honey/40 rounded px-1 flex-shrink-0">est</span>
-            )}
+        <button type="button" onClick={onOpen} aria-label={`Edit ${acc.name}`}
+          className="flex items-center gap-3 flex-1 min-w-0 text-left bg-transparent border-none cursor-pointer">
+          <span className="w-10 h-10 rounded-r2 flex items-center justify-center text-[18px] flex-shrink-0"
+            style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }} aria-hidden>{iconOf(acc)}</span>
+          <span className="min-w-0">
+            <span className="flex items-center gap-1.5">
+              <span className="font-bold text-[15px] text-ink truncate">{acc.name}</span>
+              {/* W6 (audit FE-UIS-11): an onboarding estimate (take-home pay as opening cash) is not a
+                  counted balance until it is reconciled, which confirms it. */}
+              {isEstimate(acc) && <EstimatedTag confidence={acc.confidence!} source={acc.source} className="flex-shrink-0" />}
+              {acc.isDefault && (
+                <>
+                  <span className="text-[12px]" style={{ color: 'var(--warn-text)' }} aria-hidden>★</span>
+                  <span className="hidden lg:inline text-[11px] text-ink-dim">Default account</span>
+                </>
+              )}
+            </span>
+            {phoneLine !== null && <span className="lg:hidden block text-[12px] text-ink-dim truncate mt-0.5">{phoneLine}</span>}
+            <span className={`${phoneLine !== null ? 'hidden lg:block' : 'block'} text-[12px] text-ink-dim truncate mt-0.5`}>{line}</span>
+          </span>
+        </button>
+
+        {figures && (
+          <span className="hidden lg:block w-[110px] h-1.5 rounded-full overflow-hidden flex-shrink-0" role="img"
+            aria-label={`${Math.round(figures.utilisation * 100)}% of the credit limit used`}
+            style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+            <span className="block h-full rounded-full chart-grow"
+              style={{ width: `${Math.min(100, figures.utilisation * 100)}%`, background: 'hsl(var(--denim))' }} />
+          </span>
+        )}
+
+        <div className="text-right flex-shrink-0">
+          <div className="num font-bold text-[17px]"
+            style={{ color: isCard && balance < 0 ? 'hsl(var(--honey))' : undefined }}>
+            {signedMoney(acc, balance, currency)}
           </div>
-          <div className="font-mono text-[10px] text-ink-dim truncate mt-0.5">
-            {KIND_LABEL[acc.kind]} · {acc.currency}{acc.isDefault ? ' · ★ default — pre-fills Add Transaction' : ''}
-          </div>
-          {linkLabel && (
-            <div className="flex items-center gap-1 mt-0.5 text-[0.7rem] text-ink-dim">
-              <LinkIcon size={10} /> {linkLabel}
-            </div>
+          {!isCash && (
+            <button type="button" onClick={stale ? onReconcile : onToggleLedger}
+              aria-expanded={stale ? undefined : ledgerOpen}
+              className="block ml-auto text-[12px] font-medium mt-0.5 hover:opacity-70"
+              style={{ color: stale ? 'var(--warn-text)' : 'var(--ff-ink-3, inherit)' }}>
+              {stale ? 'Reconcile ›' : ledgerOpen ? 'Hide ledger' : 'Ledger ›'}
+            </button>
           )}
         </div>
-        {balance !== null && (
-          <div className="text-right flex-shrink-0">
-            <Money amount={balance} currency={baseCur} maxChars={10} className={`num font-bold text-[17px] ${balance < 0 ? 'text-terra' : 'text-ink'}`} />
-            {actionAvailable && (
-              <button type="button" onClick={runAction}
-                className="block ml-auto font-mono text-[7.5px] tracking-wider uppercase mt-0.5 hover:opacity-70"
-                style={{ color: actionColor }}>
-                {actionLabel} ▸
-              </button>
-            )}
+      </div>
+      {figures && (
+        <div className="lg:hidden mt-3">
+          <div className="trough h-1.5" role="img" aria-label={`${Math.round(figures.utilisation * 100)}% of the credit limit used`}>
+            <div className="h-full rounded-full chart-grow"
+              style={{ width: `${Math.min(100, figures.utilisation * 100)}%`, background: 'hsl(var(--denim))' }} />
           </div>
-        )}
-        {/* Edit / archive — quiet controls; the action language above is primary. */}
-        <div className="flex flex-col gap-1 flex-shrink-0">
-          <button type="button" onClick={onEdit}
-            className="text-ink-dim hover:text-ink p-1 rounded hover:bg-bg3" aria-label="Edit account" title="Edit">
-            <Pencil size={13} />
-          </button>
-          <button type="button" onClick={onArchive}
-            className="text-ink-dim hover:text-ink p-1 rounded hover:bg-bg3"
-            aria-label={acc.isArchived ? 'Restore account' : 'Archive account'} title={acc.isArchived ? 'Restore' : 'Archive'}>
-            {acc.isArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
-          </button>
-        </div>
-      </div>
-
-      {/* v9 D2 — reconcile: enter the real balance / current value → the drift is
-          absorbed into the account's reconciliation offset (no transaction). */}
-      {fixing && onReconcile && (
-        <div className="flex items-center gap-2 mt-2 pl-1">
-          <span className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">{acc.kind === 'investment' ? 'Current value' : 'Real balance'}</span>
-          <input
-            type="number" inputMode="decimal" value={fixVal} onChange={e => setFixVal(e.target.value)}
-            className="bg-bg3 border border-line rounded-md px-2 py-1 text-sm num w-32" placeholder="0" />
-          <Button onClick={() => { const n = Number(fixVal); if (!isNaN(n)) { onReconcile(n); setFixing(false); } }}>Fix</Button>
-          <button type="button" onClick={() => setFixing(false)} className="text-[0.72rem] text-ink-dim hover:text-ink">Cancel</button>
+          {/* The percentage is not capped — a card over its limit says so; only the bar stops at full. */}
+          <div className="text-[12px] text-ink-dim mt-1.5">
+            {Math.round(figures.utilisation * 100)}% of limit used{due ? ` · due ${due}` : ''}
+          </div>
         </div>
       )}
-
-      {/* B1.4 — per-account ledger: reverse-chronological, with running impact. */}
-      {showLedger && ledgerEnabled && (
-        <AccountLedger account={acc} accountValue={value} txns={txns} baseCur={baseCur} rates={rates} />
+      {/* Cash is counted, not read off a statement: Reconcile and Ledger sit on its card. */}
+      {isCash && (
+        <div className="flex items-center gap-2 flex-wrap mt-2">
+          <Button variant="ghost" onClick={onReconcile} className="min-h-[44px]">
+            <ClipboardCheck size={16} aria-hidden /> Reconcile
+          </Button>
+          <Button variant="ghost" onClick={onToggleLedger} aria-expanded={ledgerOpen} className="min-h-[44px]">
+            <List size={16} aria-hidden /> Ledger
+          </Button>
+        </div>
+      )}
+      {ledgerOpen && (
+        <>
+          <AccountLedger account={acc} txns={transactions} baseCur={currency} rates={rates} />
+          {!isCash && (
+            <button type="button" onClick={onReconcile}
+              className="mt-1 ml-1 min-h-[44px] text-[12px] font-medium text-ink-mid hover:text-ink">Reconcile against a statement ›</button>
+          )}
+        </>
       )}
     </div>
   );
 }
 
-/** Board D4 — the ledger rail's inline reconcile field. Each kind speaks its
- *  own language ("bank says" → Balance check · investment → Update value); the
- *  drift lands on the account's reconciliation offset, never as a transaction. */
-function DeskReconcile({ acc, balance, onReconcile }: {
-  acc: Account; balance: number; onReconcile: (real: number) => void;
+/** Per-account ledger: reverse-chronological, with the running balance. */
+function AccountLedger({ account, txns, baseCur, rates }: {
+  account: Account; txns: Transaction[]; baseCur: string; rates: Record<string, number>;
 }) {
-  const [val, setVal] = useState(String(Math.round(balance)));
-  useEffect(() => { setVal(String(Math.round(balance))); }, [balance]);
-  const label = acc.kind === 'investment' ? 'current value' : acc.kind === 'cash' ? 'cash on hand' : 'bank says';
-  const cta   = acc.kind === 'investment' ? 'Update value' : 'Balance check';
-  return (
-    <div className="flex items-center gap-2 mb-3">
-      <div className="flex-1 flex items-center gap-2 h-[40px] px-3 rounded-r2 min-w-0"
-        style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-        <span className="font-mono text-[8px] tracking-wider uppercase text-ink-dim flex-shrink-0">{label}</span>
-        <input type="number" inputMode="decimal" value={val} onChange={e => setVal(e.target.value)}
-          aria-label={`${label} for ${acc.name}`}
-          className="num font-bold text-[14px] bg-transparent border-none outline-none text-ink w-full min-w-0" />
-      </div>
-      <button type="button" className="btn-primary btn-sm h-[40px] flex-shrink-0"
-        onClick={() => { const n = Number(val); if (!isNaN(n)) onReconcile(n); }}>{cta}</button>
-    </div>
-  );
-}
+  // W8a (FE-UIC-15): the walk undoes each reconcile adjustment as it passes the day it was applied.
+  const rows = useMemo(() => accountLedgerRows(account, txns, baseCur, rates), [account, txns, baseCur, rates]);
 
-function AccountLedger(props: {
-  account: Account; accountValue: string; txns: Transaction[]; baseCur: string; rates: Record<string, number>;
-}) {
-  const { account, accountValue, txns, baseCur, rates } = props;
-  const rows = useMemo(() => {
-    // v9 — match by account uuid OR the legacy encoded value; income credits the
-    // destination; transfer/investment touch both legs (R-AGG-4).
-    const hits = (v: string | undefined) => v === account.id || v === accountValue;
-    const mine = txns
-      .map(t => {
-        const amt = effectiveAmount(t, baseCur, rates);
-        let impact = 0;
-        if (t.type === 'income' && hits(creditAccountOf(t))) impact = amt;
-        else if (t.type === 'expense' && hits(debitAccountOf(t))) impact = -amt;
-        else if (t.type === 'transfer' || t.type === 'investment') {
-          impact = (hits(creditAccountOf(t)) ? amt : 0) - (hits(debitAccountOf(t)) ? amt : 0);
-        }
-        return { t, impact };
-      })
-      .filter(r => r.impact !== 0)
-      .sort((a, b) => (a.t.date < b.t.date ? 1 : a.t.date > b.t.date ? -1 : 0));
-    // running balance newest→oldest, anchored at current computed balance
-    let running = computeAccountBalance(account, txns, baseCur, rates);
-    return mine.map(r => { const at = running; running -= r.impact; return { ...r, runningAfter: at }; });
-  }, [account, accountValue, txns, baseCur, rates]);
-
-  const recon = (account.reconciliationLog ?? []).slice(-5).reverse();
-  if (!rows.length && !recon.length) return <div className="mt-2 pl-1 text-[0.72rem] text-ink-dim">No entries yet.</div>;
+  const log = (account.reconciliationLog ?? []).slice(-5).reverse();
+  if (!rows.length && !log.length) return <div className="mt-3 pl-1 text-[0.72rem] text-ink-dim">No entries yet.</div>;
   return (
-    <div className="mt-2 ml-1 border-l-2 border-line pl-3 space-y-1">
-      {/* §2.6 quiet log — reconciliations appear in account history ONLY, never in totals. */}
-      {recon.map((e, i) => (
-        <div key={`recon-${i}`} className="flex items-center gap-2 text-[0.74rem] text-ink-dim italic">
-          <span className="font-mono text-[0.62rem] w-[4.5rem] shrink-0">{e.at.slice(0, 10)}</span>
-          <span className="flex-1">
-            {e.kind === 'investment' ? 'Value updated' : 'Reconciled'} ({e.delta >= 0 ? '+' : ''}{Math.round(e.delta)})
+    <div className="mt-3 ml-1 border-l-2 border-line pl-3 space-y-1">
+      {/* Reconcile adjustments appear in account history ONLY — never in a spend total. */}
+      {log.map((e, i) => (
+        <div key={`log-${i}`} className="flex items-center gap-2 text-[0.74rem] text-ink-dim italic">
+          <span className="num text-[11px] w-[4.5rem] shrink-0">{e.at.length > 10 ? dateKeyIn(new Date(e.at)) : e.at}</span>
+          <span className="flex-1 truncate">
+            {e.kind === 'investment' ? 'Value updated' : e.kind === 'merge' ? (e.note ?? 'History moved in') : 'Reconcile adjustment'}
+            {' '}({e.delta >= 0 ? '+' : ''}{Math.round(e.delta)})
           </span>
         </div>
       ))}
       {rows.slice(0, 50).map(({ t, impact, runningAfter }) => (
         <div key={t.id} className="flex items-center gap-2 text-[0.78rem]">
-          <span className="text-ink-dim font-mono text-[0.62rem] w-[4.5rem] shrink-0">{t.date}</span>
+          <span className="text-ink-dim num text-[11px] w-[4.5rem] shrink-0">{t.date}</span>
           <span className="flex-1 truncate text-ink-mid">{t.description || getCat(t.category).label}</span>
-          <span className={`num ${impact < 0 ? 'text-terra' : 'text-sage'}`}>{impact >= 0 ? '+' : ''}{Math.round(impact)}</span>
-          <span className="num text-ink-dim w-20 text-right">{Math.round(runningAfter)}</span>
+          <span className="num" style={{ color: impact < 0 ? 'hsl(var(--terra))' : 'hsl(var(--sage))' }}>
+            {fmtSigned(impact, baseCur)}
+          </span>
+          <span className="num text-ink-dim w-20 text-right">{fmtNet(runningAfter, baseCur)}</span>
         </div>
       ))}
     </div>

@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { CheckCircle, AlertTriangle, Mail } from 'lucide-react';
+import { CheckCircle, AlertTriangle, Mail, Users } from 'lucide-react';
 import Button from '../../components/ui/Button';
 import { acceptInvitation, getSession } from '../../lib/auth';
 import { AuthShell } from './SignIn';
 import { useStore } from '../../store';
+import { inviteAcceptMessage } from '../../lib/householdTypes';
 
 export default function AcceptInvite() {
   const params = useParams<{ token?: string; '*': string }>();
   const rawToken = params.token ?? params['*'] ?? new URLSearchParams(window.location.search).get('token') ?? '';
   const token = rawToken ? decodeURIComponent(rawToken) : '';
   const navigate = useNavigate();
-  const [status, setStatus] = useState<'loading' | 'need_signin' | 'success' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'need_signin' | 'confirm' | 'joining' | 'success' | 'error'>('loading');
   const [error, setError] = useState('');
   const [householdId, setHouseholdId] = useState<string | null>(null);
   const switchHousehold = useStore(s => s.switchHousehold);
@@ -28,26 +29,50 @@ export default function AcceptInvite() {
         setStatus('need_signin');
         return;
       }
-      try {
-        const result = await acceptInvitation(token);
-        setHouseholdId(result.household_id);
-        setStatus('success');
-        // Switch to the new household after a moment
-        setTimeout(async () => {
-          await switchHousehold(result.household_id);
-          await refresh();
-          toast('Welcome to the household!', 'success');
-          navigate('/dashboard');
-        }, 1800);
-      } catch (e) {
-        setError((e as Error).message);
-        setStatus('error');
-      }
+      // W8a (audit FE-PLT-07): a signed-in visit asks first. Opening a link (one forwarded to the wrong
+      // person, or tapped by accident) used to join the household on page load.
+      setStatus('confirm');
     })();
-  }, [token, switchHousehold, refresh, toast, navigate]);
+  }, [token]);
 
-  if (status === 'loading') {
-    return <AuthShell title="Accepting invitation…"><div className="text-center text-ink-mid py-6">One moment…</div></AuthShell>;
+  async function join() {
+    setStatus('joining');
+    try {
+      const result = await acceptInvitation(token);
+      setHouseholdId(result.household_id);
+      setStatus('success');
+      // Switch to the new household after a moment
+      setTimeout(async () => {
+        await switchHousehold(result.household_id);
+        await refresh();
+        toast('Welcome to the household!', 'success');
+        navigate('/dashboard');
+      }, 1800);
+    } catch (e) {
+      setError(inviteAcceptMessage(e));   // W7a (FE-UIS-16): no raw HOUSEHOLD_FULL code
+      setStatus('error');
+    }
+  }
+
+  if (status === 'loading' || status === 'joining') {
+    return <AuthShell title={status === 'joining' ? 'Accepting invitation…' : 'Opening invitation…'}><div className="text-center text-ink-mid py-6">One moment…</div></AuthShell>;
+  }
+
+  if (status === 'confirm') {
+    return (
+      <AuthShell title="Join this household?">
+        <div className="text-center">
+          <Users size={48} className="mx-auto text-coral mb-4" />
+          <p className="text-ink-mid mb-5">
+            You've been invited to join a household on Vyact. Joining shares its money picture with you, and yours with its members.
+          </p>
+          <div className="space-y-2.5">
+            <Button full onClick={join}>Join household</Button>
+            <Link to="/dashboard" className="block"><Button variant="ghost" full>Not now</Button></Link>
+          </div>
+        </div>
+      </AuthShell>
+    );
   }
 
   if (status === 'need_signin') {
@@ -79,7 +104,7 @@ export default function AcceptInvite() {
           <CheckCircle size={48} className="mx-auto text-sage mb-4" />
           <p className="text-ink-mid mb-2">Invitation accepted.</p>
           <p className="text-ink-dim text-sm">Switching to your new household…</p>
-          {householdId && <code className="block mt-3 font-mono text-[0.62rem] text-ink-dim">{householdId}</code>}
+          {householdId && <code className="block mt-3 font-mono text-[11px] text-ink-dim">{householdId}</code>}
         </div>
       </AuthShell>
     );

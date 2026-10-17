@@ -3,13 +3,19 @@
 // Web builds import this too; every effect is guarded by isNative(), so in a
 // normal browser this module is a no-op. Keeps native concerns in ONE place.
 
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core';
 import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { supabase } from './supabase';
+import { supabase, APP_URL } from './supabase';
 
 export const isNative = (): boolean => Capacitor.isNativePlatform();
+
+// Origin to build links that OTHER people open (household invites). In the native app
+// window.location.origin is https://localhost — an address only this phone resolves — so a link
+// built from it is dead on arrival. Native uses the public app URL instead.
+export const shareOrigin = (): string =>
+  (isNative() && APP_URL ? APP_URL.replace(/\/+$/, '') : window.location.origin);
 
 // Custom-scheme deep link the OAuth flow returns to. This must be:
 //   • allow-listed in Supabase → Auth → URL Configuration → Redirect URLs
@@ -31,6 +37,7 @@ const ROUTE_BY_NOTIF_TYPE: Record<string, string> = {
   debt_payment_due: '/debts',
   stale_balance: '/accounts',
   invite_received: '/households',
+  invite_pending: '/households',
   member_activity: '/households',
   sync_conflict: '/dashboard',
   milestone: '/dashboard',
@@ -63,6 +70,61 @@ export function consumePendingAction(): string | null {
   return a;
 }
 
+// The app's files ship inside the APK, so a service worker adds nothing here — and a worker left
+// registered by an OLDER build (0.2–0.4 registered one) keeps answering from its own precache after
+// an update, so the first launches of a new version would show the previous UI. main.tsx no longer
+// registers one; this removes any that exists, and reloads once if this very page came from it.
+async function dropServiceWorkers(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    if (!regs.length) return;
+    const controlled = !!navigator.serviceWorker.controller;
+    await Promise.all(regs.map(r => r.unregister().catch(() => false)));
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k).catch(() => false)));
+    }
+    if (controlled && sessionStorage.getItem('vy_sw_dropped') !== '1') {
+      sessionStorage.setItem('vy_sw_dropped', '1');
+      window.location.reload();
+    }
+  } catch { /* best effort — the app works either way */ }
+}
+
+// Pages served by the website (Vercel), not by the app bundle: a plain <a href="/learn"> (the
+// sign-in screen has one) would load https://localhost/learn, which the app has no route for.
+// Open them on the real site in the in-app browser instead.
+const WEB_ONLY_PATH = /^\/(learn|about|for|v)(\/|$)/;
+function routeWebOnlyLinksToBrowser(): void {
+  document.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0) return;
+    const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+    if (!a) return;
+    const u = new URL(a.href, window.location.href);
+    if (u.origin !== window.location.origin || !WEB_ONLY_PATH.test(u.pathname)) return;
+    e.preventDefault();
+    void Browser.open({ url: `${shareOrigin()}${u.pathname}${u.search}` });
+  }, true);
+}
+
+// The WebView draws edge-to-edge, so the clock / battery icons sit ON the app's own canvas. Their
+// colour is the OS's call by default (dark icons in light mode), but the app's theme is its own:
+// Nocturne (dark) is the default whatever the phone is set to, which would leave dark icons on a
+// dark canvas. Follow the app's theme instead — the "dark" class that setTheme()/index.html set.
+// (SystemBarsStyle names the BACKGROUND: Dark = light icons.)
+function followThemeWithSystemBars(): void {
+  let last: boolean | null = null;
+  const apply = () => {
+    const dark = document.documentElement.classList.contains('dark');
+    if (dark === last) return;
+    last = dark;
+    void SystemBars.setStyle({ style: dark ? SystemBarsStyle.Dark : SystemBarsStyle.Light }).catch(() => {});
+  };
+  apply();
+  new MutationObserver(apply).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+}
+
 let wired = false;
 
 export function initNativeShell(): void {
@@ -71,6 +133,10 @@ export function initNativeShell(): void {
 
   // Lets CSS scope native-only rules (e.g. safe-area insets) via html.is-native.
   document.documentElement.classList.add('is-native');
+
+  followThemeWithSystemBars();
+  void dropServiceWorkers();
+  routeWebOnlyLinksToBrowser();
 
   // Handle every vyact:// deep link: OAuth return, widget "+" add-transaction,
   // and widget tap-to-open-view.
@@ -119,7 +185,10 @@ export function initNativeShell(): void {
   });
 }
 
-export interface FireNotif { id: string; type: string; title: string; body: string; }
+// `deepLink` is the notification's own in-app target (set by upstream generators, e.g. a Pip nudge
+// opens /chat?ask=…). It wins over the per-type default route so a tap lands where the bell's
+// row would.
+export interface FireNotif { id: string; type: string; title: string; body: string; deepLink?: string; }
 
 // Mirror in-app alerts to native local notifications, with tap-to-navigate.
 // No-op on web. Best-effort: a permission denial or plugin error never throws
@@ -136,7 +205,10 @@ export async function fireNativeNotifications(notifs: FireNotif[]): Promise<void
         title: n.title,
         body: n.body,
         iconColor: '#E26D5C', // brand coral accent on the status-bar icon
-        extra: { route: ROUTE_BY_NOTIF_TYPE[n.type] ?? '/dashboard', notifId: n.id },
+        extra: {
+          route: n.deepLink?.startsWith('/') ? n.deepLink : (ROUTE_BY_NOTIF_TYPE[n.type] ?? '/dashboard'),
+          notifId: n.id,
+        },
       })),
     });
   } catch (e) {

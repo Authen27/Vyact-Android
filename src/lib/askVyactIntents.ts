@@ -22,7 +22,11 @@ import type { Transaction, TxnType } from '../types';
 // v10.17 (item 16) — the 'manage' bucket (Open Budgets/Net Worth/Households)
 // was removed: those chips fired `navigate()` under the open Ask drawer and
 // read as dead. Deep navigation lives in the app's own nav.
-export type Bucket = 'capture' | 'inquire' | 'plan';
+// v10.52.0 — 'setup' holds the three creations that are NOT chat commands
+// (budget, debt, asset). They used to sit in 'capture' with no example and no
+// button, so they rendered as inert rows. In 'setup' each one is a real
+// button that opens its form.
+export type Bucket = 'capture' | 'inquire' | 'plan' | 'setup';
 
 export type IntentAction =
   | { kind: 'open-modal'; modal: 'addTxn' | 'addBudget' | 'addDebt' | 'addAsset'; seed?: Partial<Transaction> }
@@ -40,59 +44,60 @@ export interface Intent {
   label: string;
   /** Board D M6 — the glyph shown in the intent row's inset icon tile. */
   icon: string;
+  example?: string;
+  inputHint?: string;
   /** When set, tapping the chip primes a sub-row of secondary chips. */
   secondary?: SubChip[];
   /** When `secondary` is absent, the chip fires this action on tap-1. */
   action?: IntentAction;
+  /** v10.52.0 — the household permission the action needs (lib/permissions.ts).
+   *  The Ask panel hides a 'setup' button the member can't use, the same rule
+   *  the Budgets / Debts / Net Worth pages apply to their Add buttons. */
+  requires?: 'manage_budgets' | 'manage_debts' | 'manage_assets';
 }
-
-// Curated tap-2 chips for "Add expense" — top everyday categories. Stays a
-// short list deliberately; we don't want a wall of buttons. Power users
-// can still use the modal's category dropdown after the seed lands.
-const EXPENSE_QUICK_CATS: SubChip[] = [
-  { label: 'Groceries',     action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'food' } } },
-  { label: 'Fuel',          action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'transport' } } },
-  { label: 'Eating out',    action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'food' } } },
-  { label: 'Shopping',      action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'shopping' } } },
-  { label: 'Bills',         action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'utilities' } } },
-  { label: 'Other',         action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' as TxnType, category: 'other_exp' } } },
-];
-
-const INCOME_QUICK_CATS: SubChip[] = [
-  { label: 'Salary',        action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'salary' } } },
-  { label: 'Freelance',     action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'freelance' } } },
-  { label: 'Gift / Bonus',  action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'gift' } } },
-  { label: 'Other',         action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' as TxnType, category: 'other_inc' } } },
-];
 
 export const INTENTS: Intent[] = [
   // ── Capture ─────────────────────────────────────────────────
-  { id: 'add-expense',     bucket: 'capture', icon: '➕', label: 'Add expense',      secondary: EXPENSE_QUICK_CATS },
-  { id: 'add-income',      bucket: 'capture', icon: '💰', label: 'Add income',       secondary: INCOME_QUICK_CATS },
-  { id: 'add-transfer',    bucket: 'capture', icon: '🔄', label: 'Add transfer',     action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'transfer' as TxnType, category: 'transfer' } } },
-  { id: 'add-investment',  bucket: 'capture', icon: '📈', label: 'Add investment',   action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'investment' as TxnType, category: 'investment_in' } } },
-  { id: 'add-budget',      bucket: 'capture', icon: '🎯', label: 'Add a budget',     action: { kind: 'open-modal', modal: 'addBudget' } },
-  { id: 'add-debt',        bucket: 'capture', icon: '⬇️', label: 'Add a debt',       action: { kind: 'open-modal', modal: 'addDebt' } },
-  { id: 'add-asset',       bucket: 'capture', icon: '🏠', label: 'Add an asset',     action: { kind: 'open-modal', modal: 'addAsset' } },
+  { id: 'add-expense',     bucket: 'capture', icon: '➕', label: 'Add expense', example: 'Spent 45 on groceries today', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'expense' } } },
+  { id: 'add-income',      bucket: 'capture', icon: '💰', label: 'Add income', example: 'Received 5000 salary today', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'income' } } },
+  { id: 'add-transfer',    bucket: 'capture', icon: '🔄', label: 'Add transfer', example: 'Transferred 200 from my bank to cash', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'transfer' as TxnType, category: '' } } },
+  { id: 'add-investment',  bucket: 'capture', icon: '📈', label: 'Add investment', example: 'Invested 500 in my index fund', inputHint: 'Choose the investment asset and paying account in the form.', action: { kind: 'open-modal', modal: 'addTxn', seed: { type: 'investment' as TxnType, category: '' } } },
 
   // ── Inquire ─────────────────────────────────────────────────
   { id: 'spend-month',     bucket: 'inquire', icon: '💸', label: 'Spend this month', action: { kind: 'ask', prompt: 'How much did I spend this month?' } },
-  { id: 'pulse',           bucket: 'inquire', icon: '💚', label: 'Pulse Score',      action: { kind: 'ask', prompt: "What's my Pulse Score and why?" } },
+  { id: 'health',          bucket: 'inquire', icon: '💚', label: 'Household overview', action: { kind: 'ask', prompt: 'How am I doing financially?' } },
   { id: 'net-worth',       bucket: 'inquire', icon: '⚖️', label: 'Net worth',        action: { kind: 'ask', prompt: "What's my net worth?" } },
   { id: 'budgets-risk',    bucket: 'inquire', icon: '⚠️', label: 'Budgets at risk',  action: { kind: 'ask', prompt: 'Which budgets are at risk?' } },
   { id: 'top-categories',  bucket: 'inquire', icon: '📊', label: 'Top categories',   action: { kind: 'ask', prompt: 'What are my top spending categories this month?' } },
   { id: 'upcoming-bills',  bucket: 'inquire', icon: '🔁', label: 'Upcoming bills',   action: { kind: 'ask', prompt: 'What are my upcoming bills?' } },
 
   // ── Plan ────────────────────────────────────────────────────
-  { id: 'emergency',       bucket: 'plan',    icon: '🛡️', label: 'Emergency fund',   action: { kind: 'ask', prompt: 'How am I doing on my emergency fund?' } },
+  { id: 'emergency',       bucket: 'plan',    icon: '🛡️', label: 'Income interruption', action: { kind: 'ask', prompt: 'How long would my money last without income?' } },
   { id: 'debts',           bucket: 'plan',    icon: '⬇️', label: 'Debt strategy',    action: { kind: 'ask', prompt: 'Tell me about my debts and the best payoff strategy.' } },
+  { id: 'affordability', bucket: 'plan', icon: '🛒', label: 'Can I afford it?', action: { kind: 'ask', prompt: 'Can I afford a 1200 purchase?' } },
+  { id: 'cut-back', bucket: 'plan', icon: '✂️', label: 'Find room to save', action: { kind: 'ask', prompt: 'Where can I cut back on spending?' } },
+  // v10.107.0 — the planner skills.
+  { id: 'month-review', bucket: 'plan', icon: '🗓️', label: 'Review last month', action: { kind: 'ask', prompt: 'Give me a review of last month.' } },
+  { id: 'emergency-fund', bucket: 'plan', icon: '🧰', label: 'Emergency fund plan', action: { kind: 'ask', prompt: 'How do I build my emergency fund?' } },
+  { id: 'surplus', bucket: 'plan', icon: '🧭', label: 'Where should spare money go?', action: { kind: 'ask', prompt: 'Where should my spare money go each month?' } },
+  { id: 'subscriptions', bucket: 'plan', icon: '🧾', label: 'Review bills and subscriptions', action: { kind: 'ask', prompt: 'Review my bills and subscriptions.' } },
+
+  // ── Set up (forms, not chat) ───────────────────────────────
+  { id: 'add-budget', bucket: 'setup', icon: '🎯', label: 'Add budget', requires: 'manage_budgets', inputHint: 'Opens the budget form. Budgets are set up in the form, not in chat.', action: { kind: 'open-modal', modal: 'addBudget' } },
+  { id: 'add-debt',   bucket: 'setup', icon: '⬇️', label: 'Add debt',   requires: 'manage_debts',   inputHint: 'Opens the debt form. Debts are set up in the form, not in chat.', action: { kind: 'open-modal', modal: 'addDebt' } },
+  { id: 'add-asset',  bucket: 'setup', icon: '🏠', label: 'Add asset',  requires: 'manage_assets',  inputHint: 'Opens the asset form. Assets are set up in the form, not in chat.', action: { kind: 'open-modal', modal: 'addAsset' } },
 ];
 
 export const BUCKET_LABEL: Record<Bucket, string> = {
-  capture: 'Capture',
-  inquire: 'Inquire',
-  plan:    'Plan',
+  capture: 'Record money',
+  inquire: 'Understand my money',
+  plan:    'Explore a decision',
+  setup:   'Set up with a form',
 };
+
+export function intentExample(intent: Intent): string | undefined {
+  return intent.action?.kind === 'ask' ? intent.action.prompt : intent.example;
+}
 
 export function intentsByBucket(bucket: Bucket): Intent[] {
   return INTENTS.filter(i => i.bucket === bucket);
@@ -118,6 +123,21 @@ export type AssistantIntentId =
   | 'interpret.status' | 'interpret.diagnostic' | 'interpret.lookup'
   | 'interpret.budgets' | 'interpret.bills' | 'interpret.debts'
   | 'forecast.affordability' | 'forecast.runway' | 'forecast.prescriptive'
+  /** v10.38 — about the assistant, not the household's money. Reads no data. */
+  | 'meta.assistant'
+  /** v10.39.1 (P21) — set up a recurring bill, subscription or salary (proposed). */
+  | 'capture.recurring'
+  /** v10.39.1 (P22) — a request the app cannot carry out; answered with what it can. */
+  | 'unsupported'
+  /** v10.107.0 — Pip as the household's planner: a month in review, the bills and subscriptions
+   *  review, the emergency-fund plan, where the monthly surplus goes, and how long a purchase takes
+   *  to save for. Every figure is computed in resolve(); the model only explains it. */
+  | 'interpret.review' | 'interpret.subscriptions'
+  | 'forecast.emergency_fund' | 'forecast.surplus' | 'forecast.save_for'
+  /** v10.107.0 — a general money concept ("what is an SIP?"): answered from Learn, not the model. */
+  | 'learn.concept'
+  /** v10.107.0 — not about money at all. Declined in one line, with no phrase call. */
+  | 'off_topic'
   | 'fallback';
 
 export interface IntentResult {
@@ -136,6 +156,14 @@ const BUCKET_OF: Record<AssistantIntentId, AssistantBucket | 'none'> = {
   'interpret.budgets': 'interpret', 'interpret.bills': 'interpret', 'interpret.debts': 'interpret',
   'forecast.affordability': 'forecast', 'forecast.runway': 'forecast',
   'forecast.prescriptive': 'forecast',
+  // No bucket: meta questions are not a money feature and are not gated by one.
+  'meta.assistant': 'none',
+  'capture.recurring': 'capture',
+  'unsupported': 'none',
+  'interpret.review': 'interpret', 'interpret.subscriptions': 'interpret',
+  'forecast.emergency_fund': 'forecast', 'forecast.surplus': 'forecast', 'forecast.save_for': 'forecast',
+  'learn.concept': 'none',
+  'off_topic': 'none',
   fallback: 'none',
 };
 
@@ -156,6 +184,9 @@ const RULES: IntentRule[] = [
 
   // ── Interpret (questions about current/past state) ──────────────────────────
   { id: 'interpret.budgets',    test: e => /\b(budgets?\b.*\b(risk|over|left|track|exceed)|which budgets|over budget|budget status)\b/.test(e.text) },
+  // v10.39.1 (P21) — SETTING UP a schedule, tested before interpret.bills, which
+  // would otherwise read "add my netflix subscription" as a question about bills.
+  { id: 'capture.recurring', test: e => /\b(set ?up|add|create|schedule|start)\b.*\b(recurring|every (day|week|month|year)|daily|weekly|monthly|yearly|annual(ly)?|subscription)\b/.test(e.text) },
   { id: 'interpret.bills',      test: e => /\b(upcoming bills?|bills? due|what bills|recurring|subscriptions?)\b/.test(e.text) },
   { id: 'interpret.debts',      test: e => /\b(my debts?|payoff|pay off|avalanche|snowball|debt strategy|loans?|owe)\b/.test(e.text) },
   { id: 'interpret.status',     test: e => /\b(pulse score|net worth|networth|my balance|how am i doing|am i ok|financial health)\b/.test(e.text) },

@@ -75,7 +75,7 @@ export default function UpdateBanner() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[300] w-[min(92vw,30rem)]
+      className="fixed bottom-above-tabbar left-1/2 -translate-x-1/2 z-[300] w-[min(92vw,30rem)]
                  bg-bg2 border border-line2 rounded-lg shadow-3 px-4 py-3
                  flex items-center gap-3 animate-modalIn"
     >

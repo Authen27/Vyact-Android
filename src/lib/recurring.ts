@@ -1,9 +1,46 @@
 // Vyact v7 — Recurring schedule engine
-// Handles weekly / monthly / yearly / custom-day-of-month schedules.
-// Computes next-due-date and generates pending transactions when due.
+// Every date comes from the schedule's RRULE (W3e): daily, weekly by weekday, monthly by day or nth
+// weekday, yearly, intervals, COUNT and UNTIL. Generates pending transactions when due.
 
 import type { RecurringSchedule, RecurrenceFreq, Transaction } from '../types';
-import { today } from './format';
+import { today, addDaysISO } from './format';
+import { parseRRule, expandRRule, nextOccurrenceAfter, firstOccurrenceOnOrAfter, type RRule, type ShortMonthPolicy } from './rrule';
+
+// ── ONE rule per schedule (W3e, v10.69.0; owner decision D13; audit FE-MNY-01, XC-ARC-01) ──────────
+// Seven calculators used to disagree about a schedule's dates: the form's RRULE (never saved), the
+// save-time clamp, the advance that overflowed month-ends (31 Jan → 3 Mar), the server's hand port,
+// the projections, the bill calendar and the forecasts. Now every one of them reads the schedule's
+// RRULE through `ruleOf`, with the schedule's own month-end rule, in UTC date-only maths.
+
+type RuleSource = Pick<RecurringSchedule, 'frequency' | 'startDate'>
+  & Partial<Pick<RecurringSchedule, 'rrule' | 'dayOfMonth' | 'weekday'>>;
+
+/**
+ * The schedule's rule: its RRULE, or one derived from its columns exactly as the database's
+ * `recurrence_rrule_from_legacy` derives it (weekday 0 = Sunday).
+ */
+export function ruleOf(s: RuleSource): RRule {
+  if (s.rrule && s.rrule.trim()) return parseRRule(s.rrule);
+  const [y, m, d] = s.startDate.split('-').map(Number);
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  switch (s.frequency) {
+    case 'daily':  return { freq: 'DAILY', interval: 1 };
+    case 'weekly': return { freq: 'WEEKLY', interval: 1, byDay: [s.weekday ?? dow] };
+    case 'yearly': return { freq: 'YEARLY', interval: 1, byMonth: [m], byMonthDay: [d] };
+    default:       return { freq: 'MONTHLY', interval: 1, byMonthDay: [s.dayOfMonth ?? d] };
+  }
+}
+
+/** The schedule's month-end rule (W3e). */
+export const policyOf = (s: Partial<Pick<RecurringSchedule, 'shortMonthPolicy'>>): ShortMonthPolicy =>
+  s.shortMonthPolicy ?? 'last_day';
+
+/** The next occurrence strictly after `after`; null when the schedule's COUNT / UNTIL is used up. */
+export function nextScheduleOccurrence(
+  s: RuleSource & Partial<Pick<RecurringSchedule, 'shortMonthPolicy'>>, after: string,
+): string | null {
+  return nextOccurrenceAfter(ruleOf(s), s.startDate, after, { shortMonthPolicy: policyOf(s) });
+}
 
 const DAY_MS = 86_400_000;
 
@@ -44,31 +81,12 @@ export function recurringInstanceId(scheduleId: string, occurrenceDate: string):
   return deterministicUuid(`vyact:recur:${scheduleId}:${occurrenceDate}`);
 }
 
+/** Does this schedule fall due on `date`? Read from its rule (W3e) — weekdays, nth weekdays,
+ *  intervals, COUNT and UNTIL included; it used to know only the simple frequencies. */
 export function scheduleFiresOnDate(schedule: RecurringSchedule, date: string): boolean {
   if (schedule.active === false) return false;
   if (schedule.startDate && date < schedule.startDate) return false;
-
-  const [, startMonth, startDay] = (schedule.startDate || date).split('-').map(Number);
-  const [, viewMonth] = date.split('-').map(Number);
-  const dayOfMonth = Number(date.slice(-2));
-
-  switch (schedule.frequency) {
-    case 'daily': {
-      const diff = Math.round((Date.parse(date) - Date.parse(schedule.startDate)) / DAY_MS);
-      return diff >= 0;
-    }
-    case 'weekly': {
-      const diff = Math.round((Date.parse(date) - Date.parse(schedule.startDate)) / DAY_MS);
-      return diff >= 0 && diff % 7 === 0;
-    }
-    case 'monthly':
-    case 'custom_day':
-      return dayOfMonth === (schedule.dayOfMonth || startDay);
-    case 'yearly':
-      return viewMonth === startMonth && dayOfMonth === startDay;
-    default:
-      return false;
-  }
+  return expandRRule(ruleOf(schedule), schedule.startDate, date, date, { shortMonthPolicy: policyOf(schedule) }).length > 0;
 }
 
 export function projectRecurringTransactionsForDate(
@@ -91,6 +109,12 @@ export function projectRecurringTransactionsForDate(
     });
 }
 
+/**
+ * The occurrence after `lastGenerated` (or the start) for a schedule described by its columns.
+ * W3e: read from the derived rule, with the default month-end rule — it used to step with local-time
+ * setters on a UTC-parsed date, so a 31st overflowed into the next month and skipped one (INT-TXN-04,
+ * INT-PAR-02). Kept for callers that only hold the columns.
+ */
 export function computeNextDueDate(
   freq: RecurrenceFreq,
   startDate: string,
@@ -98,26 +122,38 @@ export function computeNextDueDate(
   dayOfMonth?: number,
   weekday?: number,
 ): string {
-  const base = new Date(lastGenerated || startDate);
-  const next = new Date(base);
-  if (freq === 'daily') {
-    next.setDate(next.getDate() + 1);
-  } else if (freq === 'weekly') {
-    next.setDate(next.getDate() + 7);
-    if (weekday !== undefined) {
-      const diff = (weekday - next.getDay() + 7) % 7;
-      next.setDate(next.getDate() + diff);
-    }
-  } else if (freq === 'monthly') {
-    next.setMonth(next.getMonth() + 1);
-    if (dayOfMonth) next.setDate(dayOfMonth);
-  } else if (freq === 'yearly') {
-    next.setFullYear(next.getFullYear() + 1);
-  } else if (freq === 'custom_day') {
-    next.setMonth(next.getMonth() + 1);
-    if (dayOfMonth) next.setDate(dayOfMonth);
-  }
-  return next.toISOString().split('T')[0];
+  const base = lastGenerated || startDate;
+  return nextScheduleOccurrence({ frequency: freq, startDate, dayOfMonth, weekday }, base) ?? base;
+}
+
+/**
+ * W4a (v10.70.0; owner decision D16) — does the SERVER post this schedule's occurrences?
+ *
+ * In cloud mode an auto-approved bill is posted by the `recurring-post` job, from the database's
+ * own copy of the schedule, so a device with a stale cache can no longer post a bill that was
+ * paused, edited or deleted elsewhere (audit INT-TXN-06, FE-SYN-02). It posts exactly the row the
+ * app's engine would (`generateTransaction` → `txnToRow`, deterministic id).
+ *
+ * A loan EMI is not posted by the server: an EMI is an interest expense plus a principal transfer,
+ * not one row, and the loan model that will post it (D19) is not built yet. Those schedules keep
+ * the app's existing behaviour until then.
+ */
+export function serverPostsSchedule(s: Pick<RecurringSchedule, 'autoConfirm' | 'transactionTemplate'>): boolean {
+  const t = s.transactionTemplate ?? ({} as RecurringSchedule['transactionTemplate']);
+  return !!s.autoConfirm
+    && (t.type === 'expense' || t.type === 'income' || t.type === 'transfer' || t.type === 'investment')
+    && !isLoanEmiSchedule(s);
+}
+
+/**
+ * W4f (v10.75.0; owner decision D19) — a schedule that pays a loan. An EMI is paid by `pay_loan` (an
+ * interest expense + a principal transfer, split by the server), never posted as one expense, so the
+ * engine leaves these alone; the Recurring form no longer offers Loan / EMI; the loan's own EMI date
+ * reminds you (and a later release records it automatically, by the loan).
+ */
+export function isLoanEmiSchedule(s: Pick<RecurringSchedule, 'transactionTemplate'>): boolean {
+  const t = s.transactionTemplate ?? ({} as RecurringSchedule['transactionTemplate']);
+  return t.category === 'loan_emi' || !!t.debtId || !!t.linkedDebtId;
 }
 
 // Returns schedules that are due now or in the past — they need transactions generated
@@ -127,9 +163,7 @@ export function dueSchedules(schedules: RecurringSchedule[], now = today()): Rec
 
 // Returns schedules upcoming within `leadDays` — for upcoming-bill notifications
 export function upcomingSchedules(schedules: RecurringSchedule[], leadDays = 3, now = today()): RecurringSchedule[] {
-  const cutoff = new Date(now);
-  cutoff.setDate(cutoff.getDate() + leadDays);
-  const cutoffISO = cutoff.toISOString().split('T')[0];
+  const cutoffISO = addDaysISO(now, leadDays);   // W3a: string arithmetic, not a UTC parse stepped locally
   return schedules.filter(s => s.active && s.nextDueDate <= cutoffISO && s.nextDueDate > now);
 }
 
@@ -168,93 +202,142 @@ export function buildRRule(
   return base;
 }
 
-// After generating, advance the schedule
+/**
+ * After an occurrence is generated (or approved, or skipped), move the schedule to its next one.
+ * W3e: the next occurrence of its RULE strictly after the pointer, so a pointer that is not itself a
+ * rule date still moves forward. When COUNT or UNTIL is used up the schedule is finished: it stays on
+ * its last date and becomes inactive — it used to keep posting forever.
+ */
 export function advanceSchedule(schedule: RecurringSchedule): RecurringSchedule {
   const lastGenerated = schedule.nextDueDate;
-  return {
-    ...schedule,
-    lastGenerated,
-    nextDueDate: computeNextDueDate(
-      schedule.frequency,
-      schedule.startDate,
-      lastGenerated,
-      schedule.dayOfMonth,
-      schedule.weekday,
-    ),
-  };
+  const next = nextScheduleOccurrence(schedule, lastGenerated);
+  if (!next) return { ...schedule, lastGenerated, active: false };
+  return { ...schedule, lastGenerated, nextDueDate: next };
 }
 
-// v7.3 — Backfill RecurringSchedule rows from legacy transactions whose
-// `recurring` field is set but never produced a schedule (e.g. txns added
-// before v7.0 mirrored every recurring row into a schedule, or rows
-// imported from another tool). The Recurring page and the Transactions
-// calendar both read from `recurringSchedules`, not `transaction.recurring`,
-// so without this backfill those legacy rows show up nowhere as future cost.
-export interface BackfillResult {
-  schedules: RecurringSchedule[];
-  added: number;
+// ── Retired writers (v10.22.2) ──────────────────────────────────────────────
+//
+// `backfillSchedulesFromTransactions` (v7.3) and `rekeyLegacyRecurringIds`
+// (v10.20.5) were DELETED here, not merely unwired.
+//
+// The backfill recreated a schedule from any transaction carrying a legacy
+// `recurring` field, which meant it could not tell a deliberate deletion from
+// a legacy gap: deleting a recurring schedule and reloading brought it back,
+// for roughly two years. It was unwired in v10.20.7 and its tests were removed
+// on 2026-09-09 — but it stayed exported, so nothing stopped a future caller
+// from importing a resurrection writer that no longer had a single test
+// holding it to its contract. An exported writer with no tests and no callers
+// is worse than either keeping it tested or deleting it.
+//
+// The re-key is retired for the same reason: it rewrote primary keys, and
+// shipping it without eviction is what produced the v10.20.5 duplicate rows.
+// Both migrations have long since run on every live device.
+//
+// A delete is final. Do not reintroduce either function, and never add a
+// migration that RECREATES rows from other rows.
+
+// ── Occurrence calculus (v10.20.6) ──────────────────────────────────────────
+//
+// `computeNextDueDate` answers a different question than the UI needs: it always
+// steps ONE period on from its base. That is right after generating an
+// occurrence, and wrong everywhere else:
+//
+//   • CREATE — picking "the 20th" on the 8th gave 2026-10-20. The 20th of THIS
+//     month had not happened yet, so the first bill silently skipped a month.
+//
+//   • EDIT — Recurring.tsx passed `lastGenerated: undefined`, so the base was
+//     the schedule's ORIGINAL startDate. Editing a schedule that began
+//     2026-05-22 produced nextDueDate 2026-06-02 — three months in the PAST.
+//     `dueSchedules` then saw it as due and the engine materialised a
+//     back-dated transaction, advancing one month per page refresh:
+//     2026-06-02, 2026-07-02, 2026-08-02, 2026-09-02. That is the reported
+//     "recurring schedule appears as a transaction for the current day".
+//
+// The question both paths actually ask is "when does this NEXT fall due, on or
+// after some anchor date?" — which is what this function answers. All maths is
+// in UTC: the app stores plain YYYY-MM-DD, and local-time `setDate`/`setMonth`
+// on a UTC-parsed date drifts a day either side of the date line. Since W3e both
+// read the schedule's rule (`ruleOf`), so a weekday, nth-weekday, COUNT or UNTIL
+// rule saves exactly the date the engine will post.
+
+// The one implementation lives in format.ts (W3a); re-exported for the existing importers.
+export { addDaysISO };
+
+/** The later of two ISO dates. */
+export const maxISO = (a: string, b: string): string => (a >= b ? a : b);
+
+/**
+ * The first occurrence of this recurrence on or after `from` (inclusive).
+ *
+ * Pure and total: it never returns a date before `from`, which is the property
+ * that stops a schedule from being born overdue.
+ */
+export function firstDueOnOrAfter(
+  from: string,
+  freq: RecurrenceFreq,
+  opts: { startDate?: string; dayOfMonth?: number; weekday?: number; rrule?: string; shortMonthPolicy?: ShortMonthPolicy } = {},
+): string {
+  // A schedule cannot fire before it starts. W3e: read from the rule, with its month-end policy.
+  const startDate = opts.startDate ?? from;
+  const anchor = maxISO(from, startDate);
+  const rule = ruleOf({ frequency: freq, startDate, dayOfMonth: opts.dayOfMonth, weekday: opts.weekday, rrule: opts.rrule });
+  return firstOccurrenceOnOrAfter(rule, startDate, anchor, { shortMonthPolicy: opts.shortMonthPolicy ?? 'last_day' }) ?? anchor;
 }
 
-export function backfillSchedulesFromTransactions(
-  transactions: Transaction[],
-  existing: RecurringSchedule[],
-  now = today(),
-): BackfillResult {
-  const sigOf = (t: { type?: string; description?: string; recurring?: string; currency?: string }) =>
-    `${t.type ?? ''}|${(t.description ?? '').trim().toLowerCase()}|${t.recurring ?? ''}|${t.currency ?? ''}`;
+/**
+ * The nextDueDate a schedule should carry after the user saves the form.
+ *
+ * Never in the past, and never on or before an occurrence already generated —
+ * so editing a schedule cannot re-materialise history.
+ */
+export function nextDueAfterSave(
+  freq: RecurrenceFreq,
+  opts: { startDate: string; dayOfMonth?: number; weekday?: number; lastGenerated?: string; rrule?: string; shortMonthPolicy?: ShortMonthPolicy },
+  now: string = today(),
+): string {
+  const floor = opts.lastGenerated
+    ? maxISO(now, addDaysISO(opts.lastGenerated, 1))
+    : now;
+  return firstDueOnOrAfter(maxISO(floor, opts.startDate), freq, opts);
+}
 
-  const seen = new Set<string>();
-  for (const s of existing) {
-    seen.add(sigOf({
-      type: s.transactionTemplate.type,
-      description: s.transactionTemplate.description,
-      recurring: s.frequency === 'custom_day' ? 'monthly' : s.frequency,
-      currency: s.transactionTemplate.currency,
-    }));
-  }
+/**
+ * W3e (owner decision D13) — the dates a schedule carries after the form is saved.
+ *
+ * The next due date is the rule's first occurrence on or after the floor (today, and never on or
+ * before an occurrence already generated), with the rule's month-end policy; an edit keeps the old
+ * start as the phase, so "every 3 months" stays on its months. The schedule is then RE-ANCHORED
+ * there: `startDate` becomes that next due date, so "Ends after N times" means N more from the
+ * next one (owner: "N restarts at the edit"). COUNT is therefore left out of the search — it is
+ * counted from the new start. Null when UNTIL leaves no date at all.
+ */
+export function scheduleDatesAfterSave(
+  rule: RRule,
+  shortMonthPolicy: ShortMonthPolicy,
+  editing: Pick<RecurringSchedule, 'startDate' | 'lastGenerated'> | null,
+  now: string = today(),
+): { startDate: string; nextDueDate: string } | null {
+  const floor = editing?.lastGenerated ? maxISO(now, addDaysISO(editing.lastGenerated, 1)) : now;
+  const phase = editing?.startDate ?? floor;
+  const next = firstOccurrenceOnOrAfter({ ...rule, count: undefined }, phase, floor, { shortMonthPolicy });
+  return next ? { startDate: next, nextDueDate: next } : null;
+}
 
-  const buckets = new Map<string, Transaction[]>();
-  for (const t of transactions) {
-    if (!t.recurring) continue;
-    if (t.split?.isSplit) continue;
-    if (t.category === 'transfer') continue;
-    const sig = sigOf(t);
-    if (seen.has(sig)) continue;
-    const arr = buckets.get(sig) ?? [];
-    arr.push(t);
-    buckets.set(sig, arr);
-  }
+/**
+ * How far back the engine will still materialise a missed occurrence.
+ *
+ * A device offline for a few weeks SHOULD catch up — that is the feature. But a
+ * schedule carrying a nextDueDate months in the past is corrupt data, not a
+ * backlog, and silently inventing half a year of expenses would misstate every
+ * month it touches. Past this horizon the engine fast-forwards WITHOUT writing.
+ */
+export const MAX_CATCHUP_DAYS = 45;
 
-  const added: RecurringSchedule[] = [];
-  for (const [, group] of buckets) {
-    const sorted = [...group].sort((a, b) => a.date.localeCompare(b.date));
-    const earliest = sorted[0];
-    const latest = sorted[sorted.length - 1];
-    const freq = earliest.recurring as RecurrenceFreq;
-    if (freq !== 'weekly' && freq !== 'monthly' && freq !== 'yearly') continue;
-
-    const [, , dd] = earliest.date.split('-').map(Number);
-    const dayOfMonth = freq === 'monthly' ? dd : undefined;
-    let nextDue = computeNextDueDate(freq, earliest.date, latest.date, dayOfMonth);
-    while (nextDue <= now) {
-      nextDue = computeNextDueDate(freq, earliest.date, nextDue, dayOfMonth);
-    }
-
-    const { id: _id, date: _date, ...template } = earliest;
-    void _id; void _date;
-    added.push({
-      id: `bf-${earliest.id}`,
-      transactionTemplate: template,
-      frequency: freq,
-      dayOfMonth,
-      startDate: earliest.date,
-      nextDueDate: nextDue,
-      lastGenerated: latest.date,
-      autoConfirm: true,
-      active: true,
-      reminderLeadDays: 3,
-    });
-  }
-
-  return { schedules: [...existing, ...added], added: added.length };
+/** True when this occurrence is too old to materialise honestly. */
+export function isStaleOccurrence(
+  occurrence: string,
+  now: string = today(),
+  maxDays: number = MAX_CATCHUP_DAYS,
+): boolean {
+  return (Date.parse(now) - Date.parse(occurrence)) / DAY_MS > maxDays;
 }

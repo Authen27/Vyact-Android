@@ -9,6 +9,8 @@ import { X, ChevronUp } from 'lucide-react';
 import CardVisual from './CardVisual';
 import FlippableCardDetail from './FlippableCardDetail';
 import { readingChip, type EvergreenCard } from '../../lib/evergreen';
+import { track } from '../../lib/analytics';
+import { setCanonical } from '../../lib/seo';
 
 interface Props {
   cards: EvergreenCard[];
@@ -23,6 +25,7 @@ function paragraphs(body: string): string[] {
 export default function EvergreenReel({ cards, startIndex = 0, onClose }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(startIndex);
+  const viewed = useRef(new Set<string>());
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -47,6 +50,19 @@ export default function EvergreenReel({ cards, startIndex = 0, onClose }: Props)
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [active, onClose]);
+
+  // v10.49.0 (#10, #5) — the lesson on screen has a public page (vyact.app/learn/<slug>,
+  // slug === card id): point the canonical at it so the in-app view never competes with
+  // it, and count the view once per lesson per visit.
+  useEffect(() => {
+    const card = cards[active];
+    if (!card) return;
+    if (!viewed.current.has(card.id)) {
+      viewed.current.add(card.id);
+      track('learn_card_view', { slug: card.id, learn_category: card.category, surface: 'app' });
+    }
+    return setCanonical(`https://vyact.app/learn/${card.id}`);
+  }, [active, cards]);
 
   function onScroll() {
     const el = scroller.current;

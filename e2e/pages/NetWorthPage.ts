@@ -42,7 +42,8 @@ export class NetWorthPage {
 
   /** Asset row located by name (the user-supplied label). */
   assetRow(name: string): Locator {
-    return this.page.getByText(name, { exact: false });
+    // A name can appear more than once (the row and a linked account/summary); use the first visible.
+    return this.page.getByText(name, { exact: false }).filter({ visible: true }).first();
   }
 
   async openAddAsset() {
@@ -57,6 +58,20 @@ export class NetWorthPage {
   async readAmount(rowLocator: Locator): Promise<number> {
     const text = (await rowLocator.innerText()).trim();
     return parseMoney(text);
+  }
+
+  /** "Total Liabilities" is only rendered once the household has a debt: none means 0. */
+  async readTotalLiabilities(): Promise<number> {
+    // count() does not wait: settle on Total Assets (always rendered) first, or a page
+    // still loading reads as "no liabilities".
+    await this.totalAssetsRow.first().waitFor();
+    if (await this.page.getByText('Total Liabilities').count() === 0) return 0;
+    return this.readAmount(this.totalLiabilitiesRow);
+  }
+
+  /** The "Liquid assets" ratio card ("Money you can reach" v10.38.1–v10.103; Aurora 4.0 TERM1). */
+  liquidAssets(): Locator {
+    return this.page.getByText('Liquid assets', { exact: true }).locator('..');
   }
 }
 

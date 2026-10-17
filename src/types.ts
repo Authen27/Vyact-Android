@@ -34,9 +34,15 @@ export type Theme = 'warm' | 'dark' | 'system';
 export type PayoffStrategy = 'avalanche' | 'snowball';
 export type Liquidity = 'liquid' | 'short' | 'long';
 export type MemberRole = 'primary' | 'partner' | 'child' | 'elder';
-export type AppRole = 'owner' | 'admin' | 'member' | 'viewer' | 'child';
+// W1 (owner decision, audit 2026-10-04 INT-HH-12): the 'child' app role is retired — it
+// promised "own data only" but could read everything. Existing children became 'member'
+// (migration 20261009120200); a stale 'child' read from an old cache is normalised by
+// `normalizeAppRole` (lib/permissions.ts). The household RELATIONSHIP label 'child'
+// (MemberRole above) is a separate thing and stays.
+export type AppRole = 'owner' | 'admin' | 'member' | 'viewer';
 export type GoalType = 'emergency' | 'savings' | 'debt' | 'investment' | 'purchase' | 'custom';
-export type ProfileTypeKey = 'personal' | 'family' | 'business' | 'multi_biz' | 'shared';
+// v10.59.0 — four types (owner, 4 Oct 2026); 'shared' and 'multi_biz' retired (lib/householdTypes.ts).
+export type ProfileTypeKey = 'personal' | 'couple' | 'family' | 'business';
 
 export interface SplitParticipant {
   name: string;        // 'me' for self, otherwise free text
@@ -96,7 +102,10 @@ export interface SharedSplit {
 // baseline-derived record so honest-data rendering and the 21-day truing-up loop
 // work across devices (these are real, cloud-synced columns, not a local overlay).
 export type Confidence = 'estimated' | 'confirming' | 'confirmed';
-export type ProvenanceSource = 'onboarding' | 'user' | 'bank';
+// 'agent' = the row was extracted by the agent from a message/receipt (P4.5).
+// It is deliberately NOT 'bank': a model-read value is not a bank-confirmed one,
+// and collapsing the two would let an unverified figure render as real data.
+export type ProvenanceSource = 'onboarding' | 'user' | 'bank' | 'agent';
 
 /** Mixed onto baseline-derived entities (Transaction, Budget, Goal, Debt, Asset).
  *  Absent / 'confirmed' + 'user' means a first-class, user-owned value. */
@@ -132,6 +141,13 @@ export interface Transaction extends WithProvenance {
    *  `linkedAssetId` while flag is `'shadow'`; sole source once `'on'`. */
   accountId?: string;
   toAccountId?: string;
+  /** v10.26.0 (R4) — an investment moves money between an ACCOUNT and an
+   *  investment ASSET. Buy: `accountId` + `assetId`. Withdrawal: `toAccountId`
+   *  + `assetId`. Legacy rows with both account FKs and no asset still fold. */
+  assetId?: string;
+  /** v10.25.0 (R3) — how the paying account was used; one of that account's
+   *  `paymentModes`. Descriptive only: no balance or total reads it. `null` clears. */
+  paymentMode?: PaymentMode | null;
   initiatedBy?: string;
   /** v7.3 — Money Map Item #5 (multi-account split). When set, the txn's
    *  total amount is divided across these accounts (e.g. partial debit +
@@ -141,10 +157,17 @@ export interface Transaction extends WithProvenance {
   accountSplits?: AccountSplit[];
   split?: SplitInfo;
   /** v9 §2.3/§6.3 — system-written EMI split for category=loan_emi rows.
-   *  Read-only to the user; only the interest portion counts as spend.
+   *  Read-only to the user. Since v10.97.0 (Track E) BOTH legs count as Loan / EMI spending: the
+   *  interest row is an expense, and the principal transfer reads as spending in `reportableTxns`.
    *  v9.4.2 — partPaymentChoice threads the user's re-amortisation strategy
    *  from the form into the store's loan_emi save path. */
-  emiSplit?: { interest: number; principal: number; debt_id: string; partPaymentChoice?: PartPaymentChoice };
+  /** A loan payment's leg: the split the server computed (W4f: with the payment's kind, the instalment
+   *  it paid and its operation id; a local-only payment also keeps what it changed, for undo). */
+  emiSplit?: {
+    interest: number; principal: number; debt_id: string; partPaymentChoice?: PartPaymentChoice;
+    kind?: 'emi' | 'prepayment' | 'payoff' | 'bank_override'; instalment_no?: number | null; operation_id?: string;
+    before?: { emi: number; due: string | null; closes: boolean; paidOff: boolean; balance: number };
+  };
   /** v9.1 §5 — set on transactions MATERIALISED from a recurring schedule;
    *  links the instance back to its template (drives the §8 'from recurring' drill). */
   recurringScheduleId?: string;
@@ -246,6 +269,21 @@ export interface Debt extends WithProvenance {
    *  separately on Net Worth. Defaults to `'owed_by_me'` for legacy rows. */
   direction?: 'owed_by_me' | 'owed_to_me';
   counterpartyName?: string;
+  // ── W4e/W4f (v10.74.0/v10.75.0; owner decision D19) — the loan's terms. The OUTSTANDING is never
+  // here: it is the loan account's ledger (lib/loanSchedule.ts loanOutstanding); currentBalance is a
+  // cache the server keeps equal to it. minimumPayment is the EMI; dueDate is the NEXT instalment's date.
+  /** The first EMI's date; with termsConfirmed false it is an estimate (existing loans). */
+  firstEmiDate?: string;
+  termsConfirmed?: boolean;
+  /** Effective-dated rate changes ({from, rate}); empty = interestRate throughout. */
+  rateHistory?: { from: string; rate: number }[];
+  /** Instalments fully paid (the due one is the next). */
+  instalmentsPaid?: number;
+  /** The server records the EMI on its date from this account (a later release). */
+  autoRecord?: boolean;
+  fundingAccountId?: string;
+  /** Set when nothing is owed any more (paid, or marked paid off). */
+  paidOffAt?: string;
   /** v6.4.19 — TD-03 optimistic-concurrency precondition. See Budget.updated_at. */
   updated_at?: string;
 }
@@ -259,6 +297,12 @@ export interface Asset extends WithProvenance {
   liquidity: Liquidity;
   note?: string;
   lastUpdated?: string;
+  /** v10.26.0 (R4) — investment assets fold like accounts. `value` is the
+   *  OPENING value; live value = value + buys − withdrawals + valuationOffset
+   *  (lib/accountBalance.ts computeAssetValue). "Update value" moves the offset
+   *  with a dated log entry — never `value`, never a transaction. */
+  valuationOffset?: number;
+  valuationLog?: ReconciliationEntry[];
   /** v6.4.19 — TD-03 optimistic-concurrency precondition. See Budget.updated_at. */
   updated_at?: string;
 }
@@ -270,11 +314,23 @@ export interface Asset extends WithProvenance {
 // credit_card and loan are liabilities (negative to net worth).
 export type AccountKind = 'cash' | 'bank' | 'credit_card' | 'investment' | 'loan';
 
+/** v10.24.0 (R2) — how money moves through an account. Bank accounts use the
+ *  first five, cards the next four, Cash in Hand only `cash`. The set is
+ *  enforced by `ck_account_payment_modes`. */
+export type PaymentMode =
+  | 'upi' | 'debit_card' | 'net_banking' | 'cheque' | 'auto_debit'
+  | 'swipe' | 'upi_on_card' | 'online' | 'standing_instruction'
+  | 'cash';
+
 export interface Account extends WithProvenance {
   id: string;
   /** Legacy back-link to the asset this account was synthesised from. Set
    *  by the Phase 1 backfill; null for accounts the user creates directly. */
   assetId?: string;
+  /** Audit F2/§8.2 — explicit debt link for liability accounts (loan,
+   *  credit_card). Replaces the old `assetId: debt.id` overload, which
+   *  violated the FK (asset_id → assets, not debts). */
+  debtId?: string;
   kind: AccountKind;
   name: string;
   currency: string;
@@ -291,6 +347,19 @@ export interface Account extends WithProvenance {
   reconciliationOffset?: number;
   /** v9 D2 — dated audit trail of reconciliations; shown in account history only. */
   reconciliationLog?: ReconciliationEntry[];
+  /** v10.24.0 (R2) — the payment modes used on this account. */
+  paymentModes?: PaymentMode[];
+  /** v10.24.0 (R2) — credit cards only. Outstanding, available and utilisation
+   *  are DERIVED from this and the ledger balance (lib/accountsView.ts); none of
+   *  them is stored, so none can drift. `null` clears the value. */
+  creditLimit?: number | null;
+  billingCycleDay?: number | null;
+  paymentDueDay?: number | null;
+  /** v10.24.0 (R2) — the last check against a statement, drift or not. Clears
+   *  "not reconciled in N days" even when nothing needed correcting. */
+  lastReconciledAt?: string | null;
+  /** Row creation time (cloud). A never-reconciled account is judged stale from here. */
+  createdAt?: string;
   updated_at?: string;
 }
 
@@ -298,8 +367,38 @@ export interface Account extends WithProvenance {
 export interface ReconciliationEntry {
   at: string;                    // ISO timestamptz
   delta: number;
-  kind: 'bank' | 'investment';
+  /** 'merge' (v10.24.0) records a balance folded in when another account's
+   *  history was moved here before that account was deleted. */
+  kind: 'bank' | 'investment' | 'credit_card' | 'merge' | 'loan';
   stated_value: number | null;
+  note?: string;
+}
+
+/** v10.24.0 (R2) — what refers to an account. Built by the
+ *  `account_dependencies` RPC in cloud mode, or from the store locally. */
+export interface AccountDependencies {
+  accountId: string;
+  transactions: {
+    count: number;
+    total: number;
+    firstDate: string | null;
+    lastDate: string | null;
+    /** The busiest descriptions (or categories), most transactions first. At most 3. */
+    groups: { label: string; count: number; total: number }[];
+  };
+  recurring: { id: string; label: string }[];
+  /** Shared splits on this account's transactions that are not yet closed. */
+  openSplits: { id: string; txnId: string }[];
+  loanEvents: number;
+}
+
+/** v10.24.0 (R2) — result of moving an account's history, then deleting it. */
+export interface AccountMoveResult {
+  status: 'moved';
+  transactions: number;
+  schedules: number;
+  /** The source's opening balance + offset, carried into the destination. */
+  folded: number;
 }
 
 export type SavedViewPage = 'transactions' | 'reports' | 'insights';
@@ -367,10 +466,13 @@ export interface RecurringSchedule {
    *  is COUNT/UNTIL exhaustion or deletion. Kept (defaults true) for back-compat. */
   active: boolean;
   reminderLeadDays?: number; // 0-7 — fires upcoming-bill notif this many days before
-  /** v9.1 §5.2 — RFC 5545 RRULE string (the source of truth for recurrence).
-   *  When present, the generator expands this; frequency/dayOfMonth/weekday are
-   *  derived display hints. */
+  /** v9.1 §5.2 — RFC 5545 RRULE string, the source of truth for every date (W3e: the engine,
+   *  the server, the bill calendar and the projections all read it through `ruleOf`; without one
+   *  a rule is derived from frequency/dayOfMonth/weekday/startDate, as the database does). */
   rrule?: string;
+  /** W3e (owner decision D13) — a 29th–31st (or Feb 29) in a shorter month: its last day (default)
+   *  or the 1st of the next month. */
+  shortMonthPolicy?: 'last_day' | 'next_month_first';
   /** v9.1 §5.3 — the household member the generated transactions are attributed
    *  to (flows to Transaction.memberId/initiatedBy). */
   ownerMemberId?: string;
@@ -394,7 +496,10 @@ export type NotifType =
   // participant-facing (a split was shared with your email); split_settled is
   // owner-facing (a participant self-settled); split_closed is participant-
   // facing (the owner closed the split).
-  | 'split_received' | 'split_settled' | 'split_closed';
+  | 'split_received' | 'split_settled' | 'split_closed'
+  // v10.95.0 (#9) — an invitation of the open household is waiting (owner/admin-facing, with Revoke).
+  // It and invite_received are built on the device from live data and never saved (lib/notifications.ts).
+  | 'invite_pending';
 
 export type NotifPriority = 'P1' | 'P2';
 
@@ -434,6 +539,8 @@ export interface Notification {
   inviteToken?: string;
   /** v10.14 — the `shared_splits.id` a split_settled/split_closed row refers to. */
   splitId?: string;
+  /** v10.95.0 — the `invitations.id` an invite_received / invite_pending card acts on. */
+  invitationId?: string;
   /** Stable key so a given occurrence is only generated once. */
   dedupeKey?: string;
 }
@@ -449,17 +556,70 @@ export interface NotificationPrefs {
   defaultLeadDays: 1 | 3 | 7;
 }
 
-// v7 — Amortisation schedule entry
-export interface AmortizationEntry {
-  month: number;
-  date: string;
-  emi: number;
-  interest: number;
-  principal: number;
-  outstanding: number;
+/** How a part-payment was applied. 'apply_advance' survives only on legacy payment-log entries (W4f retired it). */
+export type PartPaymentChoice = 'reduce_tenure' | 'reduce_emi' | 'apply_advance';
+
+// ── W4f (v10.75.0; owner decision D19) — paying a loan ─────────────────────────────
+// The SERVER computes the split (pay_loan); the app says what kind of payment it is and how much.
+
+/** One loan payment, as `pay_loan` takes it. */
+export interface PayLoanInput {
+  /** Idempotency key: a retry with the same id returns the first result. */
+  operationId?: string;
+  debtId: string;
+  kind: 'emi' | 'prepayment' | 'payoff' | 'bank_override';
+  amount: number;
+  date?: string;
+  /** A real account id or an encoded picker value; defaults to Cash in Hand. */
+  fundingAccountId?: string;
+  memberId?: string;
+  description?: string;
+  /** Prepayment only: keep the EMI and finish sooner, or keep the end date and pay less. */
+  choice?: 'reduce_tenure' | 'reduce_emi';
+  /** bank_override only: the bank's own split. */
+  bankInterest?: number;
+  bankPrincipal?: number;
 }
 
-export type PartPaymentChoice = 'reduce_tenure' | 'reduce_emi' | 'apply_advance';
+export interface PayLoanResult {
+  status: 'success' | 'duplicate';
+  operationId: string;
+  interest: number;
+  principal: number;
+  instalmentNo: number | null;
+  closesInstalment: boolean;
+  paidOff: boolean;
+  outstandingAfter: number;
+  nextDueDate: string | null;
+  emiAfter: number;
+  debt: Debt;
+  loanAccount: Account | null;
+  transactions: Transaction[];
+}
+
+/** What `pay_loan` will accept today (`loan_due`): the Pay form prefills from this. */
+export interface LoanDue {
+  outstanding: number;
+  emi: number;
+  paidOff: boolean;
+  instalmentNo: number;
+  dueDate: string | null;
+  interest: number;
+  due: number;
+  paid: number;
+  remaining: number;
+  started: boolean;
+  payoff: number;
+  loanAccountId: string | null;
+  latestPayment: { operationId: string; kind: string | null; amount: number; date: string | null } | null;
+}
+
+/** The command a cloud adapter sends (the store resolved the funding account and the id). */
+export interface PayLoanCommand extends PayLoanInput {
+  operationId: string;
+  date: string;
+  fundingAccountId: string;
+}
 
 export interface PaymentLogEntry {
   id: string;

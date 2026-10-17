@@ -23,6 +23,8 @@ interface DeadLetterAdapter {
   pendingConflictCount?: () => number;
   pendingFailedCount?: () => number;
   clearConflicts?: () => void;
+  /** W3c — clear the conflicts AND re-read the rows they touched from the cloud. */
+  dismissConflicts?: () => Promise<void>;
   clearFailed?: () => void;
   retryDeadLettered?: (bucket: 'sync_conflicts' | 'sync_failed') => void;
 }
@@ -64,10 +66,18 @@ export default function SyncConflictBanner() {
     } finally { setBusy(false); }
   };
 
-  const dismiss = () => {
-    adapter.clearConflicts?.();
-    adapter.clearFailed?.();
-    setConflicts(0); setFailed(0);
+  // W3c (v10.67.0) — "dismiss to discard it" now does discard it: the rows the conflicting edits
+  // touched are read again from the cloud, so the screen shows the server's version instead of the
+  // edit that was not saved. (A refused write has already been rolled back by the sync layer.)
+  const dismiss = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (adapter.dismissConflicts) await adapter.dismissConflicts();
+      else adapter.clearConflicts?.();
+      adapter.clearFailed?.();
+      setConflicts(0); setFailed(0);
+    } finally { setBusy(false); }
   };
 
   const parts: string[] = [];
@@ -77,7 +87,7 @@ export default function SyncConflictBanner() {
   return (
     <div
       role="alert"
-      className="mb-4 rounded border border-terra/40 bg-terra/10 px-4 py-3 text-sm text-ink"
+      className="mb-4 rounded-r2 border border-terra/40 bg-terra/10 px-4 py-3 text-sm text-ink"
       data-testid="sync-conflict-banner"
     >
       <div className="flex items-start gap-3">
@@ -96,7 +106,7 @@ export default function SyncConflictBanner() {
             type="button"
             onClick={reapply}
             disabled={busy}
-            className="rounded border border-coral/40 bg-coral/10 px-2 py-1 text-xs font-medium text-coral hover:bg-coral/20 disabled:opacity-60"
+            className="rounded-r2 min-h-[36px] border border-coral/40 bg-coral/10 px-2 py-1 text-xs font-medium text-coral hover:bg-coral/20 disabled:opacity-60"
           >
             {busy ? 'Re-applying…' : 'Refresh & re-apply'}
           </button>
@@ -104,7 +114,7 @@ export default function SyncConflictBanner() {
             type="button"
             onClick={dismiss}
             disabled={busy}
-            className="rounded border border-ink/20 px-2 py-1 text-xs font-medium hover:bg-ink/5 disabled:opacity-60"
+            className="rounded-r2 min-h-[36px] border border-ink/20 px-2 py-1 text-xs font-medium hover:bg-ink/5 disabled:opacity-60"
           >
             Dismiss
           </button>

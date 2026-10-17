@@ -2,8 +2,10 @@
 // All pulse-score / aggregation / loan / split logic.
 // No React, no DOM. Easy to unit-test.
 
-import type { Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, Profile, ExchangeRates, BudgetPeriod } from '../types';
+import type { Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, Profile, ExchangeRates, BudgetPeriod, RecurringSchedule } from '../types';
 import { convert, getMonthKey, nowMonthKey, clamp } from './format';
+import { ruleOf, policyOf } from './recurring';
+import { expandRRule } from './rrule';
 import { toDinero, fromDinero, convertViaUsdRates, sumDinero, dineroZero, addDinero } from './money';
 import type { Dinero } from 'dinero.js';
 
@@ -23,12 +25,16 @@ export function txnAmountInBase(t: Transaction, baseCurrency: string, rates: Exc
   return convert(t.amount, t.currency || baseCurrency, baseCurrency, rates);
 }
 
-function effectiveDinero(t: Transaction, baseCurrency: string, rates: ExchangeRates): Dinero<number> {
-  const cur = t.currency || baseCurrency;
+// W3b (v10.66.0; owner decision D14) — ONE CURRENCY PER HOUSEHOLD, NO CONVERSION. Every amount is
+// read at face value in the household's currency: a row still labelled with another currency (an old
+// row, or one saved before the household's currency was changed) counts as the household's, and a
+// currency change only changes the symbol. The `rates` argument is accepted and ignored, so the many
+// callers that still pass it need no change; removing that plumbing is TECH_DEBT TD-45.
+function effectiveDinero(t: Transaction, baseCurrency: string, _rates?: ExchangeRates): Dinero<number> {
   const raw = t.split?.isSplit && typeof t.split.yourShare === 'number'
     ? t.split.yourShare
     : t.amount;
-  return convertViaUsdRates(toDinero(raw, cur), baseCurrency, rates);
+  return toDinero(raw, baseCurrency);   // face value: the row's own currency label is not read
 }
 
 export function effectiveAmount(t: Transaction, baseCurrency: string, rates: ExchangeRates): number {
@@ -42,16 +48,55 @@ export function effectiveAmount(t: Transaction, baseCurrency: string, rates: Exc
 // Money Map (v7.2) keeps both filters live throughout the dual-encoding
 // window so a household viewing a row written by either client gets
 // identical totals.
+//
+// Track E (v10.97.0; owner decisions 13 Oct 2026, E-1) — "full EMI = spend, everywhere". A loan payment
+// is two ledger rows: the interest (an expense, Loan / EMI) and the PRINCIPAL (a transfer into the loan
+// account), both carrying `emiSplit`. For every SPENDING figure the principal row reads as Loan / EMI
+// spending too, for every kind of payment (EMI, prepayment, payoff, bank figures). This is a reporting
+// rule only: the ledger row stays a transfer, and balances, the loan's outstanding and net worth never
+// read reportableTxns. The stand-in shares the row's id; nothing edits a reportable row.
 export function reportableTxns(transactions: Transaction[]): Transaction[] {
-  return transactions.filter(t =>
-    !t.excluded
-    && (t.type === 'income' || t.type === 'expense')
-    && t.category !== 'transfer'
-    // Money-Model B1.3 — reconciliation Balance Adjustments move an account but
-    // are corrections, not spend/earn; they must never count in income/expense
-    // or category totals (mirrors the transfer exclusion).
-    && t.category !== 'balance_adjustment'
-  );
+  const out: Transaction[] = [];
+  for (const t of transactions) {
+    if (t.excluded) continue;
+    if (isLoanPrincipalRow(t)) { out.push({ ...t, type: 'expense', category: 'loan_emi' }); continue; }
+    if ((t.type === 'income' || t.type === 'expense')
+      && t.category !== 'transfer'
+      // Money-Model B1.3 — reconciliation Balance Adjustments move an account but
+      // are corrections, not spend/earn; they must never count in income/expense
+      // or category totals (mirrors the transfer exclusion).
+      && t.category !== 'balance_adjustment') out.push(t);
+  }
+  return out;
+}
+
+/** Track E — a loan payment's principal row: a transfer carrying the payment's `emiSplit`. */
+export function isLoanPrincipalRow(t: Pick<Transaction, 'type' | 'emiSplit'>): boolean {
+  return t.type === 'transfer' && !!t.emiSplit;
+}
+
+/**
+ * Track E (v10.96.0) — the rows that count as SPENDING: reportable expenses (since v10.97.0 a loan
+ * payment's principal too). The one rule every spending total reads, and, through the bundled engine,
+ * every WhatsApp spending alert and digest.
+ */
+export function spendRows(transactions: Transaction[]): Transaction[] {
+  return reportableTxns(transactions).filter(t => t.type === 'expense');
+}
+
+/**
+ * Track E — which ENTRY a spending row belongs to. A loan payment is one entry made of two rows (its
+ * interest and its principal), so both carry the payment's key: its operation id, else (older rows) the
+ * interest row's id, which the principal links to. Every other row is its own entry.
+ */
+export function spendEntryKey(t: Pick<Transaction, 'id' | 'emiSplit' | 'linkedTxnId' | 'type'>): string {
+  if (!t.emiSplit) return t.id;
+  return t.emiSplit.operation_id ?? (t.type === 'transfer' && t.linkedTxnId ? t.linkedTxnId : t.id);
+}
+
+/** How many entries these spending rows are (a loan payment counts once). */
+export function countSpendEntries(rows: Transaction[]): number {
+  return new Set(rows.map(spendEntryKey)).size;
 }
 
 export interface MonthData { income: number; expense: number; net: number; }
@@ -118,6 +163,57 @@ export function budgetLines(budgets: Budget[], allocations: BudgetAllocation[]):
   return lines;
 }
 
+/**
+ * The budget lines that apply to ONE month — a monthly budget for exactly that
+ * month, or an annual budget covering the year.
+ *
+ * 🔴 `budgetLines` above flattens EVERY budget the household has ever had, in
+ * whatever order the adapter returned them. The dashboard called it directly and
+ * then took `.slice(0, 5)`, so which month you were looking at was decided by
+ * array position. In September it showed August's budget, because August's lines
+ * happened to come first. Nothing in the UI said which month it was.
+ *
+ * The bug was masked for as long as the array order happened to be favourable;
+ * clearing the local cache in v10.20.7 changed the order and exposed it. Order
+ * is not a contract — this filters on the budget's declared identity instead.
+ *
+ * Kept separate from `budgetLines` on purpose: that function is pinned by a
+ * parity test against the Deno `_shared` port, and changing its shape would
+ * break the port without cause.
+ */
+export function budgetLinesForMonth(
+  budgets: Budget[], allocations: BudgetAllocation[], monthKey: string,
+): Budget[] {
+  const [y, m] = monthKey.split('-').map(Number);
+  return budgetLines(budgets, allocations).filter((b) => {
+    if (b.scope === 'annual') return b.periodYear === y;
+    if (b.periodYear != null && b.periodMonth != null) {
+      return b.periodYear === y && b.periodMonth === m;
+    }
+    // Legacy rows carry an explicit window rather than a scope identity.
+    if (b.periodStart && b.periodEnd) {
+      return b.periodStart <= `${monthKey}-31` && b.periodEnd >= `${monthKey}-01`;
+    }
+    // Audit F5 — a LEGACY budget (a category + limit, no scope/period/window,
+    // the pre-container shape) is a rolling monthly budget: it applies to every
+    // month. Without this branch the container-model switch would have made
+    // every legacy budget invisible to Pulse and Ask Vyact.
+    return !!b.category;
+  });
+}
+
+/**
+ * W5 (P1, owner decision; audit FE-PIP-01) — a budget line whose limit covers MORE than one
+ * month: an annual budget, or a legacy row whose window or period is longer than a month.
+ * `budgetLinesForMonth` returns it for every month of its year, so one month's spending must
+ * never be measured against it ("₹60,000 left" of a Travel budget already 97% spent).
+ */
+export function coversMoreThanAMonth(b: Budget): boolean {
+  if (b.scope) return b.scope === 'annual';
+  if (b.periodStart && b.periodEnd) return b.periodStart.slice(0, 7) !== b.periodEnd.slice(0, 7);
+  return !!b.period && b.period !== 'monthly';
+}
+
 // v9.1 §4 — resolve a budget's scope+identity into a concrete [start, end] range.
 //   month  → first..last day of (year, month)
 //   annual → Jan 1 .. Dec 31 of year
@@ -133,27 +229,35 @@ export function resolveBudgetPeriod(
   return { periodStart: iso(start), periodEnd: iso(end) };
 }
 
-// v9.1 §4.2 — read-only recurring FORECAST: sum each recurring EXPENSE schedule
-// over [periodStart, periodEnd], bucketed by category, in the target currency.
-// Approximate (period-length × per-period rate); informs the budget, writes nothing
-// (money-model A8). Transfers/investments/income are excluded from spend forecast.
+/** A schedule as the forecast reads it: its rule's columns, its month-end rule, and its template. */
+export type ForecastSchedule = Pick<RecurringSchedule, 'frequency' | 'startDate'>
+  & Partial<Pick<RecurringSchedule, 'rrule' | 'dayOfMonth' | 'weekday' | 'shortMonthPolicy' | 'active'>>
+  & { transactionTemplate: { type?: string; amount?: number; currency?: string; category?: string; debtId?: string; linkedDebtId?: string } };
+
+// v9.1 §4.2 — read-only recurring FORECAST: what each recurring EXPENSE schedule will cost over
+// [periodStart, periodEnd], bucketed by category. Informs the budget, writes nothing (money-model A8).
+// Transfers/investments/income are excluded from spend forecast.
+// FE-MNY-16 (v10.91.0; owner decision 13 Oct 2026) — the cost is the schedule's amount × its REAL dates
+// in the period, read from its own rule (`ruleOf` + `policyOf` → `expandRRule`, from its start date,
+// COUNT and UNTIL included): the same rule the engine and the bill calendar read. The old
+// period-length × frequency estimate put a quarterly bill (FREQ=MONTHLY;INTERVAL=3) in every month at
+// its full amount, and counted a Mon + Thu bill once a week. A schedule with no date in the period adds
+// nothing, and its category is left out.
 export function recurringForecastByCategory(
-  schedules: { transactionTemplate: { type?: string; amount?: number; currency?: string; category?: string }; frequency: string }[],
+  schedules: ForecastSchedule[],
   periodStart: string, periodEnd: string,
   baseCurrency: string, rates: ExchangeRates,
 ): Record<string, number> {
-  const start = new Date(periodStart + 'T00:00:00Z').getTime();
-  const end = new Date(periodEnd + 'T00:00:00Z').getTime();
-  const days = Math.max(0, (end - start) / 86_400_000 + 1);
   const out: Record<string, number> = {};
   for (const s of schedules) {
     const t = s.transactionTemplate;
     if (!t || t.type !== 'expense' || !t.amount || !t.category) continue;
-    const perPeriod =
-      s.frequency === 'weekly'  ? t.amount * (days / 7) :
-      s.frequency === 'yearly'  ? t.amount * (days / 365) :
-      /* monthly / custom_day */  t.amount * (days / 30.4375);
-    const inBase = convert(perPeriod, t.currency || baseCurrency, baseCurrency, rates);
+    // W8a (audit FE-MNY-16): a paused schedule posts nothing, and a loan EMI is the loan's payment, not
+    // category spend (the same rule as lib/recurring.ts isLoanEmiSchedule) — neither belongs in the forecast.
+    if (s.active === false || t.category === 'loan_emi' || t.debtId || t.linkedDebtId) continue;
+    const dates = expandRRule(ruleOf(s), s.startDate, periodStart, periodEnd, { shortMonthPolicy: policyOf(s) });
+    if (!dates.length) continue;
+    const inBase = convert(t.amount * dates.length, t.currency || baseCurrency, baseCurrency, rates);
     out[t.category] = (out[t.category] || 0) + Math.round(inBase * 100) / 100;
   }
   return out;
@@ -217,10 +321,11 @@ export function spendByCategoryInRange(
  *  `reportableTxns`/`effectiveDinero` machinery as `spendByCategoryInRange`,
  *  so the final entry's `cumulative` equals that function's total over the
  *  same window — the chart never contradicts the tracked spend. Returns one
- *  entry per day (inclusive). */
+ *  entry per day (inclusive). `null` categories = ALL spending (Track E, E5: a
+ *  budget's total is measured against every category, lib/budgetProgress.ts). */
 export function cumulativeSpendSeries(
   transactions: Transaction[],
-  categories: Set<string>,
+  categories: Set<string> | null,
   start: string,
   upto: string,
   baseCurrency: string,
@@ -230,7 +335,7 @@ export function cumulativeSpendSeries(
   // per-day exact spend within the category set (dinero space)
   const perDay = new Map<string, Dinero<number>>();
   for (const t of reportableTxns(transactions)) {
-    if (t.type !== 'expense' || !categories.has(t.category)) continue;
+    if (t.type !== 'expense' || (categories && !categories.has(t.category))) continue;
     if (t.date < start || t.date > upto) continue;
     const d = effectiveDinero(t, baseCurrency, rates);
     const prev = perDay.get(t.date);
@@ -299,7 +404,8 @@ export const liquidAssets = (assets: Asset[], baseCurrency: string, rates: Excha
 // contribute to the household's monthly outflow.
 export const totalMonthlyDebtPayment = (debts: Debt[], baseCurrency: string, rates: ExchangeRates): number =>
   fromDinero(sumDinero(
-    debts.filter(d => (d.direction || 'owed_by_me') !== 'owed_to_me'),
+    // W4f (D19): a paid-off loan has no EMI to pay any more, whatever its last EMI was.
+    debts.filter(d => (d.direction || 'owed_by_me') !== 'owed_to_me' && !d.paidOffAt),
     d => convertViaUsdRates(toDinero(d.minimumPayment, d.currency), baseCurrency, rates),
     baseCurrency,
   ));
@@ -378,19 +484,29 @@ export interface PulseScore {
 export function computePulseScore(
   transactions: Transaction[], budgets: Budget[], _goals: Goal[], debts: Debt[],
   baseCurrency: string, rates: ExchangeRates,
+  allocations: BudgetAllocation[] = [],
+  tz?: string | null,   // W3a: the household's month on the server, the device's in the app
 ): PulseScore {
-  const mk = nowMonthKey();
+  const mk = nowMonthKey(tz);
   const { income, expense } = monthlyData(transactions, mk, baseCurrency, rates);
 
-  // 1. Budget compliance — applicable only if budgets exist
-  const budgetApplicable = budgets.length > 0;
+  // 1. Budget compliance — applicable only if budgets exist.
+  //    Audit F5: compliance reads the CURRENT month's allocation-derived
+  //    category lines (budgetLinesForMonth), never raw container budgets — a
+  //    container with no category used to look like zero spending and perfect
+  //    compliance. And "on budget" means spending UP TO the plan: ≤100% is a
+  //    full score; only overspend degrades it (the old formula decayed toward
+  //    zero as the budget was consumed, so spending exactly the plan scored 0).
+  const lines = budgetLinesForMonth(budgets, allocations, mk);
+  const budgetApplicable = lines.length > 0;
   let budgetScore = 0;
   if (budgetApplicable) {
     const spend = spendByCategory(transactions, mk, baseCurrency, rates);
-    const compliance = budgets.map(b => {
+    const compliance = lines.map(b => {
       const limitBase = convert(b.limit, b.currency, baseCurrency, rates);
       const pct = limitBase > 0 ? (spend[b.category ?? ''] || 0) / limitBase * 100 : 0;
-      return clamp(100 - pct, 0, 100);
+      if (pct <= 100) return 100;                     // on/under budget: full
+      return clamp(200 - pct, 0, 100);                // overspend degrades
     });
     budgetScore = compliance.reduce((s, v) => s + v, 0) / compliance.length;
   }
@@ -481,9 +597,15 @@ export interface Insight {
   to?: string;
 }
 
+/** W8a (audit FE-MNY-06) — what the chips need beyond the raw arrays, so they say what the screens say:
+ *  the canonical net-worth projection (live account balances, receivables excluded) and this month's
+ *  budget lines (allocations, scope and period). Without it the chips read the static asset/debt
+ *  arrays and every budget row's own `category` (a container budget has none). */
+export interface InsightContext { allocations: BudgetAllocation[]; netWorth: number | null }
+
 export function getInsights(
   transactions: Transaction[], budgets: Budget[], goals: Goal[], debts: Debt[], assets: Asset[],
-  baseCurrency: string, rates: ExchangeRates,
+  baseCurrency: string, rates: ExchangeRates, ctx?: InsightContext,
 ): Insight[] {
   const chips: Insight[] = [];
   const mk = nowMonthKey();
@@ -501,7 +623,9 @@ export function getInsights(
       detail:`Little income is left after spending this month. Review your biggest expenses to free up cash.`, to:'/transactions?type=expense' });
   }
 
-  const over = budgets.filter(b => (spend[b.category ?? ''] || 0) > convert(b.limit, b.currency, baseCurrency, rates));
+  // This month's monthly lines only: an annual line's limit is not one month's (W5, FE-PIP-01).
+  const lines = ctx ? budgetLinesForMonth(budgets, ctx.allocations, mk).filter(b => !coversMoreThanAMonth(b)) : budgets;
+  const over = lines.filter(b => b.category && (spend[b.category] || 0) > convert(b.limit, b.currency, baseCurrency, rates));
   if (over.length) chips.push({ icon:'🚨', text:`${over.length} budget${over.length>1?'s':''} exceeded`, cls:'chip-alert',
     detail:`You've spent past the limit in ${over.length} categor${over.length>1?'ies':'y'} this month. Review and adjust.`, to:'/budgets' });
 
@@ -514,8 +638,8 @@ export function getInsights(
       detail:`Debt-to-income = monthly debt payments ÷ income. Under 36% is healthy; extra payments finish debt sooner.`, to:'/debts' });
   }
 
-  if (assets.length || debts.length) {
-    const nw = totalAssets(assets, baseCurrency, rates) - totalLiabilities(debts, baseCurrency, rates);
+  if (ctx ? ctx.netWorth !== null : (assets.length || debts.length)) {
+    const nw = ctx ? ctx.netWorth! : totalAssets(assets, baseCurrency, rates) - totalLiabilities(debts, baseCurrency, rates);
     if (nw > 0) chips.push({ icon:'🏆', text:`Net worth building`, cls:'chip-good',
       detail:`Net worth = assets − debts, and yours is positive. Keep growing assets or cutting debt to widen the gap.`, to:'/networth' });
     else chips.push({ icon:'⬇️', text:`Net worth — focus on payoff`, cls:'chip-warn',
@@ -525,20 +649,8 @@ export function getInsights(
 }
 
 // ── LOAN / EMI ─────────────────────────────────────────────────
-export function computeEmi(principal: number, annualRate: number, tenureMonths: number): number {
-  if (!principal || !tenureMonths) return 0;
-  if (!annualRate) return principal / tenureMonths;
-  const r = annualRate / 100 / 12;
-  const x = Math.pow(1 + r, tenureMonths);
-  return (principal * r * x) / (x - 1);
-}
-
-export function splitEmiPortions(currentBalance: number, annualRate: number, payment: number): { interest: number; principal: number } {
-  const r = annualRate / 100 / 12;
-  const interest = currentBalance * r;
-  const principal = Math.max(0, payment - interest);
-  return { interest, principal };
-}
+// W4f (D19): the EMI and its split live in lib/loanSchedule.ts (the database's twin, parity-tested);
+// the float copies that were here disagreed with the server by the paisa and are gone.
 
 // ── SPLITS ─────────────────────────────────────────────────────
 // v10.17 — `email` is surfaced so the Splits page can aggregate the outstanding

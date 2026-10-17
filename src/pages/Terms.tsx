@@ -103,8 +103,8 @@ export default function Terms() {
       <Section title="13. Contact" id="contact">
         <p>
           Questions about these Terms can be raised by emailing{' '}
-          <a href="mailto:uday.kr27@gmail.com?subject=Vyact%20Terms%20question" className="text-coral hover:underline">uday.kr27@gmail.com</a>{' '}
-          (temporary support inbox — more channels are coming), or via the{' '}
+          <a href="mailto:support@vyact.app?subject=Vyact%20Terms%20question" className="text-coral hover:underline">support@vyact.app</a>,{' '}
+          or via the{' '}
           <Link to="/help#contact" className="text-coral hover:underline">Help → Contact support</Link> form once signed in.
         </p>
       </Section>

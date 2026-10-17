@@ -11,23 +11,37 @@
 // Editing is allowed **only while nothing is paid/settled** — split-level fields
 // lock once any participant has paid, and an individual participant's row locks
 // once that person pays/settles.
+//
+// v10.28.0 — rendered as the /splits/new and /splits/:txnId/edit pages.
 import { useEffect, useMemo, useState } from 'react';
-import HalfSheet from '../ui/HalfSheet';
-import Chip, { CategoryChip } from '../ui/Chip';
+import FormPage from '../ui/FormPage';
+import Chip from '../ui/Chip';
+import CategoryPicker from '../ui/CategoryPicker';
+import SegmentedControl from '../ui/SegmentedControl';
+import { Field, Select } from '../ui/Input';
 import { AmountField } from '../ui/NumericKeypad';
+import { parseAmount } from '../../lib/amountInput';
 import Button from '../ui/Button';
 import { useStore } from '../../store';
-import { uid, today, nowTime } from '../../lib/format';
-import { EXPENSE_CATEGORIES, INCOME_CATEGORIES, CURRENCIES } from '../../constants';
+import { uid, today, nowTime, fmt, addDaysISO } from '../../lib/format';
+import { recentCategories, suggestCategory, type CategorySuggestion } from '../../lib/categorySuggest';
+import { confirmSheet } from '../../lib/confirmSheet';
+import { deleteSplitRequest } from '../../lib/confirmCopy';
+import { CURRENCIES } from '../../constants';
 import { buildAccounts, buildAccountsFromStore, ACCOUNT_REQUIRED_TYPES, notInvestment } from '../../lib/accounts';
 import { getMoneyMapMode } from '../../lib/featureFlags';
 import { resolveParticipantNames } from '../../lib/sharedSplits';
+import { participantEmailProblem, needsConfirmation, confirmQuestion, paidOnFor, type ConfirmItem } from '../../lib/splitParticipants';
+import { editPatch } from '../../lib/txnEdit';
+import Modal from '../ui/Modal';
 import type { Transaction } from '../../types';
 
 interface Props {
   open?: boolean;
   initial?: Transaction | null;
-  onClose?: () => void;
+  /** W4c (D18) — a new split pre-filled from Pip's capture (total, category, how many ways). */
+  seed?: Partial<Transaction> | null;
+  onClose: () => void;
 }
 
 type SplitType = 'expense' | 'income';
@@ -56,8 +70,8 @@ interface FormState {
 const acctEmoji = (kind?: string) =>
   kind === 'card' ? '💳' : kind === 'bank' ? '🏦' : kind === 'investment' ? '📈' : '💵';
 
-const catsFor = (type: SplitType) => (type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
-const defaultCat = (type: SplitType) => (type === 'income' ? 'salary' : 'food_dining');
+// Aurora 4.0 FS2 — the transaction form's rules (CAT1): a shared bill starts on "Choose category".
+const defaultCat = (type: SplitType) => (type === 'income' ? 'salary' : '');
 
 const defaultParticipants = (): PForm[] => ([
   { name: 'You', share: '', isYou: true, paid: true },
@@ -105,12 +119,10 @@ export default function SplitFormModal(props: Props) {
   const deleteSharedSplitForTxn = useStore(s => s.deleteSharedSplitForTxn);
   const cloudActive = cloudEnabled && currentHouseholdId !== 'local';
 
-  const storeOpen    = useStore(s => s.splitModalOpen);
-  const storeInitial = useStore(s => s.editingSplit);
-  const storeClose   = useStore(s => s.closeSplitModal);
-  const open         = props.open    ?? storeOpen;
-  const initial      = props.initial ?? storeInitial;
-  const onClose      = props.onClose ?? storeClose;
+  const open         = props.open ?? true;
+  const initial      = props.initial ?? null;
+  const seed         = props.seed ?? null;
+  const onClose      = props.onClose;
 
   const defaultMemberId = useMemo(() => {
     if (session?.user?.id) {
@@ -122,9 +134,16 @@ export default function SplitFormModal(props: Props) {
 
   const [form, setForm]   = useState<FormState>(blank(profile.baseCurrency));
   const [saving, setSaving] = useState(false);
-  const [showAllCats, setShowAllCats] = useState(false);
   // email → display-name resolution (cloud): string = has account, '' = no account, undefined = unresolved.
   const [resolvedNames, setResolvedNames] = useState<Record<string, string>>({});
+  // v10.59.0 (owner) — the people to confirm before saving, and the answers given.
+  const [confirmItems, setConfirmItems] = useState<ConfirmItem[] | null>(null);
+  const [answers, setAnswers] = useState<Record<string, boolean>>({});
+  // FS2 — the description suggests the category (CAT2), until a category is picked.
+  const [suggestion, setSuggestion] = useState<CategorySuggestion | null>(null);
+  const [catPicked, setCatPicked] = useState(false);
+  const [catMissing, setCatMissing] = useState(false);
+  const ownEmail = session?.user?.email ?? null;
 
   const useFirstClass = getMoneyMapMode() !== 'off' && accountsState.length > 0;
   // v10.17 item 15 — a split is never paid from an investment account.
@@ -152,15 +171,17 @@ export default function SplitFormModal(props: Props) {
   // matched shared_split to read per-share paid/settled state.
   useEffect(() => {
     if (!open) return;
-    setShowAllCats(false);
     setResolvedNames({});
+    setSuggestion(null);
+    setCatMissing(false);
+    setCatPicked(Boolean(initial?.split?.isSplit || seed?.category));
     const sp = initial?.split;
     if (initial && sp?.isSplit) {
       const matched = sharedSplitsOwned.find(s => s.txnId === initial.id);
       setForm({
         type: initial.type === 'income' ? 'income' : 'expense',
         amount: String(sp.totalAmount),
-        currency: initial.currency,
+        currency: profile.baseCurrency,   // W3b: one currency per household
         date: initial.date,
         description: initial.description,
         category: initial.category || defaultCat(initial.type === 'income' ? 'income' : 'expense'),
@@ -179,15 +200,34 @@ export default function SplitFormModal(props: Props) {
           };
         }),
       });
+    } else if (seed) {
+      // Pip knows the total and how many ways, not who: the other people are left to fill in, and
+      // the shares stay even until one is edited.
+      const type: SplitType = seed.type === 'income' ? 'income' : 'expense';
+      const ways = Math.max(2, seed.split?.participants?.length ?? 2);
+      const total = seed.split?.totalAmount ?? seed.amount;
+      setForm({
+        ...blank(profile.baseCurrency),
+        type,
+        amount: total != null ? String(total) : '',
+        date: seed.date ?? today(),
+        description: seed.description ?? '',
+        category: seed.category || defaultCat(type),
+        participants: [
+          { name: 'You', share: '', isYou: true, paid: true },
+          ...Array.from({ length: ways - 1 }, () => ({ name: '', share: '', isYou: false, paid: false })),
+        ],
+        auto: true,
+      });
     } else {
       setForm(blank(profile.baseCurrency));
     }
-  }, [open, initial, sharedSplitsOwned, profile.baseCurrency]);
+  }, [open, initial, seed, sharedSplitsOwned, profile.baseCurrency]);
 
   // Auto-balance while `auto` is on.
   useEffect(() => {
     if (!form.auto) return;
-    const bill = parseFloat(form.amount) || 0;
+    const bill = parseAmount(form.amount) || 0;
     const shares = evenShares(bill, form.participants.length);
     setForm(f => {
       if (!f.auto) return f;
@@ -202,16 +242,31 @@ export default function SplitFormModal(props: Props) {
   // fields lock once ANY participant has paid/settled.
   const anyPaid = form.participants.some(p => !p.isYou && p.paid);
   const splitLocked = editing && anyPaid;
-  const cats = catsFor(form.type);
-  const orderedCats = cats;
   const currencySymbol = CURRENCIES[form.currency]?.symbol ?? '$';
   const accountRequired = ACCOUNT_REQUIRED_TYPES.includes(form.type as (typeof ACCOUNT_REQUIRED_TYPES)[number]);
   const idOf = (p: PForm) => (cloudActive ? (p.email ?? '').trim() : p.name.trim());
 
   function setType(type: SplitType) {
     if (splitLocked) return;
-    setForm(f => ({ ...f, type, category: defaultCat(type) }));
+    const next = suggestCategory(form.description, type);
+    setCatPicked(false);
+    setSuggestion(next);
+    setForm(f => ({ ...f, type, category: next?.category ?? defaultCat(type) }));
   }
+  function setDescription(description: string) {
+    if (catPicked) { setForm(f => ({ ...f, description })); return; }
+    const next = suggestCategory(description, form.type);
+    setSuggestion(next);
+    if (next) setCatMissing(false);
+    setForm(f => ({ ...f, description, category: next?.category ?? defaultCat(f.type) }));
+  }
+  function pickCategory(category: string) {
+    setCatPicked(true);
+    setSuggestion(null);
+    setCatMissing(false);
+    setForm(f => ({ ...f, category }));
+  }
+  const recent = useMemo(() => recentCategories(transactions, form.type, today()), [transactions, form.type]);
   function updateName(i: number, name: string) {
     setForm(f => ({ ...f, participants: f.participants.map((x, j) => j === i ? { ...x, name } : x) }));
   }
@@ -236,9 +291,10 @@ export default function SplitFormModal(props: Props) {
     setForm(f => ({ ...f, participants: f.participants.filter((_, j) => j !== i) }));
   }
 
-  async function save() {
-    const amount = parseFloat(form.amount);
+  async function save(confirmed = false) {
+    const amount = parseAmount(form.amount);
     if (isNaN(amount) || amount <= 0) { toast('Enter a valid total greater than 0', 'error'); return; }
+    if (!form.category) { setCatMissing(true); toast('Choose a category', 'error'); return; }
     if (accountRequired && !form.paymentMethod) {
       toast(`Choose an account this was ${isIncome ? 'paid into' : 'paid with'}`, 'error'); return;
     }
@@ -256,6 +312,26 @@ export default function SplitFormModal(props: Props) {
       toast(`Shares (${sum.toFixed(2)}) must add up to the total (${amount.toFixed(2)})`, 'error'); return;
     }
 
+    // v10.59.0 (owner, items 1–3) — shared by email only, never with yourself, and each new
+    // person confirmed before anything is saved.
+    if (cloudActive) {
+      const others = parts.filter(p => !p.isYou).map(p => (p.email ?? '').trim().toLowerCase());
+      for (let i = 0; i < others.length; i++) {
+        const problem = participantEmailProblem(others[i], ownEmail, others.slice(0, i));
+        if (problem) { toast(`${others[i] || 'A participant'}: ${problem}`, 'error'); return; }
+      }
+      const before = (initial?.split?.participants ?? []).map(p => p.email ?? '').filter(Boolean);
+      const toConfirm = needsConfirmation(others, before);
+      if (toConfirm.length && !confirmed) {
+        let names: Record<string, string> = {};
+        try { names = await resolveParticipantNames(toConfirm); }
+        catch { names = Object.fromEntries(toConfirm.filter(e => resolvedNames[e]).map(e => [e, resolvedNames[e]])); }
+        setAnswers({});
+        setConfirmItems(toConfirm.map(email => ({ email, name: names[email] || null })));
+        return;
+      }
+    }
+
     const split: Transaction['split'] = {
       isSplit: true,
       totalAmount: amount,
@@ -270,7 +346,8 @@ export default function SplitFormModal(props: Props) {
           isYou: p.isYou || undefined,
           share: p.shareNum,
           paid: Boolean(p.isYou || p.paid),
-          paidOn: p.isYou ? null : (p.paid ? today() : null),
+          // W4c (D18) — someone who had already paid keeps the day they paid; only a new payment is today.
+          paidOn: p.isYou ? null : paidOnFor(initial?.split?.participants, { email, name: displayName }, Boolean(p.paid), today()),
           email: (!p.isYou && email) ? email : undefined,
         };
       }),
@@ -278,7 +355,9 @@ export default function SplitFormModal(props: Props) {
 
     setSaving(true);
     try {
-      const txn: Transaction = {
+      // W4c (D18) — a patch over the opened row: its note, payment mode, schedule link and the
+      // version the store sends as the edit's precondition are kept.
+      const txn: Transaction = editPatch(initial, {
         id: initial?.id ?? uid(),
         type: form.type,
         amount,
@@ -290,7 +369,7 @@ export default function SplitFormModal(props: Props) {
         memberId: initial?.memberId ?? defaultMemberId,
         paymentMethod: form.paymentMethod || undefined,
         split,
-      };
+      });
       await upsertTransaction(txn);
 
       if (cloudActive) {
@@ -323,7 +402,9 @@ export default function SplitFormModal(props: Props) {
 
   async function del() {
     if (!initial) return;
-    if (!confirm('Delete this split?')) return;
+    // Aurora 4.0 CF4 — says who is affected (closing a shared split is offered on the Splits page).
+    const others = (initial.split?.participants ?? []).filter(p => !p.isYou).map(p => p.name || p.email || '').filter(Boolean);
+    if (!(await confirmSheet(deleteSplitRequest({ name: initial.description ?? '', amount: fmt(initial.amount, initial.currency), others, canClose: false })))) return;
     try {
       await removeTransaction(initial.id);
       if (cloudActive) await deleteSharedSplitForTxn(initial.id);
@@ -338,25 +419,25 @@ export default function SplitFormModal(props: Props) {
     <div className="flex items-center justify-between gap-2">
       {editing ? (
         <button type="button" onClick={del}
-          className="font-mono text-[0.62rem] tracking-wider uppercase text-terra hover:underline">
+          className="ui-action text-terra hover:underline min-h-[44px]">
           Delete
         </button>
       ) : <span />}
       <div className="flex gap-2">
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : editing ? 'Update' : 'Add split'}</Button>
+        <Button onClick={() => save()} disabled={saving}>{saving ? 'Saving…' : editing ? 'Update' : 'Add split'}</Button>
       </div>
     </div>
   );
 
   const sharesSum = form.participants.reduce((s, p) => s + (parseFloat(p.share) || 0), 0);
-  const bill = parseFloat(form.amount) || 0;
+  const bill = parseAmount(form.amount) || 0;
   const sharesOk = Math.abs(sharesSum - bill) < 0.01 && bill > 0;
 
   return (
-    <HalfSheet open={open} onClose={onClose} title={editing ? 'Edit Split' : 'Add Split'} footer={footer}>
+    <FormPage open={open} onClose={onClose} title={editing ? 'Edit Split' : 'Add Split'} footer={footer} helpTopicId="split" className="ui-pilot">
       {splitLocked && (
-        <div className="mb-3 rounded-md px-3 py-2 text-[0.72rem] leading-snug border border-line text-ink-mid" style={{ background: 'var(--sunken)' }}>
+        <div className="well mb-3 px-3 py-2 text-[12px] leading-snug text-ink-mid">
           A member has already settled, so the total, type and settled rows are locked. You can still edit unpaid members.
         </div>
       )}
@@ -373,74 +454,69 @@ export default function SplitFormModal(props: Props) {
 
       {/* Total amount hero. */}
       <div className="py-1 mb-1">
-        <AmountField value={form.amount} currencySymbol={currencySymbol} autoFocus={!editing}
+        <AmountField value={form.amount} currencySymbol={currencySymbol}
           onChange={splitLocked ? () => {} : v => setForm(f => ({ ...f, amount: v }))} />
       </div>
       <div className="text-center mono-label mb-2">Total {isIncome ? 'payout' : 'bill'} — only your share counts toward you</div>
 
-      {/* Category (for the backing transaction). */}
-      <div className="mt-3">
-        <div className="mono-label mb-1.5">Category</div>
-        <div className="flex gap-1.5 flex-wrap">
-          {(showAllCats ? orderedCats : orderedCats.slice(0, 7)).map(c => (
-            <CategoryChip key={c.id} emoji={c.icon} label={c.label} on={c.id === form.category}
-              onClick={() => setForm(f => ({ ...f, category: c.id }))} />
-          ))}
-          {orderedCats.length > 7 && (
-            <CategoryChip emoji={showAllCats ? '▴' : '⌕'} label={showAllCats ? 'Less' : 'More'} on={false}
-              onClick={() => setShowAllCats(s => !s)} />
-          )}
-        </div>
-      </div>
-
-      {/* Description. */}
+      {/* Aurora 4.0 FS2 — the transaction form's order: Description, then the category it suggests. */}
       <div className="mt-4">
         <div className="mono-label mb-1.5">Description</div>
         <input className="input w-full" value={form.description} aria-label="Description"
-          onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+          onChange={e => setDescription(e.target.value)}
           placeholder={isIncome ? 'e.g. Group gig payout' : 'e.g. Dinner at Olive'} />
       </div>
 
-      {/* Date + account it was paid with/into. */}
-      <div className="mt-4">
-        <div className="mono-label mb-1.5">
-          Date · {isIncome ? 'paid into' : 'paid with'} {accountRequired ? <span className="text-terra">·required</span> : null}
-        </div>
-        <div className="flex gap-1.5 items-center flex-wrap">
-          <input type="date" value={form.date}
-            onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
-            className="input h-[34px] py-0 px-2.5 text-[12.5px] w-[140px]" aria-label="Pick a date" />
-          {accounts.map(a => (
-            <Chip key={a.value} on={a.value === form.paymentMethod}
-              onClick={() => setForm(f => ({ ...f, paymentMethod: a.value }))}>
-              <span aria-hidden>{acctEmoji(a.kind)}</span>{a.label}
-            </Chip>
-          ))}
-        </div>
+      {/* Category (for the backing transaction). */}
+      <div className="mt-3">
+        <CategoryPicker type={form.type} value={form.category} onChange={pickCategory} recent={recent}
+          error={catMissing ? 'Choose a category for this split' : undefined}
+          hint={suggestion && form.category === suggestion.category
+            ? `Suggested from “${suggestion.word}” · change it if that’s wrong` : undefined} />
       </div>
 
-      {/* Participants + shares. */}
+      {/* FS2 / FRM1 — Today / Yesterday, then the date as a 44px field; then the account. */}
       <div className="mt-4">
-        <div className="flex items-center justify-between mb-1.5">
-          <label className="mono-label">{cloudActive ? `Who's in · tag by email & share (${form.currency})` : `People & shares (${form.currency})`}</label>
+        <div className="mono-label mb-1.5">Date</div>
+        <div className="flex gap-1.5 items-center mb-2">
+          <Chip on={form.date === today()} onClick={() => setForm(f => ({ ...f, date: today() }))}>Today</Chip>
+          <Chip on={form.date === addDaysISO(today(), -1)} onClick={() => setForm(f => ({ ...f, date: addDaysISO(today(), -1) }))}>Yesterday</Chip>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <input type="date" value={form.date}
+            onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+            className="input h-[44px] py-0 px-3 w-full min-w-0" aria-label="Pick a date" />
+        </div>
+        <Field label={isIncome ? 'Paid into' : 'Paid with'}>
+          <Select value={form.paymentMethod} required={accountRequired}
+            onChange={event => setForm(f => ({ ...f, paymentMethod: event.target.value }))}>
+            <option value="">Choose account</option>
+            {accounts.map(account => <option key={account.value} value={account.value}>{acctEmoji(account.kind)} {account.label}</option>)}
+          </Select>
+        </Field>
+      </div>
+
+      {/* Participants + shares. Aurora 4.0 FS1 — split equally by default: each share is shown as text,
+          and "By amount" turns them into fields (the even-split link under the list is gone). */}
+      <div className="mt-4">
+        <div className="flex items-center justify-between gap-2 mb-1.5">
+          <div className="mono-label">{cloudActive ? 'Who’s in · tag by email' : 'People'}</div>
           {cloudActive && (
             <datalist id="split-email-suggestions">
               {emailSuggestions.map(e => <option key={e} value={e} />)}
             </datalist>
           )}
-          <div className="flex gap-2">
-            {!splitLocked && (
-              <button type="button" onClick={() => setForm(f => ({ ...f, auto: true }))}
-                className={`font-mono text-[0.6rem] tracking-wider uppercase hover:underline ${form.auto ? 'text-sage' : 'text-ink-dim'}`}>
-                {form.auto ? '⚖ Even (auto)' : '⚖ Even split'}
-              </button>
-            )}
-            {!splitLocked && (
-              <button type="button" onClick={addParticipant}
-                className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:underline">+ Add person</button>
-            )}
-          </div>
+          {!splitLocked && (
+            <button type="button" onClick={addParticipant} className="empty-link">+ Add person</button>
+          )}
         </div>
+        {!splitLocked && (
+          <div className="mb-2.5">
+            <SegmentedControl label="How to split" value={form.auto ? 'equal' : 'amount'}
+              onChange={how => setForm(f => ({ ...f, auto: how === 'equal' }))}
+              options={[{ value: 'equal', label: 'Equally', testId: 'split-equally' }, { value: 'amount', label: 'By amount', testId: 'split-by-amount' }]} />
+          </div>
+        )}
         <div className="space-y-1.5">
           {form.participants.map((p, i) => {
             const emailKey = (p.email ?? '').trim().toLowerCase();
@@ -467,32 +543,92 @@ export default function SplitFormModal(props: Props) {
                     <input className="input flex-1 py-1.5" value={p.name} placeholder="Name" disabled={rowLocked}
                       onChange={e => updateName(i, e.target.value)} />
                   )}
-                  <input className="input w-24 py-1.5 text-right" type="number" min="0" step="0.01" value={p.share}
-                    placeholder="0.00" disabled={rowLocked || (splitLocked && !p.isYou)}
-                    onChange={e => editShare(i, e.target.value)} />
+                  {form.auto ? (
+                    <span className="num w-24 text-right text-ink flex-shrink-0" aria-label={`${p.isYou ? 'Your' : `${p.name || p.email || 'Their'}`} share`}>
+                      {p.share ? fmt(parseFloat(p.share) || 0, form.currency) : '—'}
+                    </span>
+                  ) : (
+                    <input className="input w-24 py-1.5 text-right" type="number" min="0" step="0.01" value={p.share}
+                      placeholder="0.00" aria-label={p.isYou ? 'Your share' : 'Share'}
+                      disabled={rowLocked || (splitLocked && !p.isYou)}
+                      onChange={e => editShare(i, e.target.value)} />
+                  )}
                   {!p.isYou && !rowLocked ? (
                     <button type="button" onClick={() => removeParticipant(i)}
-                      className="text-ink-dim hover:text-terra w-7 flex-shrink-0 text-center" aria-label="Remove participant">✕</button>
-                  ) : <span className="w-7 flex-shrink-0" />}
+                      className="text-ink-dim hover:text-terra w-11 h-11 flex-shrink-0 flex items-center justify-center" aria-label="Remove participant">✕</button>
+                  ) : <span className="w-11 flex-shrink-0" />}
                 </div>
                 {rowLocked && (
-                  <div className="font-mono text-[0.6rem] tracking-wider text-sage pl-1">✓ settled — locked</div>
+                  <div className="text-[12px] text-sage pl-1">✓ Settled, so this row is locked</div>
                 )}
-                {!p.isYou && !rowLocked && cloudActive && emailKey && (
+                {!p.isYou && !rowLocked && cloudActive && emailKey
+                  && participantEmailProblem(emailKey, ownEmail) && (
+                  <div className="text-[12px] text-terra pl-1">{participantEmailProblem(emailKey, ownEmail)}</div>
+                )}
+                {!p.isYou && !rowLocked && cloudActive && emailKey && !participantEmailProblem(emailKey, ownEmail) && (
                   resolved
-                    ? <div className="font-mono text-[0.6rem] tracking-wider text-sage pl-1">✓ {resolved}</div>
+                    ? <div className="text-[12px] text-sage pl-1">✓ {resolved}</div>
                     : resolved === ''
-                      ? <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim pl-1">Not on Vyact yet — they'll get an invite email</div>
+                      ? <div className="text-[12px] text-ink-dim pl-1">Not on Vyact yet — they’ll get an invite email</div>
                       : null
                 )}
               </div>
             );
           })}
         </div>
-        <div className={`mt-2 font-mono text-[0.62rem] tracking-wider ${sharesOk ? 'text-sage' : 'text-honey'}`}>
-          Shares total {sharesSum.toFixed(2)} / total {bill.toFixed(2)} {sharesOk ? '✓' : '— must match'}
-        </div>
+        {!form.auto && (
+          <div className="mt-2 text-[12px]" style={{ color: sharesOk ? 'var(--good-text)' : 'var(--warn-text)' }}>
+            Shares add up to {fmt(sharesSum, form.currency)} of {fmt(bill, form.currency)}{sharesOk ? ' ✓' : ' — they must match'}
+          </div>
+        )}
       </div>
-    </HalfSheet>
+
+      {/* v10.59.0 (owner, item 3) — confirm each new person before the split is saved. */}
+      <Modal open={!!confirmItems} onClose={() => setConfirmItems(null)} title="Confirm who this split is with">
+        <div className="space-y-3" data-testid="split-confirm">
+          {confirmItems?.map(item => (
+            <div key={item.email} className="rounded-md border border-line px-3 py-2.5" style={{ background: 'var(--sunken)' }}>
+              <p className="text-ink text-[0.88rem] leading-snug">{confirmQuestion(item)}</p>
+              {!item.name && (
+                <p className="text-[0.75rem] text-ink-dim mt-1">They&apos;ll get an email from Vyact with your name, the split and a link to join and settle it.</p>
+              )}
+              <div className="flex gap-2 mt-2">
+                <Button variant={answers[item.email] === true ? 'primary' : 'ghost'}
+                  aria-pressed={answers[item.email] === true}
+                  onClick={() => setAnswers(a => ({ ...a, [item.email]: true }))}>
+                  {item.name ? 'Yes' : 'Yes, invite'}
+                </Button>
+                <Button variant={answers[item.email] === false ? 'danger' : 'ghost'}
+                  aria-pressed={answers[item.email] === false}
+                  onClick={() => setAnswers(a => ({ ...a, [item.email]: false }))}>
+                  No
+                </Button>
+              </div>
+            </div>
+          ))}
+          {(() => {
+            const items = confirmItems ?? [];
+            const answered = items.length > 0 && items.every(i => answers[i.email] !== undefined);
+            const rejected = items.filter(i => answers[i.email] === false).map(i => i.email);
+            return (
+              <div className="flex justify-end gap-2 pt-2 border-t border-line">
+                <Button variant="ghost" onClick={() => setConfirmItems(null)}>Back</Button>
+                {rejected.length > 0 ? (
+                  <Button disabled={!answered} onClick={() => {
+                    setForm(f => ({ ...f, auto: false, participants: f.participants.filter(p => p.isYou || !rejected.includes((p.email ?? '').trim().toLowerCase())) }));
+                    setConfirmItems(null);
+                    toast(`Removed ${rejected.join(', ')}. Check the shares still add up to the total.`, 'info');
+                  }}>Remove and go back</Button>
+                ) : (
+                  <Button disabled={!answered || saving} onClick={() => { setConfirmItems(null); void save(true); }}>
+                    {editing ? 'Update split' : 'Save split'}
+                  </Button>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      </Modal>
+    </FormPage>
   );
 }

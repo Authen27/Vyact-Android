@@ -3,6 +3,10 @@
 // signUp, etc. without knowing about Supabase internals.
 
 import { sb, APP_URL } from './supabase';
+import { POLICY_VERSION } from './policyVersion';
+import { disablePush } from './webPush';
+import { deviceTimeZone } from './householdTimezone';
+import type { MyInvitation } from './invitations';
 import type { Session, User } from '@supabase/supabase-js';
 
 export interface SignUpInput {
@@ -15,7 +19,8 @@ export async function signUp({ email, password, displayName }: SignUpInput) {
   const { data, error } = await sb().auth.signUp({
     email, password,
     options: {
-      data: { display_name: displayName },
+      // W3a — the household made for this account starts in this device's zone (households trigger).
+      data: { display_name: displayName, timezone: deviceTimeZone() ?? undefined },
       emailRedirectTo: `${APP_URL}/auth/verified`,
     },
   });
@@ -46,6 +51,9 @@ export async function signInOAuth(provider: 'google' | 'apple' | 'github') {
 }
 
 export async function signOut() {
+  // v10.48.0 — a signed-out device must not keep receiving this person's figures on its
+  // lock screen. Unregister while the session can still authorise it.
+  await disablePush().catch(() => undefined);
   const { error } = await sb().auth.signOut();
   if (error) throw error;
 }
@@ -88,21 +96,48 @@ export const INVITE_LABEL_SENTINEL = '(shareable link)';
 
 export async function createInviteLink(
   householdId: string,
-  role: 'admin' | 'member' | 'viewer' | 'child',
+  role: 'admin' | 'member' | 'viewer',
   householdRole?: string,
   label?: string,
+  // v10.95.0 (#9) — the invitee's address, already checked (lib/invitations.ts checkInviteEmail).
+  recipientEmail?: string | null,
 ) {
   const { data: { user } } = await sb().auth.getUser();
   if (!user) throw new Error('Not signed in');
   const { data, error } = await sb().from('invitations').insert({
     household_id: householdId,
     invited_email: (label && label.trim()) || INVITE_LABEL_SENTINEL,
+    recipient_email: recipientEmail || null,
     invited_by: user.id,
     role,
     household_role: householdRole || null,
   }).select().single();
   if (error) throw error;
   return data;
+}
+
+// ── v10.95.0 (#9) — invitations addressed to me (matched on my confirmed email) ──
+export async function listMyInvitations(): Promise<MyInvitation[]> {
+  const { data, error } = await sb().rpc('my_pending_invitations');
+  if (error) throw error;
+  return ((data ?? []) as Record<string, unknown>[]).map(r => ({
+    id: String(r.id), householdId: String(r.household_id), householdName: String(r.household_name ?? ''),
+    householdType: r.household_type as string | undefined, invitedByName: String(r.invited_by_name ?? 'Someone'),
+    role: String(r.role), householdRole: (r.household_role as string | null) ?? null,
+    expiresAt: String(r.expires_at), createdAt: String(r.created_at),
+  }));
+}
+
+export async function acceptInvitationById(invitationId: string) {
+  const { data, error } = await sb().rpc('accept_invitation_by_id', { p_id: invitationId });
+  if (error) throw error;
+  return data as { household_id: string; membership_id?: string; role?: string; already_member?: boolean };
+}
+
+export async function declineInvitation(invitationId: string): Promise<boolean> {
+  const { data, error } = await sb().rpc('decline_invitation', { p_id: invitationId });
+  if (error) throw error;
+  return data === true;
 }
 
 export async function listInvitations(householdId: string) {
@@ -119,9 +154,12 @@ export async function acceptInvitation(token: string) {
   return data as { household_id: string; membership_id?: string; role?: string; already_member?: boolean };
 }
 
-export async function revokeInvitation(invitationId: string) {
-  const { error } = await sb().from('invitations').delete().eq('id', invitationId);
+/** v10.95.0 — true when an invitation was revoked; false when there was none left to revoke (it was
+ *  accepted or revoked elsewhere). A delete RLS refuses also matches no row, so it reads as false. */
+export async function revokeInvitation(invitationId: string): Promise<boolean> {
+  const { data, error } = await sb().from('invitations').delete().eq('id', invitationId).select('id');
   if (error) throw error;
+  return (data?.length ?? 0) > 0;
 }
 
 // ── Membership management ───────────────────────────────────
@@ -156,51 +194,22 @@ export async function listActivity(householdId: string, limit = 100) {
   return data;
 }
 
-// ── MFA helpers (TD-15) ─────────────────────────────────────
-// Small wrappers around Supabase's Auth MFA API so pages can enroll
-// and verify TOTP factors without depending on Supabase internals.
-export async function enrollMfaTotp(friendlyName?: string) {
-  const { data, error } = await sb().auth.mfa.enroll({ factorType: 'totp', friendlyName });
-  if (error) throw error;
-  return data;
-}
-
-export async function verifyMfaEnrolment(factorId: string, code: string) {
-  // For TOTP the Supabase SDK requires a challenge before verify; the
-  // convenience `challengeAndVerify` wraps both. The plain `.verify(...)`
-  // overload demands a `challengeId` which we don't have at enrolment-
-  // verification time. (Lead review: dev's original code used `.verify`
-  // and would not type-check.)
-  const { data, error } = await sb().auth.mfa.challengeAndVerify({ factorId, code });
-  if (error) throw error;
-  return data;
-}
-
-export async function listMfaFactors() {
-  const { data, error } = await sb().auth.mfa.listFactors();
-  if (error) throw error;
-  return data;
-}
-
-export async function unenrollMfaFactor(factorId: string) {
-  const { data, error } = await sb().auth.mfa.unenroll({ factorId });
-  if (error) throw error;
-  return data;
-}
-
 // ── Consent + data-erasure + account lifecycle (v9.8.0) ────────────
 // Backs Settings → Danger Zone and the sign-up consent checkbox. See
 // supabase/migrations/20260701120000_v98_privacy_deletion_controls.sql
 // and supabase/functions/delete-account for the server-side half.
-export const POLICY_ACCEPTANCE_VERSION = '2026-07-01';
+// W8a (audit XC-PRV-09): the version the pages show, not a stale copy ('2026-07-01').
+export const POLICY_ACCEPTANCE_VERSION = POLICY_VERSION;
 
-/** Record ToS + Privacy acceptance against the caller's profile at sign-up. */
+/** Record ToS + Privacy acceptance against the caller's profile. An acceptance of THIS version already
+ *  on record is left as it is (a Google sign-in on the sign-in page records it too, every time). */
 export async function acceptPolicies(userId: string) {
   const now = new Date().toISOString();
   const { error } = await sb().from('profiles').update({
     tos_accepted_at: now, tos_version: POLICY_ACCEPTANCE_VERSION,
     privacy_accepted_at: now, privacy_version: POLICY_ACCEPTANCE_VERSION,
-  }).eq('id', userId);
+  }).eq('id', userId)
+    .or(`privacy_version.is.null,privacy_version.neq.${POLICY_ACCEPTANCE_VERSION}`);
   if (error) throw error;
 }
 
@@ -222,12 +231,6 @@ export async function reactivateAccount() {
   if (error) throw error;
 }
 
-/** Schedules permanent deletion with a 30-day undo window; puts the account on hold immediately. */
-export async function requestAccountDeletion(): Promise<string> {
-  const { data, error } = await sb().rpc('request_account_deletion');
-  if (error) throw error;
-  return data as string;
-}
 
 /**
  * Checks whether the signed-in user has a deactivation or pending-deletion
@@ -245,15 +248,23 @@ export async function reactivateIfNeeded(): Promise<boolean> {
   return true;
 }
 
+/** Why the server refused a deletion: 'reauth_required', 'transfer_required', or another code. */
+export class AccountDeletionError extends Error {
+  constructor(public code: string, message: string) { super(message); this.name = 'AccountDeletionError'; }
+}
+
 /**
- * Executes the permanent delete via the service-role edge function. Only
- * succeeds once `requestAccountDeletion()` has run; pass `immediate: true`
- * to skip the 30-day undo window (explicit "delete right now" confirmation).
+ * W1b (v10.63.0) — deletes the account NOW, through the delete-account Edge Function, which
+ * runs one purge transaction on the server and then removes the login. There is no 30-day
+ * schedule any more (it was never executed). Call it right after `verifyAccountActionCode`:
+ * the server refuses a session that has not signed in within the last 10 minutes.
  */
-export async function executeAccountDeletion(immediate = false) {
-  const { data, error } = await sb().functions.invoke('delete-account', { body: { immediate } });
-  if (error) throw error;
-  return data as { deleted: boolean };
+export async function executeAccountDeletion(): Promise<void> {
+  const { error } = await sb().functions.invoke('delete-account', { body: {} });
+  if (!error) return;
+  let body: { error?: string; detail?: string } | undefined;
+  try { body = await (error as { context?: Response }).context?.json(); } catch { body = undefined; }
+  throw new AccountDeletionError(body?.error ?? 'delete_failed', body?.detail ?? error.message);
 }
 
 // ── Email-code re-authentication for irreversible account actions ──

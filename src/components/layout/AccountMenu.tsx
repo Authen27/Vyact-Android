@@ -2,9 +2,10 @@
 // this menu: a header (avatar + name + email · role), the account routes as
 // board `.mrow` cards, the theme segmented control, sync status, and sign out.
 // Mobile → a full-width top PullDownSheet (M7). Desktop → the anchored glass
-// dropdown (the D-pattern equivalent). Household SWITCHING lives on the
-// separate household chip (TopBar / MobileHeader), not here — this menu's
-// "Households" row navigates to household management.
+// dropdown (the D-pattern equivalent). Aurora 4.0 (HDR1/HDR2): household
+// switching moved here from the header chip — the avatar wears a household badge
+// and the menu's first row opens the switcher (HouseholdSheet); the
+// "Households" route row still goes to household management.
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Sun, Moon, Monitor, LogOut, ChevronRight } from 'lucide-react';
@@ -14,6 +15,9 @@ import { roleLabel } from '../../lib/permissions';
 import { ACCOUNT_ROUTES } from './navModel';
 import PullDownSheet from '../ui/PullDownSheet';
 import SyncStatusBadge from './SyncStatusBadge';
+import HouseholdSheet from './HouseholdSheet';
+import { PROFILE_TYPES } from '../../constants';
+import { normalizeHouseholdType } from '../../lib/householdTypes';
 import type { Theme } from '../../types';
 
 const THEME_MODES: { key: Theme; label: string; icon: typeof Sun }[] = [
@@ -24,6 +28,7 @@ const THEME_MODES: { key: Theme; label: string; icon: typeof Sun }[] = [
 
 export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | 'avatar' }) {
   const [open, setOpen] = useState(false);
+  const [hhOpen, setHhOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -36,6 +41,7 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
   const profile = useStore(s => s.profile);
   const myRole = useStore(s => s.myRole);
   const active = households.find(h => h.id === currentId);
+  const hhType = PROFILE_TYPES[normalizeHouseholdType(active?.type)];
 
   const displayName = profile.name?.trim() || active?.name || 'My Household';
   const initials = displayName.split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
@@ -61,6 +67,14 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
     </span>
   );
 
+  // HDR1/HDR2 — the household badge on the avatar: the active household's type icon.
+  const badge = (
+    <span aria-hidden className="absolute -right-[3px] -bottom-[3px] w-[18px] h-[18px] rounded-full flex items-center justify-center text-[10px] leading-none"
+      style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+      {hhType.icon}
+    </span>
+  );
+
   // Full-width segmented control (chips flex-1). Rendered stacked UNDER the
   // "Theme" label so it never overflows the narrow (300px) desktop dropdown —
   // an inline .mrow with three labeled chips did (the "Auto" chip was clipped
@@ -77,7 +91,7 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
             role="radio" aria-checked={on}
             className="flex-1 h-8 rounded-pill border-none flex items-center justify-center gap-1.5 font-display text-[11px] font-semibold cursor-pointer"
             style={on
-              ? { background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--accent)' }
+              ? { background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--accent-text)' }
               : { background: 'transparent', color: 'var(--ff-ink-3)' }}
           >
             <m.icon size={12} /> {m.label}
@@ -95,9 +109,30 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
         {avatar(46, 16)}
         <div className="flex-1 min-w-0">
           <div className="font-display font-bold text-[16px] text-ink truncate">{displayName}</div>
-          <div className="font-mono text-[9px] tracking-[0.12em] uppercase text-ink-dim truncate">{subline}</div>
+          <div className="text-[12px] text-ink-dim truncate">{subline}</div>
         </div>
       </div>
+
+      {/* HDR1/HDR2 — the household switcher (was the header chip). */}
+      {active && (
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setHhOpen(true); }}
+          aria-label={`Switch household — ${active.name}`}
+          className="flex items-center gap-3 px-3.5 py-3 rounded-r2 border-none cursor-pointer text-left"
+          style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
+        >
+          <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center flex-shrink-0 text-[16px]"
+            style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }} aria-hidden>
+            {hhType.icon}
+          </span>
+          <span className="flex-1 min-w-0">
+            <span className="block font-semibold text-[14px] text-ink truncate">{active.name}</span>
+            <span className="block text-[12px] text-ink-dim">{hhType.label} household</span>
+          </span>
+          <span className="text-[13px] font-medium flex-shrink-0" style={{ color: 'var(--accent-text)' }}>Switch</span>
+        </button>
+      )}
 
       {ACCOUNT_ROUTES.map(r => (
         <button
@@ -107,8 +142,8 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
           className="flex items-center gap-3 px-3.5 py-3 rounded-r2 border-none cursor-pointer text-left"
           style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
         >
-          <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center flex-shrink-0"
-            style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+          <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center flex-shrink-0"
+            style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>
             <r.icon size={16} className="text-ink-mid" />
           </span>
           <span className="flex-1 font-semibold text-[14px] text-ink">{r.label}</span>
@@ -122,8 +157,8 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
       <div className="flex flex-col gap-2.5 px-3.5 py-2.5 rounded-r2"
         style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
         <div className="flex items-center gap-3">
-          <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center flex-shrink-0"
-            style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+          <span className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center flex-shrink-0"
+            style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>
             <Moon size={16} className="text-ink-mid" />
           </span>
           <span className="flex-1 font-semibold text-[14px] text-ink">Theme</span>
@@ -141,13 +176,12 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
       {cloudEnabled && session && (
         <button
           onClick={async () => {
-            if (confirm('Sign out of Vyact?')) {
-              try { await authSignOut(); } catch { /* auth listener clears state */ }
-            }
+            // Aurora 4.0 CF19 — nothing is lost, so no question: sign out at once.
+            try { await authSignOut(); } catch { /* auth listener clears state */ }
           }}
           title={session.user?.email || ''}
           className="w-full flex items-center justify-center gap-1.5 mt-0.5 py-2.5 font-mono text-[9px] tracking-[0.15em] uppercase cursor-pointer border-none bg-transparent"
-          style={{ color: 'hsl(var(--terra))' }}
+          style={{ color: 'var(--crit-text)' }}
         >
           <LogOut size={12} /> Sign out
         </button>
@@ -159,10 +193,11 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
     <button
       onClick={() => setOpen(o => !o)}
       aria-label="Account menu" aria-expanded={open}
-      className="w-[30px] h-[30px] rounded-full border-none cursor-pointer flex items-center justify-center font-display font-bold text-[11px] flex-shrink-0"
+      className="relative w-[34px] h-[34px] rounded-full border-none cursor-pointer flex items-center justify-center font-display font-bold text-[12px] flex-shrink-0"
       style={{ background: 'var(--coral-grad)', color: 'var(--accent-ink)' }}
     >
       {initials}
+      {active && badge}
     </button>
   ) : (
     <button
@@ -171,9 +206,10 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
       className="flex items-center h-10 px-1.5 rounded-pill border-none cursor-pointer"
       style={{ background: 'var(--canvas)', boxShadow: open ? 'var(--neu-inset)' : 'var(--neu-sm)' }}
     >
-      <span className="w-[30px] h-[30px] rounded-full flex items-center justify-center font-display font-bold text-[11px]"
+      <span className="relative w-[30px] h-[30px] rounded-full flex items-center justify-center font-display font-bold text-[11px]"
         style={{ background: 'var(--coral-grad)', color: 'var(--accent-ink)' }}>
         {initials}
+        {active && badge}
       </span>
     </button>
   );
@@ -191,6 +227,7 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
         >
           {Body}
         </PullDownSheet>
+        <HouseholdSheet open={hhOpen} onClose={() => setHhOpen(false)} />
       </>
     );
   }
@@ -204,6 +241,7 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
           {Body}
         </div>
       )}
+      <HouseholdSheet open={hhOpen} onClose={() => setHhOpen(false)} />
     </div>
   );
 }

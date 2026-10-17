@@ -3,12 +3,10 @@ import { useNavigate } from 'react-router-dom';
 import { Mail, CheckCircle } from 'lucide-react';
 import { AuthShell } from './SignIn';
 import { getSession } from '../../lib/auth';
+import { postAuthPath } from '../../lib/postAuth';
 
-function getPostAuthPath(): string {
-  const pendingInvite = sessionStorage.getItem('pending_invite_token');
-  if (pendingInvite) return `/invite/${encodeURIComponent(pendingInvite)}`;
-  return '/dashboard';
-}
+// v10.49.0 (#20) — an invite, else the feature a landing / Learn link asked for, else the dashboard.
+const getPostAuthPath = (): string => postAuthPath();
 
 export default function VerifiedAuth() {
   const navigate = useNavigate();

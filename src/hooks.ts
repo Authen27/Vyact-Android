@@ -1,8 +1,10 @@
 // Lightweight custom hooks
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import type React from 'react';
 import { useStore } from './store';
 import { LOCALES } from './constants';
+import { shortcutAllowed, OPEN_DIALOG_SELECTOR } from './lib/shortcuts';
+import { htmlLangFor } from './lib/htmlLang';
 
 // useTranslation — returns t() bound to current language
 export function useTranslation() {
@@ -12,21 +14,29 @@ export function useTranslation() {
   return { t, lang };
 }
 
-// useShortcuts — global keyboard shortcuts
+// useShortcuts — global keyboard shortcuts.
+// W6 (audit FE-UIS-10): never with Ctrl/Cmd/Alt (Cmd+A opened Add Asset, Ctrl+D Add Debt), never in
+// an editable element or while a dialog is open (`shortcutAllowed`). The handlers sit in a ref, so
+// the listener is added once instead of on every render.
 export function useShortcuts(handlers: Record<string, () => void>) {
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const tag = (document.activeElement?.tagName || '').toLowerCase();
+      const focused = document.activeElement as HTMLElement | null;
+      const tag = (focused?.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') {
-        if (e.key === 'Escape') (document.activeElement as HTMLElement)?.blur();
+        if (e.key === 'Escape') focused?.blur();
         return;
       }
-      const handler = handlers[e.key];
+      const dialogOpen = document.querySelector(OPEN_DIALOG_SELECTOR) !== null;
+      if (!shortcutAllowed(e, focused, dialogOpen)) return;
+      const handler = handlersRef.current[e.key];
       if (handler) { e.preventDefault(); handler(); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handlers]);
+  }, []);
 }
 
 // useScrollDirection — returns 'up' | 'down' | 'idle' based on window scroll.
@@ -159,4 +169,7 @@ export function useTheme() {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, [theme, setTheme]);
+  // W7a (FE-UIS-15): <html lang> follows the Language setting.
+  const language = useStore(s => s.profile.language);
+  useEffect(() => { document.documentElement.lang = htmlLangFor(language); }, [language]);
 }

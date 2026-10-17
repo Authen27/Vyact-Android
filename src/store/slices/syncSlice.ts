@@ -8,6 +8,7 @@ import type { Theme } from '../../types';
 import type { Store } from '../../store';
 import { readLocalString, setLocalString } from '../localJson';
 import { subscribeBudgets } from '../../lib/realtime';
+import { toastLifetimeMs } from '../../lib/toastPolicy';
 
 export interface ToastAction { label: string; run: () => void; }
 export interface ToastMsg { id: string; text: string; type: 'success' | 'error' | 'info' | 'warning'; action?: ToastAction; }
@@ -103,8 +104,9 @@ export const createSyncSlice: StateCreator<Store, [], [], SyncSlice> = (set, get
   toast: (text, type = 'success', action) => {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
     set(s => ({ toasts: [...s.toasts, { id, text, type, action }] }));
-    // An actionable toast (e.g. Undo) lingers longer so it can actually be used.
-    setTimeout(() => get().dismissToast(id), action ? 6000 : 3200);
+    // An actionable toast (e.g. Undo) lingers longer so it can actually be used; an error or a
+    // warning stays 10 s (W6, audit FE-UIS-08) and has its own close button.
+    setTimeout(() => get().dismissToast(id), toastLifetimeMs(type, !!action));
   },
   dismissToast: (id) => set(s => ({ toasts: s.toasts.filter(t => t.id !== id) })),
 });

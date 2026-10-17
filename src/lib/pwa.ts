@@ -14,6 +14,7 @@
 // Nothing here imports React; the UI layer talks to this via window events.
 
 import type { Workbox } from 'workbox-window';
+import { track } from './analytics';
 
 let wb: Workbox | undefined;
 let deferredPrompt: BeforeInstallPromptEvent | undefined;
@@ -145,6 +146,7 @@ export async function registerPwa(): Promise<void> {
 
   window.addEventListener('appinstalled', () => {
     deferredPrompt = undefined;
+    track('pwa_install');
     window.dispatchEvent(new Event('vyact:installed'));
   });
 

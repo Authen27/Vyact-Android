@@ -19,7 +19,7 @@
 // test that pinned the pre-TD-01 lossy behaviour, now flipped to assert
 // the fixed behaviour.
 
-import { dinero, toSnapshot, convert as dineroConvert, add, type Dinero, type DineroCurrency } from 'dinero.js';
+import { dinero, toSnapshot, add, type Dinero, type DineroCurrency } from 'dinero.js';
 import {
   USD, EUR, GBP, INR, JPY, AUD, CAD, CHF, CNY, AED, SGD, BRL,
 } from '@dinero.js/currencies';
@@ -75,82 +75,27 @@ export function fromDinero(d: Dinero<number>): number {
   return amount / Math.pow(10, scale);
 }
 
-/**
- * Express a JS-number rate (e.g. 0.92 from the rate table) as the
- * `{ amount, scale }` shape that dinero's `convert` expects. Higher
- * scale = more rate precision preserved across the conversion.
- *
- * Scale 10 gives ~10 decimal digits of rate precision — well below
- * Number.MAX_SAFE_INTEGER (≈ 9.0e15) for any realistic FX rate.
- */
-function rateToScaled(rate: number, scale = 10): { amount: number; scale: number } {
-  return { amount: Math.round(rate * Math.pow(10, scale)), scale };
-}
 
+// W3b (v10.66.0; owner decision D14) — ONE CURRENCY PER HOUSEHOLD, NO CONVERSION. Every amount is
+// read at face value in the household's currency: a row still labelled with another currency (an old
+// row, or one saved before the household's currency was changed) counts as the household's, and a
+// currency change only changes the symbol. The `rates` argument is accepted and ignored, so the many
+// callers that still pass it need no change; removing that plumbing is TECH_DEBT TD-45.
 /**
- * Banker's rounding (round-half-to-even). dinero's `convert` returns a
- * Dinero whose scale equals (source scale + rate scale), so a USD→EUR
- * conversion at rate-scale 10 leaves a scale-12 Dinero — i.e. money with
- * sub-cent precision that's meaningless to humans and corrosive on
- * subsequent operations. We re-quantise to the target currency's native
- * exponent here, using banker's rounding so chained conversions are not
- * biased upward or downward.
- */
-function bankersRound(n: number): number {
-  const trunc = Math.trunc(n);
-  const frac = n - trunc;
-  // Half-to-even only at exact .5; otherwise Math.round is correct.
-  if (frac === 0.5)  return trunc % 2 === 0 ? trunc : trunc + 1;
-  if (frac === -0.5) return trunc % 2 === 0 ? trunc : trunc - 1;
-  return Math.round(n);
-}
-
-function quantizeToCurrency(d: Dinero<number>): Dinero<number> {
-  const snap = toSnapshot(d);
-  const native = snap.currency.exponent as number;
-  if (snap.scale <= native) return d;
-  const factor = Math.pow(10, snap.scale - native);
-  const requantized = bankersRound(snap.amount / factor);
-  return dinero({ amount: requantized, currency: snap.currency });
-}
-
-/**
- * Convert a Dinero amount across currencies using the FinFlow rate table
- * (rates expressed *per USD*, matching DEFAULT_RATES in constants.ts).
- *
- * Implementation: two-step through USD, exactly matching the legacy
- * `(amount / rFrom) * rTo` semantics. Each dinero conversion preserves
- * full precision internally; the final result is re-quantised to the
- * target currency's native exponent with banker's rounding so a JS-number
- * caller sees a value that round-trips cleanly through future operations.
- * No-ops if source and target are the same currency.
+ * The same amount, labelled in the household's currency (face value). Re-quantised to that
+ * currency's minor unit, so a 2-decimal amount read into a 0-decimal currency rounds like any
+ * other amount in it. Kept under its old name for the existing callers.
  */
 export function convertViaUsdRates(
   d: Dinero<number>,
   toCode: string,
-  rates: Record<string, number>,
+  _rates?: Record<string, number>,
 ): Dinero<number> {
   const fromCode = toSnapshot(d).currency.code;
   if (fromCode === toCode) return d;
-
-  // Step 1: from → USD (multiplier = 1 / rates[fromCode]).
-  const dUsd = fromCode === 'USD'
-    ? d
-    : quantizeToCurrency(
-        dineroConvert(d, USD, { USD: rateToScaled(1 / (rates[fromCode] ?? 1)) }),
-      );
-
-  // Step 2: USD → to (multiplier = rates[toCode]).
-  if (toCode === 'USD') return dUsd;
-  const target = currencyOf(toCode);
-  // Key the rates object by the *resolved* currency code (target.code), not
-  // the caller-supplied toCode — these only differ when toCode is unknown
-  // and falls back to USD, in which case the rates lookup must also use
-  // 'USD' to satisfy dinero's "rates[targetCurrency.code]" contract.
-  return quantizeToCurrency(
-    dineroConvert(dUsd, target, { [target.code]: rateToScaled(rates[toCode] ?? 1) }),
-  );
+  return toDinero(fromDinero(d), toCode);
 }
+
 
 /**
  * Re-export of dinero's `add` so consumers don't have to import the

@@ -1,58 +1,68 @@
-// Vyact — Insights Hub (v9.5.3).
+// Vyact — Insights (v10.29.0: one personal view; docs/INSIGHTS_ASK_REPORTS_UX.md).
 //
-// Insights is no longer a single content page: it's the app's stickiness hub with
-// four streams (spec vyact-insights-hub-spec.md):
-//   • For You    — the personal-insight feed, shown as a finite full-screen reel
-//   • Learn      — the 100+ evergreen card library (bundled, visual+text)
-//   • What's New — curated editorial / external updates (the v6.3 content module)
-//   • Plan       — the absorbed Planner (was a FloatingTool bubble)
+// Two tabs:
+//   • For You — the household's review-and-act view. The former Plan tab (rules
+//     from lib/plannerRules.ts) and the For You feed (lib/insightsFeed.ts) are
+//     merged by lib/personalInsights.ts into Your next steps / What changed /
+//     Keep an eye on / Learn about this, deduplicated by issue and period. The
+//     reel is an optional "Review highlights" action, not the way in.
+//   • Learn   — the evergreen lesson library: search, filters, lessons. (v10.52.0:
+//               the Lessons / Updates segment and the Updates feed were removed.)
+// /planner and ?tab=plan land on For You.
 //
-// "Services compute, never fabricate": the For You feed reads existing aggregates
-// only (lib/insightsFeed.ts) — no new financial math, all on-device.
-import { useMemo, useState } from 'react';
-import { Sparkles, GraduationCap, Compass, Play, ArrowRight, BookOpen } from 'lucide-react';
+// "Services compute, never fabricate": both engines read existing aggregates
+// only — no new financial math, no writes, all on-device. No Pulse, Goals or Tax.
+import { useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Sparkles, GraduationCap, Play, ArrowRight, BookOpen } from 'lucide-react';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
-import EmptyState from '../components/ui/EmptyState';
-import Planner from './Planner';
+import { Panel } from '../components/ui/Card';
+import EstimatedTag from '../components/ui/EstimatedTag';
 import EvergreenLearn from '../components/insights/EvergreenLearn';
 import ForYouReel from '../components/insights/ForYouReel';
-import { buildInsightFeed, type FeedCard } from '../lib/insightsFeed';
-import { evaluateRecommendations, type Severity } from '../lib/plannerRules';
-import { filterEvergreen } from '../lib/evergreen';
+import { buildPersonalInsights, type PersonalInsight } from '../lib/personalInsights';
+import { allEvergreenCards, evergreenByTag } from '../lib/evergreen';
+import SegRail from '../components/ui/SegRail';
+import PageHead from '../components/ui/PageHead';
+import OverflowMenu from '../components/ui/OverflowMenu';
 
-const RAIL_SPINE: Record<Severity, string> = {
-  critical: 'hsl(var(--terra))', watch: 'hsl(var(--honey))', info: 'hsl(var(--denim))',
-};
-
-// v9.5.5 — What's New was merged INTO Learn (as a Lessons/Updates segment), so the
-// hub is now three tabs.
-type Tab = 'for-you' | 'learn' | 'plan';
+type Tab = 'for-you' | 'learn';
 
 const TABS: { id: Tab; label: string; icon: typeof Sparkles }[] = [
   { id: 'for-you', label: 'For You', icon: Sparkles },
   { id: 'learn',   label: 'Learn',   icon: GraduationCap },
-  { id: 'plan',    label: 'Plan',    icon: Compass },
 ];
 
 export default function Insights() {
   const { t } = useTranslation();
-  const [tab, setTab] = useState<Tab>('for-you');
+  const [params, setParams] = useSearchParams();
+  const tab: Tab = params.get('tab') === 'learn' ? 'learn' : 'for-you';
   const [reelStart, setReelStart] = useState<number | null>(null);
   const [learnOpenId, setLearnOpenId] = useState<string | null>(null);
+  const highlightsButton = useRef<HTMLButtonElement>(null);
 
   const transactions = useStore(s => s.transactions);
   const budgets = useStore(s => s.budgets);
-  const goals = useStore(s => s.goals);
+  const accounts = useStore(s => s.accounts);
+  const budgetAllocations = useStore(s => s.budgetAllocations);
+  const recurring = useStore(s => s.recurringSchedules);
+  const loading = useStore(s => s.loading);
   const debts = useStore(s => s.debts);
   const assets = useStore(s => s.assets);
   const profile = useStore(s => s.profile);
   const rates = useStore(s => s.rates);
 
-  const feed = useMemo(
-    () => buildInsightFeed({ transactions, budgets, goals, debts, assets, baseCurrency: profile.baseCurrency, rates }),
-    [transactions, budgets, goals, debts, assets, profile.baseCurrency, rates],
+  const review = useMemo(
+    () => buildPersonalInsights({ transactions, budgets, goals: [], accounts, budgetAllocations, recurring, debts, assets, baseCurrency: profile.baseCurrency, rates, householdType: profile.household }),
+    [transactions, budgets, accounts, budgetAllocations, recurring, debts, assets, profile.baseCurrency, profile.household, rates],
   );
+
+  function setTab(next: Tab) {
+    const updated = new URLSearchParams(params);
+    updated.set('tab', next);
+    setParams(updated, { replace: true });
+  }
 
   function openLearn(id: string) {
     setReelStart(null);
@@ -60,189 +70,189 @@ export default function Insights() {
     setTab('learn');
   }
 
-  return (
-    <div>
-      <div className="mb-4">
-        <h1 className="display-italic text-4xl text-ink mb-1.5">{t('insights') || 'Insights'}</h1>
-        <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-          Your money, made legible · learn · plan
-        </p>
-      </div>
-
-      {/* Board D — .tri: the 3-tab pill (For You / Learn / Plan). */}
-      <div className="flex gap-1 p-1 mb-5 rounded-pill overflow-x-auto" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-        {TABS.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => setTab(id)}
-            aria-pressed={tab === id}
-            className="flex-1 flex items-center justify-center gap-1.5 h-[30px] px-3 rounded-pill whitespace-nowrap text-[0.8rem] font-medium border-none cursor-pointer transition-[box-shadow,color]"
-            style={tab === id
-              ? { background: 'var(--canvas)', boxShadow: 'var(--neu-sm)', color: 'var(--ink)' }
-              : { background: 'transparent', color: 'var(--ff-ink-3)' }}
-          >
-            <Icon size={14} /> {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Board D2 — on desktop the hub shows what mobile tabs between: For You
-          on the left, a Plan + Learn rail on the right. Selecting Learn or Plan
-          still opens that surface full-width. */}
-      {tab === 'for-you' && (
-        <div className="lg:grid lg:grid-cols-[1.5fr_1fr] lg:gap-5 lg:items-start">
-          <div className="min-w-0">
-            <ForYou feed={feed} onOpenReel={i => setReelStart(i)} />
-          </div>
-          <div className="hidden lg:flex lg:flex-col gap-3.5">
-            <PlanRail onSeeAll={() => setTab('plan')} />
-            <LearnRail onOpen={openLearn} onSeeAll={() => setTab('learn')} />
-          </div>
-        </div>
-      )}
-      {tab === 'learn'   && <EvergreenLearn openId={learnOpenId} onConsumedOpen={() => setLearnOpenId(null)} />}
-      {tab === 'plan'    && <Planner />}
-
-      {reelStart !== null && feed.length > 0 && (
-        <ForYouReel cards={feed} startIndex={reelStart} onClose={() => setReelStart(null)} onOpenLearn={openLearn} />
-      )}
-    </div>
-  );
-}
-
-/** Board D2 right rail — a condensed Plan column: the top few rules-based
- *  recommendations as severity-spined rows, with the "no AI" promise kept in
- *  view. Reads the same `evaluateRecommendations` the Plan tab does. */
-function PlanRail({ onSeeAll }: { onSeeAll: () => void }) {
-  const txns    = useStore(s => s.transactions);
-  const budgets = useStore(s => s.budgets);
-  const goals   = useStore(s => s.goals);
-  const debts   = useStore(s => s.debts);
-  const assets  = useStore(s => s.assets);
-  const profile = useStore(s => s.profile);
-  const rates   = useStore(s => s.rates);
-
-  const recs = useMemo(() =>
-    evaluateRecommendations({
-      transactions: txns, budgets, goals, debts, assets,
-      baseCurrency: profile.baseCurrency, rates, householdType: profile.household,
-    }, 3),
-    [txns, budgets, goals, debts, assets, profile.baseCurrency, rates, profile.household]);
-
-  if (recs.length === 0) return null;
-  return (
-    <div className="rounded-r3 p-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-      <div className="flex items-center gap-2 mb-3">
-        <span className="mono-label">Plan · recommendations</span>
-        <span className="ml-auto mono-label text-ink-dim">🔒 rules, no AI</span>
-      </div>
-      <div className="flex flex-col gap-2.5">
-        {recs.map(r => (
-          <div key={r.id} className="relative overflow-hidden rounded-r2 py-3 px-3.5"
-            style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
-            <span className="absolute left-0 top-2.5 bottom-2.5 w-[3px] rounded-full"
-              style={{ background: RAIL_SPINE[r.severity] }} aria-hidden />
-            <div className="font-bold text-[12.5px] text-ink mb-0.5">{r.title}</div>
-            <div className="text-[11.5px] text-ink-mid leading-[1.4]">{r.body}</div>
-          </div>
-        ))}
-      </div>
-      <button type="button" onClick={onSeeAll}
-        className="mt-3 font-mono text-[0.62rem] tracking-wider uppercase text-coral hover:opacity-70">
-        All recommendations →
-      </button>
-    </div>
-  );
-}
-
-/** Board D2 right rail — a Learn tile grid of evergreen lessons. */
-function LearnRail({ onOpen, onSeeAll }: { onOpen: (id: string) => void; onSeeAll: () => void }) {
-  const tiles = useMemo(() => filterEvergreen('', 'all').slice(0, 4), []);
-  if (tiles.length === 0) return null;
-  return (
-    <div className="rounded-r3 p-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-      <div className="mono-label mb-3">Learn · evergreen</div>
-      <div className="grid grid-cols-2 gap-2.5">
-        {tiles.map(c => (
-          <button key={c.id} type="button" onClick={() => onOpen(c.id)}
-            className="text-left p-3 rounded-r2 border-none cursor-pointer"
-            style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-            <div className="font-mono text-[0.55rem] tracking-wider uppercase text-ink-dim mb-1">{c.category}</div>
-            <div className="text-[11.5px] font-semibold text-ink leading-snug">{c.title}</div>
-          </button>
-        ))}
-      </div>
-      <button type="button" onClick={onSeeAll}
-        className="mt-3 font-mono text-[0.62rem] tracking-wider uppercase text-coral hover:opacity-70">
-        Browse all lessons →
-      </button>
-    </div>
-  );
-}
-
-function ForYou({ feed, onOpenReel }: { feed: FeedCard[]; onOpenReel: (startIndex: number) => void }) {
-  if (feed.length === 0) {
-    return <EmptyState icon="✨" message="Add a few transactions and your personal insights will appear here." />;
+  function closeHighlights() {
+    setReelStart(null);
+    highlightsButton.current?.focus();
   }
+
+  const relatedLessons = [...new Set(review.items.flatMap(item => item.learnId ? [item.learnId] : []))]
+    .map(id => allEvergreenCards().find(lesson => lesson.id === id)).filter(lesson => lesson && !/tax/i.test(lesson.category));
+  if (!relatedLessons.length && review.hasActivity) {
+    const lesson = evergreenByTag(review.items.some(item => item.issue.startsWith('debt')) ? ['debt', 'payoff'] : ['budgeting', 'saving']);
+    if (lesson && !/tax/i.test(lesson.category)) relatedLessons.push(lesson);
+  }
+
+  // Aurora 4.0 LN1 — up to two lessons tied to this household's review, each with its reason.
+  const suggested = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { id: string; reason: string }[] = [];
+    for (const item of review.items) {
+      if (!item.learnId || seen.has(item.learnId)) continue;
+      const lesson = allEvergreenCards().find(l => l.id === item.learnId);
+      if (!lesson || /tax/i.test(lesson.category)) continue;
+      seen.add(item.learnId);
+      out.push({ id: item.learnId, reason: `Because of “${item.title}”` });
+      if (out.length === 2) break;
+    }
+    // Nothing in the review names a lesson: the same fallback "Learn about this" uses, with its reason.
+    if (out.length < 2 && review.hasActivity) {
+      const debt = review.items.some(item => item.issue.startsWith('debt'));
+      const lesson = evergreenByTag(debt ? ['debt', 'payoff'] : ['budgeting', 'saving']);
+      if (lesson && !seen.has(lesson.id) && !/tax/i.test(lesson.category)) {
+        out.push({ id: lesson.id, reason: debt ? 'Because your review includes a loan' : 'A good next step for your monthly plan' });
+      }
+    }
+    return out;
+  }, [review.items, review.hasActivity]);
+
+  // v10.52.0 — same page frame as Net Worth and Reports: full content width (the
+  // shell caps it at 1320px), title + mono subtitle on the left, controls on the
+  // right, content in Panels on a 2-column grid from lg. It used to be a single
+  // max-w-4xl column of large cards, visibly narrower than its Analyze peers.
+  const hasReview = !loading && review.hasActivity;
   return (
-    <div>
-      {/* Board D M3 — the launch hero is GLASS over the ambient aurora, and it
-          says out loud that the numbers are computed on-device. */}
-      <div className="relative overflow-hidden rounded-r4 px-5 py-[18px] mb-3.5"
-        style={{ background: 'var(--glass-strong)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)', border: '1px solid var(--glass-line)', boxShadow: 'var(--cast-2)' }}>
-        <div className="absolute inset-0 pointer-events-none" style={{ background: 'var(--ambient)', opacity: 0.9 }} aria-hidden />
-        <div className="relative sm:flex sm:items-center sm:gap-5">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[20px] leading-none" aria-hidden>✦</span>
-              <span className="mono-label" style={{ color: 'var(--accent)' }}>Your insights are ready</span>
-            </div>
-            <div className="font-display font-bold text-[22px] leading-tight tracking-tight text-ink mb-1">
-              {feed.length} fresh card{feed.length === 1 ? '' : 's'} this week
-            </div>
-            <div className="text-[12.5px] text-ink-mid leading-snug mb-3.5 sm:mb-0">
-              A 60-second story on where your money moved — computed on your device, never guessed.
-            </div>
+    <div className="ui-pilot min-w-0" data-testid="insights-review">
+      {/* Same subtitle on both tabs, so the header keeps one height and the toolbar slot below
+          it never moves between tabs. The tabs stay on phones (aside). */}
+      <PageHead
+        title={t('insights') || 'Insights'}
+        subtitle="Your review · money lessons"
+        aside={(
+          // Aurora 4.0 X5 — the shared SegRail (it had no inset and no accent of its own).
+          <SegRail<Tab>
+            label="Insights views"
+            value={tab}
+            onChange={setTab}
+            fill
+            className="sm:w-auto"
+            options={TABS.map(({ id, label, icon: Icon }) => ({
+              value: id,
+              id: `insights-tab-${id}`,
+              controls: `insights-panel-${id}`,
+              label: <><Icon size={14} aria-hidden /> {label}</>,
+            }))}
+          />
+        )}
+      />
+
+      {tab === 'for-you' && (
+        <div role="tabpanel" id="insights-panel-for-you" aria-labelledby="insights-tab-for-you" className="space-y-3.5 min-w-0">
+          {/* v10.52.0 (owner) — the toolbar slot under the header, the same place
+              Learn shows its search and filters: a quick play button for the
+              highlights reel. */}
+          <div data-testid="insights-toolbar" className="flex items-center justify-between gap-3 flex-wrap min-h-[44px]">
+            {review.highlights.length > 0 && !loading ? (
+              <button ref={highlightsButton} type="button" onClick={() => setReelStart(0)} aria-label="Play highlights"
+                className="inline-flex items-center gap-2.5 min-h-[44px] pl-1.5 pr-4 rounded-pill border border-line text-sm font-medium text-ink hover:border-coral">
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-full" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>
+                  <Play size={14} aria-hidden className="ml-0.5" fill="currentColor" />
+                </span>
+                Play highlights
+                <span className="text-xs font-normal text-ink-dim">{review.highlights.length}</span>
+              </button>
+            ) : <span />}
+            <p className="text-xs text-ink-dim">As of {review.asOf} · month to date unless stated</p>
           </div>
-          <button onClick={() => onOpenReel(0)}
-            className="btn-primary h-[44px] flex items-center gap-1.5 flex-shrink-0 w-full sm:w-auto justify-center">
-            <Play size={15} /> Play the reel
-          </button>
+          {loading ? <Panel><p role="status" className="px-4 py-5 text-sm text-ink-mid">Loading your review…</p></Panel> : !review.hasActivity ? (
+            <Panel>
+              <section className="px-4 py-5">
+                <h2 className="text-lg font-display font-medium text-ink mb-1.5">Not enough recorded activity yet</h2>
+                <p className="text-sm text-ink-mid mb-2">Record income and expenses to see changes and useful next steps for your household.</p>
+                <Link to="/transactions" className="inline-flex items-center gap-2 text-sm text-coral min-h-[44px]">Open Transactions <ArrowRight size={15} aria-hidden /></Link>
+              </section>
+            </Panel>
+          ) : null}
+          {hasReview && <>
+            <ReviewPanel title="Your next steps" items={review.nextSteps} onLearn={openLearn} columns />
+            {/* Side by side only when both have items; a lone panel takes the full width. */}
+            <div className={`grid grid-cols-1 ${review.changes.length && review.watch.length ? 'lg:grid-cols-2' : ''} gap-3.5 items-start min-w-0`}>
+              <ReviewPanel title="What changed" items={review.changes} onLearn={openLearn} columns={!review.watch.length} />
+              <ReviewPanel title="Keep an eye on" items={review.watch} onLearn={openLearn} columns={!review.changes.length} />
+            </div>
+            <section aria-labelledby="insights-related" className="panel overflow-hidden min-w-0">
+              <div className="flex justify-between items-center px-4 py-3 border-b border-line gap-3 flex-wrap">
+                <h2 id="insights-related" className="ui-label text-ink">Learn about this</h2>
+                <button type="button" onClick={() => setTab('learn')} className="inline-flex items-center gap-1.5 text-[12.5px] text-coral min-h-[44px]">Browse lessons <ArrowRight size={13} aria-hidden /></button>
+              </div>
+              {relatedLessons.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-2">
+                  {relatedLessons.map(lesson => lesson && <button key={lesson.id} type="button" onClick={() => openLearn(lesson.id)} className="flex items-center gap-2.5 text-left text-sm text-ink px-4 py-2.5 border-b border-line min-h-[44px] hover:bg-bg3">
+                    <BookOpen size={15} className="shrink-0 text-coral" aria-hidden /><span className="flex-1 min-w-0 break-words">{lesson.title}</span><ArrowRight size={14} className="shrink-0 text-ink-dim" aria-hidden />
+                  </button>)}
+                </div>
+              )}
+            </section>
+          </>}
+        </div>
+      )}
+      {tab === 'learn' && <div role="tabpanel" id="insights-panel-learn" aria-labelledby="insights-tab-learn"><EvergreenLearn openId={learnOpenId} onConsumedOpen={() => setLearnOpenId(null)} suggested={suggested} initialQuery={params.get('q') ?? undefined} /></div>}
+
+      {reelStart !== null && review.highlights.length > 0 && (
+        <ForYouReel cards={review.highlights} startIndex={reelStart} onClose={closeHighlights} onOpenLearn={openLearn} />
+      )}
+    </div>
+  );
+}
+
+/** A review group as a Panel of compact rows (v10.52.0). `columns` lays the rows
+ *  out two-up from lg; used for "Your next steps", which spans the page. */
+function ReviewPanel({ title, items, onLearn, columns = false }: { title: string; items: PersonalInsight[]; onLearn: (id: string) => void; columns?: boolean }) {
+  if (!items.length) return null;
+  return (
+    <section aria-label={title} className="panel overflow-hidden min-w-0">
+      <div className="flex justify-between items-center px-4 py-3 border-b border-line gap-3">
+        <h2 className="ui-label text-ink">{title}</h2>
+        <span className="num text-[12px] text-ink-dim">{items.length}</span>
+      </div>
+      <div className={columns ? 'grid grid-cols-1 lg:grid-cols-2' : ''}>
+        {items.map(item => <InsightRow key={item.id} item={item} onLearn={onLearn} />)}
+      </div>
+    </section>
+  );
+}
+
+function InsightRow({ item, onLearn }: { item: PersonalInsight; onLearn: (id: string) => void }) {
+  // Aurora 4.0 INS2 — one primary link: the action, or the lesson when there is none. The lesson (when
+  // the action took the slot) and the calculation basis move into ⋯; the basis opens under the row.
+  const [showBasis, setShowBasis] = useState(false);
+  const lessonIsPrimary = !item.action && !!item.learnId;
+  const more = [
+    ...(item.learnId && !lessonIsPrimary ? [{ label: 'Related lesson', icon: <BookOpen size={14} aria-hidden />, onSelect: () => onLearn(item.learnId!) }] : []),
+    ...(item.basis.length ? [{ label: showBasis ? 'Hide calculation basis' : 'Calculation basis', onSelect: () => setShowBasis(v => !v) }] : []),
+  ];
+  return (
+    <article data-insight-id={item.id} className="px-4 py-3 border-b border-line min-w-0">
+      <div className="flex items-start gap-2.5 min-w-0">
+        <span aria-hidden className="text-base leading-6 shrink-0">{item.emoji}</span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-medium text-ink leading-snug [overflow-wrap:anywhere]">{item.title}</h3>
+          <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[12px] text-ink-dim mt-0.5">
+            <span>{item.period}</span>
+            {item.severity && <span className={item.severity === 'critical' ? 'text-terra font-medium' : 'text-ink-dim'}>· {item.severity === 'critical' ? 'Priority' : item.severity === 'watch' ? 'Review' : 'Consider'}</span>}
+            {item.estimated && <EstimatedTag confidence="estimated" title="Projection or unconfirmed inputs. Review the calculation basis." />}
+          </div>
+          <p className="text-[0.82rem] text-ink-mid leading-relaxed mt-1.5">{item.body}</p>
+          {item.evidence.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5 text-[0.78rem] text-ink-mid leading-relaxed">
+              {item.evidence.map(text => <li key={text}>{text}</li>)}
+            </ul>
+          )}
+          <div className="flex items-center justify-between gap-3 mt-1">
+            {item.action
+              ? <Link to={item.action.route} className="inline-flex items-center gap-1.5 text-[0.8rem] font-medium text-coral min-h-[44px]">{item.action.label}<ArrowRight size={14} aria-hidden /></Link>
+              : lessonIsPrimary
+                ? <button type="button" onClick={() => onLearn(item.learnId!)} className="inline-flex items-center gap-1.5 text-[0.8rem] font-medium text-coral min-h-[44px]"><BookOpen size={14} aria-hidden /> Read the lesson</button>
+                : <span />}
+            {more.length > 0 && <OverflowMenu ariaLabel={`More for ${item.title}`} items={more} />}
+          </div>
+          {showBasis && (
+            <div className="well px-3 py-2 mt-1 text-[12px] text-ink-mid" data-testid="insight-basis">
+              <div className="ui-label mb-1">Calculation basis</div>
+              <ul className="list-disc pl-4 space-y-1 leading-relaxed">{item.basis.map(basis => <li key={basis}>{basis}</li>)}</ul>
+            </div>
+          )}
         </div>
       </div>
-
-      <div className="mono-label mb-2.5 px-0.5">Or browse them</div>
-
-      {/* Board D M3/D2 §.icard — a severity SPINE down the left edge, then the
-          emoji, the number that matters (tinted by tone), and one line. */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-2.5">
-        {feed.map((c, i) => {
-          const spine = c.tone === 'positive' ? 'hsl(var(--sage))'
-                      : c.tone === 'constructive' ? 'hsl(var(--honey))'
-                      : 'var(--accent)';
-          const bigCls = c.tone === 'positive' ? 'text-sage'
-                       : c.tone === 'constructive' ? 'text-honey'
-                       : 'text-ink';
-          return (
-            <button
-              key={c.id}
-              onClick={() => onOpenReel(i)}
-              className="relative overflow-hidden rounded-r3 px-4 py-[15px] text-left border-none cursor-pointer transition-[box-shadow,transform] hover:-translate-y-0.5"
-              style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}
-            >
-              <span className="absolute left-0 top-3.5 bottom-3.5 w-[3px] rounded-full" style={{ background: spine }} aria-hidden />
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-[22px] leading-none" aria-hidden>{c.emoji}</span>
-                {c.learnId
-                  ? <BookOpen size={13} className="text-coral shrink-0 mt-1" />
-                  : <ArrowRight size={13} className="text-coral shrink-0 mt-1" />}
-              </div>
-              <div className={`num font-bold text-[26px] leading-none tracking-tight mt-1.5 mb-0.5 ${bigCls}`}>{c.big}</div>
-              <div className="text-[11.5px] text-ink-mid leading-[1.4]">{c.line}</div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    </article>
   );
 }

@@ -8,15 +8,10 @@
 // State machine (worst-wins): Local · Offline · N Failed · N Conflict(s) ·
 // Refreshing · Syncing · Synced "· 2m ago".
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Badge from '../ui/Badge';
 import { useStore } from '../../store';
-
-interface SyncAdapter {
-  pendingOpCount?: () => number;
-  pendingConflictCount?: () => number;
-  pendingFailedCount?: () => number;
-}
+import { useSyncHealth } from './useSyncHealth';
 
 function agoLabel(ts: number | null): string {
   if (!ts) return '';
@@ -30,41 +25,12 @@ function agoLabel(ts: number | null): string {
 }
 
 export default function SyncStatusBadge() {
-  const adapter = useStore(s => s.adapter) as SyncAdapter;
   const cloudEnabled = useStore(s => s.cloudEnabled);
   const manualRefresh = useStore(s => s.manualRefresh);
   const lastSyncedAt = useStore(s => s.lastSyncedAt);
-  const [pendingOps, setPendingOps] = useState(0);
-  const [conflicts, setConflicts] = useState(0);
-  const [failed, setFailed] = useState(0);
-  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  // Online state and outbox counts, polled every 2 s (also re-renders the "ago" label).
+  const { online, pendingOps, conflicts, failed } = useSyncHealth();
   const [refreshing, setRefreshing] = useState(false);
-  const [, force] = useState(0);   // re-render the "ago" label on a timer
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const onOnline = () => setOnline(true);
-    const onOffline = () => setOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!cloudEnabled || !adapter) return;
-    const tick = () => {
-      setPendingOps(typeof adapter.pendingOpCount === 'function' ? adapter.pendingOpCount() || 0 : 0);
-      setConflicts(typeof adapter.pendingConflictCount === 'function' ? adapter.pendingConflictCount() || 0 : 0);
-      setFailed(typeof adapter.pendingFailedCount === 'function' ? adapter.pendingFailedCount() || 0 : 0);
-      force(n => n + 1);   // refresh the "ago" label
-    };
-    tick();
-    const id = window.setInterval(tick, 2000);
-    return () => window.clearInterval(id);
-  }, [adapter, cloudEnabled]);
 
   if (!cloudEnabled) {
     return (

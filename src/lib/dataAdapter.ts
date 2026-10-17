@@ -6,9 +6,9 @@
 
 import type {
   Transaction, Budget, BudgetAllocation, Goal, Member, Debt, Asset, Account, SavedView,
-  Profile, ExchangeRates, HouseholdMeta, ProfileTypeKey,
+  Profile, HouseholdMeta, ProfileTypeKey,
+  PayLoanCommand, PayLoanResult, LoanDue, AccountDependencies, AccountMoveResult,
 } from '../types';
-import { DEFAULT_RATES } from '../constants';
 import { uid } from './format';
 import ls from './localStorageCompat';
 // TD-14 — bulk entity state lives in IndexedDB (kvStore) to escape the
@@ -16,7 +16,8 @@ import ls from './localStorageCompat';
 // migration sentinels) still go through `ls` directly: tiny payloads,
 // no quota risk, and they need synchronous access from constructor /
 // startup paths.
-import { kvGet, kvSet, kvRemove } from './kvStore';
+import { kvGet, kvGetStrict, kvSet, kvRemove } from './kvStore';
+import { mergeSnapshot, type NetWorthSnapshot } from './netWorthSnapshots';
 import { BudgetExistsError } from './supabaseAdapter';
 import { expected } from './faults';
 
@@ -84,9 +85,8 @@ export interface DataAdapter {
     mode: 'create' | 'replace',
   ): Promise<{ budget: Budget; allocations: BudgetAllocation[] }>;
 
-  // exchange rates (per-household)
-  getRates(householdId: string): Promise<ExchangeRates>;
-  upsertRate(householdId: string, code: string, rate: number): Promise<void>;
+  // W3b (v10.66.0; owner decision D14): no exchange rates — one currency per household, never
+  // converted. The 'rates' key stays in the purge/erase lists so old local copies are cleared.
 
   /** v7.3 — Money Map Item #8 read-path optimisation. Optional. When
    *  the adapter exposes pre-aggregated `v_txn_by_member` /
@@ -96,6 +96,65 @@ export interface DataAdapter {
    *  as before. */
   queryTxnByMember?(householdId: string): Promise<Array<{ member_id: string | null; type: string; currency: string; total: number; n: number }> | undefined>;
   queryTxnByAccount?(householdId: string): Promise<Array<{ account_id: string | null; type: string; currency: string; total: number; n: number }> | undefined>;
+
+  /**
+   * W4f (D19) — the loan commands, decided by the database. Present on the cloud adapters only
+   *  (SupabaseAdapter calls the RPC; HybridAdapter adopts the rows into its cache). A local-only
+   *  household runs the same rules in the store (lib/loanSchedule.ts).
+   *  - payLoan: pay_loan — the server computes the split, atomically, idempotent on operationId.
+   *  - loanDue: loan_due — what pay_loan accepts today.
+   *  - reverseLoanPayment: undo the LATEST payment (owner); returns the legs it removed.
+   *  - markLoanPaidOff: reconcile the loan account to zero and close the loan.
+   *  - deleteDebt: refused while money is owed (D17).
+   */
+  payLoan?(householdId: string, cmd: PayLoanCommand): Promise<PayLoanResult>;
+  loanDue?(householdId: string, debtId: string): Promise<LoanDue>;
+  reverseLoanPayment?(householdId: string, operationId: string): Promise<{ debt: Debt | null; removedTransactionIds: string[] }>;
+  markLoanPaidOff?(householdId: string, debtId: string, note?: string): Promise<{ debt: Debt; loanAccount: Account | null }>;
+  deleteDebt?(householdId: string, debtId: string): Promise<void>;
+
+  /**
+   * v10.23.0 (R1) — return the household's ONE Cash in Hand, creating it
+   *  server-side if there is none. Present on the cloud adapters only; the
+   *  database owns this identity (`uq_account_cash_per_household`). The store
+   *  must never insert a cash account itself in cloud mode: its old check ran
+   *  against a store that had not hydrated yet, and wrote duplicates.
+   */
+  ensureCashAccount?(householdId: string): Promise<Account | null>;
+
+  /**
+   * v10.24.0 (R2) — the account delete guard, decided by the database. Present
+   *  on the cloud adapters only; local-only mode builds the same answers from the
+   *  store (lib/accountsView.ts).
+   *  - accountDependencies: what refers to the account.
+   *  - deleteAccountGuarded: tombstones it, and refuses while anything refers to it.
+   *  - moveAccountAndDelete: re-tags every transaction and schedule to another
+   *    account of the same group, folds the balance across, then tombstones —
+   *    in one database transaction.
+   */
+  accountDependencies?(householdId: string, accountId: string): Promise<AccountDependencies>;
+  deleteAccountGuarded?(householdId: string, accountId: string): Promise<void>;
+  moveAccountAndDelete?(householdId: string, fromId: string, toId: string): Promise<AccountMoveResult>;
+
+  /**
+   * v10.30.0 — the household's RECORDED monthly Net Worth snapshots, months
+   *  ascending. History is recorded, never reconstructed (lib/netWorthSnapshots.ts).
+   */
+  listNetWorthSnapshots?(householdId: string): Promise<NetWorthSnapshot[]>;
+  /**
+   * v10.30.0 — record this month's snapshot. The FIRST write for a month wins
+   *  (the database's unique (household, month) in cloud mode). Returns the row
+   *  that stands for the month, or null when the caller may not record (a viewer).
+   */
+  recordNetWorthSnapshot?(householdId: string, snapshot: NetWorthSnapshot): Promise<NetWorthSnapshot | null>;
+  /**
+   * v10.30.0 — true when the rows the store last read for the Net Worth inputs
+   *  (transactions, accounts, assets, debts) came from a cache that a cloud read
+   *  had already confirmed in this session. A cache-first adapter serves stale
+   *  rows while it revalidates; a snapshot recorded from those would lock a
+   *  wrong month in (first write wins). Adapters without a cache omit this.
+   */
+  positionIsCloudFresh?(householdId: string): boolean;
 }
 
 const ANON = 'local';
@@ -113,6 +172,16 @@ export class LocalStorageAdapter implements DataAdapter {
       const v = await kvGet<T>(key);
       return v !== null && v !== undefined ? v : fallback;
     } catch (e) { expected(e, `localAdapter.read:${suffix}`); return fallback; }
+  }
+  /**
+   * W8a (audit FE-SYN-12) — the read half of a read-modify-write. A failed read THROWS (KvReadError):
+   * the write is refused and the caller's outbox keeps the op, instead of the fallback [] being saved
+   * back over the real list. Plain reads (`read`) still answer the fallback.
+   */
+  private async readForWrite<T>(suffix: string, householdId: string, fallback: T): Promise<T> {
+    const key = householdId === ANON ? suffix : `${householdId}_${suffix}`;
+    const v = await kvGetStrict<T>(key);
+    return v !== null && v !== undefined ? v : fallback;
   }
   private async write<T>(suffix: string, householdId: string, value: T): Promise<void> {
     try {
@@ -167,6 +236,7 @@ export class LocalStorageAdapter implements DataAdapter {
     return list;
   }
   async createHousehold(name: string, type: ProfileTypeKey = 'personal', baseCurrency = 'USD'): Promise<HouseholdMeta> {
+    await this.readForWrite('profiles_list', ANON, null);   // W8a (FE-SYN-12): refuse if the list can't be read
     const list = await this.listHouseholds();
     const meta: HouseholdMeta = {
       id: 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -177,6 +247,7 @@ export class LocalStorageAdapter implements DataAdapter {
     return meta;
   }
   async updateHousehold(id: string, patch: Partial<HouseholdMeta>): Promise<HouseholdMeta> {
+    await this.readForWrite('profiles_list', ANON, null);   // W8a (FE-SYN-12)
     const list = await this.listHouseholds();
     const idx = list.findIndex(h => h.id === id);
     if (idx < 0) throw new Error('Household not found');
@@ -187,7 +258,7 @@ export class LocalStorageAdapter implements DataAdapter {
   async deleteHousehold(id: string): Promise<void> {
     if (id === ANON) throw new Error('Cannot delete the default profile');
     await Promise.all(
-      ['transactions','budgets','goals','members','debts','assets','accounts','savedViews','rates','profile']
+      ['transactions','budgets','goals','members','debts','assets','accounts','savedViews','rates','profile','net_worth_snapshots']
         .map(e => this.removeBoth(e, id))
     );
     const list = (await this.listHouseholds()).filter(h => h.id !== id);
@@ -207,7 +278,8 @@ export class LocalStorageAdapter implements DataAdapter {
     return this.read<Profile | null>('profile', householdId, null);
   }
   async updateProfile(householdId: string, patch: Partial<Profile>): Promise<Profile> {
-    const cur = (await this.getProfile(householdId)) ?? {
+    // W8a (FE-SYN-12): a profile that can't be READ must not be replaced by defaults + this patch.
+    const cur = (await this.readForWrite<Profile | null>('profile', householdId, null)) ?? {
       name: '', email: '', baseCurrency: 'USD', language: 'en',
       household: 'family', dateFormat: 'us', payoffStrategy: 'avalanche', extraPayment: 0,
     };
@@ -224,7 +296,7 @@ export class LocalStorageAdapter implements DataAdapter {
     // LocalStorageAdapter is single-user / single-tab; concurrency conflicts
     // can't occur here, so `_expectedUpdatedAt` is accepted for interface
     // parity with SupabaseAdapter and intentionally ignored.
-    const list = await this.read<(T & { id: string })[]>(entity, householdId, []);
+    const list = await this.readForWrite<(T & { id: string })[]>(entity, householdId, []);
     const id = record.id || uid();
     const next = { ...record, id, updated_at: new Date().toISOString() } as T & { id: string };
     const idx = list.findIndex(r => r.id === id);
@@ -232,13 +304,30 @@ export class LocalStorageAdapter implements DataAdapter {
     await this.write(entity, householdId, list);
     return next;
   }
+  /**
+   * W3c (v10.67.0; audit FE-SYN-01) — cache-only: store a row EXACTLY as given. A server row keeps
+   * the server's updated_at; `upsert` stamps the device clock, which in cloud mode became the next
+   * edit's precondition and made it fail as a false conflict.
+   */
+  async put<T extends { id: string }>(entity: Entity, householdId: string, row: T): Promise<T> {
+    const list = await this.readForWrite<{ id: string }[]>(entity, householdId, []);
+    const idx = list.findIndex(r => r.id === row.id);
+    if (idx >= 0) list[idx] = row; else list.push(row);
+    await this.write(entity, householdId, list);
+    return row;
+  }
+  /** W3c — cache-only: the cached row with this id, or null. */
+  async getById<T extends { id: string }>(entity: Entity, householdId: string, id: string): Promise<T | null> {
+    const list = await this.read<T[]>(entity, householdId, []);
+    return list.find(r => r.id === id) ?? null;
+  }
   async remove(entity: Entity, householdId: string, id: string): Promise<void> {
-    const list = await this.read<{ id: string }[]>(entity, householdId, []);
+    const list = await this.readForWrite<{ id: string }[]>(entity, householdId, []);
     await this.write(entity, householdId, list.filter(r => r.id !== id));
   }
   async createBudgetChecked(householdId: string, budget: Partial<Budget>): Promise<Budget> {
     // Local mirror of the DB authority: reject a second budget for the same slot.
-    const list = await this.read<Budget[]>('budgets', householdId, []);
+    const list = await this.readForWrite<Budget[]>('budgets', householdId, []);
     const clash = list.some(b => b.scope === budget.scope && b.periodYear === budget.periodYear
       && (budget.scope === 'month' ? b.periodMonth === budget.periodMonth : true));
     if (clash) throw new BudgetExistsError(`scope=${budget.scope} year=${budget.periodYear}${budget.scope === 'month' ? ` month=${budget.periodMonth}` : ''}`);
@@ -255,7 +344,7 @@ export class LocalStorageAdapter implements DataAdapter {
     const saved = (mode === 'create' && !budget.id)
       ? await this.createBudgetChecked(householdId, budget)
       : await this.upsert('budgets', householdId, budget) as Budget;
-    const all = await this.read<BudgetAllocation[]>('budgetAllocations', householdId, []);
+    const all = await this.readForWrite<BudgetAllocation[]>('budgetAllocations', householdId, []);
     const others = all.filter(a => a.budgetId !== saved.id);
     const fresh: BudgetAllocation[] = allocations
       .filter(a => (a.category ?? '') !== '')
@@ -268,14 +357,21 @@ export class LocalStorageAdapter implements DataAdapter {
     return records;
   }
 
-  // ── rates ────────────────────────────────────────────────────
-  async getRates(householdId: string): Promise<ExchangeRates> {
-    return { ...DEFAULT_RATES, ...(await this.read<ExchangeRates>('rates', householdId, {})) };
+  // ── v10.30.0 — recorded Net Worth snapshots ──────────────────
+  async listNetWorthSnapshots(householdId: string): Promise<NetWorthSnapshot[]> {
+    const rows = await this.read<NetWorthSnapshot[]>('net_worth_snapshots', householdId, []);
+    return [...rows].sort((left, right) => left.month.localeCompare(right.month));
   }
-  async upsertRate(householdId: string, code: string, rate: number): Promise<void> {
-    const rates = await this.read<ExchangeRates>('rates', householdId, {});
-    rates[code] = rate;
-    await this.write('rates', householdId, rates);
+  async recordNetWorthSnapshot(householdId: string, snapshot: NetWorthSnapshot): Promise<NetWorthSnapshot> {
+    const rows = await this.readForWrite<NetWorthSnapshot[]>('net_worth_snapshots', householdId, []);
+    const existing = rows.find(row => row.month === snapshot.month);
+    if (existing) return existing;   // first write for a month wins
+    await this.write('net_worth_snapshots', householdId, mergeSnapshot(rows, snapshot));
+    return snapshot;
+  }
+  /** Cache-only: the hybrid adapter mirrors the cloud's rows here for offline reads. */
+  async replaceNetWorthSnapshots(householdId: string, rows: NetWorthSnapshot[]): Promise<void> {
+    await this.write('net_worth_snapshots', householdId, rows);
   }
 }
 

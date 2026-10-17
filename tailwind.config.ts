@@ -3,10 +3,19 @@ import type { Config } from 'tailwindcss';
 // FinFlow paper-warm palette (from FinFlow Designs wireframes)
 // CSS variables drive the actual values so dark mode swaps cleanly
 const config: Config = {
-  content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // api/*.js: the server-rendered Learn pages use the app's classes via /site.css (v10.50.0).
+  content: ['./index.html', './src/**/*.{ts,tsx}', './api/**/*.js'],
   darkMode: 'class',
   theme: {
     extend: {
+      spacing: {
+        section: 'var(--space-section)',
+        'section-content': 'var(--space-section-content)',
+        group: 'var(--space-group)',
+        field: 'var(--space-field)',
+        related: 'var(--space-related)',
+        'surface-inset': 'var(--space-surface-inset)',
+      },
       colors: {
         bg:        'hsl(var(--bg))',
         bg2:       'hsl(var(--bg2))',
@@ -33,8 +42,10 @@ const config: Config = {
         mono:    ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
       },
       borderRadius: {
-        sm: '6px', md: '8px', lg: '18px', pill: '999px',
-        r1: '8px', r2: '12px', r3: '18px', r4: '26px',
+        // Aurora 4.0 X12 — cards and tiles use 12 / 18 / 26 only (26 for the auth card). md and r1
+        // were 8px; every tile, row chip and badge on them now lands on 12. sm (6px) is for swatches.
+        sm: '6px', md: '12px', lg: '18px', pill: '999px',
+        r1: '12px', r2: '12px', r3: '18px', r4: '26px',
       },
       boxShadow: {
         '1': 'var(--neu-sm)',

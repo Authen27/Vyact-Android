@@ -9,33 +9,37 @@ async function fillAssetModal(page: import('@playwright/test').Page, input: {
   currency?: string;
   note?: string;
 }) {
-  const dialog = page.getByRole('dialog', { name: /add asset|edit asset/i });
+  const dialog = page.getByRole('main', { name: /add asset|edit asset/i });
   await expect(dialog).toBeVisible();
   if (input.type !== undefined) await dialog.getByLabel('Type').selectOption(input.type);
-  if (input.liquidity !== undefined) await dialog.getByLabel('Liquidity').selectOption(input.liquidity);
+  if (input.liquidity !== undefined) {
+    // Aurora 4.0 FA1 — liquidity follows the type; "Change" opens the select for an exception.
+    const change = dialog.getByRole('button', { name: 'Change liquidity', exact: true });
+    if (await change.isVisible()) await change.click();
+    await dialog.getByLabel('Liquidity').selectOption(input.liquidity);
+  }
   if (input.name !== undefined) await dialog.getByLabel('Name').fill(input.name);
-  if (input.value !== undefined) await dialog.getByLabel('Current value').fill(String(input.value));
+  // An investment asset's field reads "Value today" (v10.26.0); every other type, "Current value".
+  if (input.value !== undefined) await dialog.getByLabel(/^(Current value|Value today)$/).fill(String(input.value));
   if (input.currency !== undefined) await dialog.getByLabel('Currency').selectOption(input.currency);
   if (input.note !== undefined) await dialog.getByLabel('Note').fill(input.note);
   return dialog;
 }
 
-async function fillDebtModal(page: import('@playwright/test').Page, input: {
-  type?: string;
-  name?: string;
-  currentBalance?: number;
-  currency?: string;
-  interestRate?: number;
-  minimumPayment?: number;
+// W4f — a debt is a loan with its terms (sanctioned, still owed, APR, tenure, EMI and its dates).
+async function fillLoanForm(page: import('@playwright/test').Page, input: {
+  name: string; sanctioned: number; owed: number; apr: number; tenure: number; emi: number; firstEmi: string; nextEmi: string;
 }) {
-  const dialog = page.getByRole('dialog', { name: /add debt|edit debt/i });
+  const dialog = page.getByRole('main', { name: /add loan/i });
   await expect(dialog).toBeVisible();
-  if (input.type !== undefined) await dialog.getByLabel('Type').selectOption(input.type);
-  if (input.name !== undefined) await dialog.getByLabel('Name').fill(input.name);
-  if (input.currentBalance !== undefined) await dialog.getByLabel('Current balance').fill(String(input.currentBalance));
-  if (input.currency !== undefined) await dialog.getByLabel('Currency').selectOption(input.currency);
-  if (input.interestRate !== undefined) await dialog.getByLabel('Interest rate').fill(String(input.interestRate));
-  if (input.minimumPayment !== undefined) await dialog.getByLabel('Min. monthly payment').fill(String(input.minimumPayment));
+  await dialog.getByLabel('Name').fill(input.name);
+  await dialog.getByLabel('Sanctioned amount').fill(String(input.sanctioned));
+  await dialog.getByLabel('Still owed').fill(String(input.owed));
+  await dialog.getByLabel('Interest rate').fill(String(input.apr));
+  await dialog.getByLabel('Tenure').fill(String(input.tenure));
+  await dialog.getByLabel('EMI', { exact: true }).fill(String(input.emi));
+  await dialog.getByLabel('First EMI date').fill(input.firstEmi);
+  await dialog.getByLabel('Next EMI date').fill(input.nextEmi);
   return dialog;
 }
 
@@ -162,32 +166,36 @@ test.describe('§4/§8 NWRT-FC and ASSET-FC', () => {
     page, networth, debts,
   }) => {
     await networth.goto();
-    const before = await networth.readAmount(networth.totalLiabilitiesRow);
+    const before = await networth.readTotalLiabilities();
 
     await debts.goto();
     await debts.openAdd();
-    const dialog = await fillDebtModal(page, {
-      type: 'mortgage',
+    const dialog = await fillLoanForm(page, {
       name: 'NWRT-FC-004 Mortgage',
-      currentBalance: 300000,
-      interestRate: 6.5,
-      minimumPayment: 1800,
+      sanctioned: 300000,
+      owed: 300000,
+      apr: 6.5,
+      tenure: 240,
+      emi: 1800,
+      firstEmi: '2026-06-15',
+      nextEmi: '2026-06-15',
     });
     await dialog.getByRole('button', { name: /^Add$/ }).click();
     await expect(dialog).toBeHidden();
 
     await networth.goto();
-    const after = await networth.readAmount(networth.totalLiabilitiesRow);
+    const after = await networth.readTotalLiabilities();
     expect(after).toBeCloseTo(before + 300000, 2);
-    await expect(page.getByText('NWRT-FC-004 Mortgage')).toBeVisible();
+    await expect(page.getByText('NWRT-FC-004 Mortgage').filter({ visible: true }).first()).toBeVisible();
   });
 
   test('ASSET-FC-004 · liquidity ratio only uses liquid-tier assets', async ({
     page, networth,
   }) => {
     await networth.goto();
-    const before = page.getByText('Liquidity Ratio').locator('..');
-    await expect(before).toContainText('8.0x');
+    // The liquidity card is 'Liquid assets' (Aurora 4.0 TERM1); a long-term asset must not move it.
+    const before = await networth.readAmount(networth.liquidAssets());
+    expect(before).toBeGreaterThan(0);
 
     await networth.openAddAsset();
     const dialog = await fillAssetModal(page, {
@@ -199,7 +207,7 @@ test.describe('§4/§8 NWRT-FC and ASSET-FC', () => {
     await dialog.getByRole('button', { name: /^Add$/ }).click();
     await expect(dialog).toBeHidden();
 
-    await expect(page.getByText('ASSET-FC-004 Long Asset')).toBeVisible();
-    await expect(page.getByText('Liquidity Ratio').locator('..')).toContainText('8.0x');
+    await expect(page.getByText('ASSET-FC-004 Long Asset').filter({ visible: true }).first()).toBeVisible();
+    await expect.poll(() => networth.readAmount(networth.liquidAssets())).toBe(before);
   });
 });

@@ -3,18 +3,28 @@ export const NEEDS_WANTS_MAP: Record<string, 'need' | 'want'> = {
   // v9 type-scoped expense keys (txn-redesign §3)
   food_dining: 'need',
   groceries: 'need',
-  transport: 'need',
   rent_mortgage: 'need',
   utilities: 'need',
+  // v10.21 — `travel` absorbed `transport`, so it now means GETTING AROUND
+  // (commute, fuel, taxi, the flight itself) and is a need. The holiday half of
+  // the old `travel` moved to `holiday_outstay`, which is the want.
+  travel: 'need',
+  holiday_outstay: 'want',
   shopping: 'want',
+  electronics_decor: 'want',
+  personal_care: 'need',
   health: 'need',
+  repairs_maintenance: 'need',
   entertainment: 'want',
   education: 'need',
-  travel: 'want',
   childcare: 'need',
+  gifts_donations: 'want',
   insurance: 'need',
   loan_emi: 'need',
   other_expense: 'want',
+  // Retired id, kept so a pre-migration row still classifies instead of
+  // dropping out of the needs/wants split entirely.
+  transport: 'need',
 };
 
 export function needsWantsForCategory(catId: string): 'need' | 'want' | undefined {
@@ -29,21 +39,32 @@ import type { ProfileTypeKey, GoalType } from './types';
 // Expense = consumption only; income = source only. Transfers and investments
 // carry NO category (enforced by CK_txn_category_by_type in the DB). Debt
 // mechanics collapse into the single loan_emi expense category (system-split).
+// v10.21 — TRANSPORT WAS MERGED INTO TRAVEL.
+// The two were indistinguishable in practice: a taxi to the airport and the
+// flight it fed were filed apart for no reason a user could articulate. One
+// category now covers getting from A to B, and carries the route icon rather
+// than a car or a plane — neither of which described the whole of it.
+// The holiday half of the old `travel` (hotels, stays) became its own
+// category, which is what people were actually reaching for.
 export const EXPENSE_CATEGORIES = [
-  { id: 'food_dining',    label: 'Food & Dining',     icon: '🍽️', color: '#E8A87C' },
-  { id: 'groceries',      label: 'Groceries',          icon: '🛒', color: '#85A88A' },
-  { id: 'transport',      label: 'Transport',          icon: '🚗', color: '#4A6FA5' },
-  { id: 'rent_mortgage',  label: 'Rent / Mortgage',    icon: '🏠', color: '#C44536' },
-  { id: 'utilities',      label: 'Utilities',          icon: '⚡', color: '#F4D27A' },
-  { id: 'shopping',       label: 'Shopping',           icon: '🛍️', color: '#E26D5C' },
-  { id: 'health',         label: 'Health & Wellness',  icon: '💊', color: '#85A88A' },
-  { id: 'entertainment',  label: 'Entertainment',      icon: '🎬', color: '#6E4555' },
-  { id: 'education',      label: 'Education',          icon: '📚', color: '#6B7C53' },
-  { id: 'travel',         label: 'Travel',             icon: '✈️', color: '#4A6FA5' },
-  { id: 'childcare',      label: 'Childcare',          icon: '👶', color: '#F4B6A8' },
-  { id: 'insurance',      label: 'Insurance',          icon: '🛡️', color: '#6B635C' },
-  { id: 'loan_emi',       label: 'Loan / EMI payment', icon: '💳', color: '#C44536' }, // SYSTEM_SPLIT §6.3
-  { id: 'other_expense',  label: 'Other',              icon: '📦', color: '#6B635C' },
+  { id: 'food_dining',          label: 'Food & Dining',        icon: '🍽️', color: '#E8A87C' },
+  { id: 'groceries',            label: 'Groceries',             icon: '🛒', color: '#85A88A' },
+  { id: 'rent_mortgage',        label: 'Rent / Mortgage',       icon: '🏠', color: '#C44536' },
+  { id: 'utilities',            label: 'Utilities',             icon: '⚡', color: '#F4D27A' },
+  { id: 'travel',               label: 'Travel',                icon: '🛣️', color: '#4A6FA5' },
+  { id: 'holiday_outstay',      label: 'Holiday & Outstay',     icon: '🏖️', color: '#5B8FA8' },
+  { id: 'shopping',             label: 'Shopping',              icon: '🛍️', color: '#E26D5C' },
+  { id: 'electronics_decor',    label: 'Electronics & Decor',   icon: '🖥️', color: '#7A6A8A' },
+  { id: 'personal_care',        label: 'Personal Care',         icon: '🧴', color: '#D99BA5' },
+  { id: 'health',               label: 'Health & Wellness',     icon: '💊', color: '#85A88A' },
+  { id: 'repairs_maintenance',  label: 'Repairs & Maintenance', icon: '🔧', color: '#8A7F6B' },
+  { id: 'entertainment',        label: 'Entertainment',         icon: '🎬', color: '#6E4555' },
+  { id: 'education',            label: 'Education',             icon: '📚', color: '#6B7C53' },
+  { id: 'childcare',            label: 'Childcare',             icon: '👶', color: '#F4B6A8' },
+  { id: 'gifts_donations',      label: 'Gifts & Donations',     icon: '💝', color: '#C98BA0' },
+  { id: 'insurance',            label: 'Insurance',             icon: '🛡️', color: '#6B635C' },
+  { id: 'loan_emi',             label: 'Loan / EMI payment',    icon: '💳', color: '#C44536' }, // SYSTEM_SPLIT §6.3
+  { id: 'other_expense',        label: 'Other',                 icon: '📦', color: '#6B635C' },
 ] as const;
 
 export const INCOME_CATEGORIES = [
@@ -62,6 +83,10 @@ export const LEGACY_CATEGORY_ALIASES: Record<string, string> = {
   gift: 'gift_bonus', rental: 'rental_income', business: 'business_revenue',
   other_inc: 'other_income', investment: 'other_income',
   debt_payment: 'loan_emi', debt_interest: 'loan_emi',
+  // v10.21 — merged into travel. The cloud rows are migrated by
+  // 20260909130000_v1021_category_travel_merge.sql; this keeps a device whose
+  // cache predates that migration rendering "Travel" instead of a raw id.
+  transport: 'travel',
 };
 
 export const ALL_CATEGORIES = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES];
@@ -135,12 +160,16 @@ export const GOAL_COLORS: Record<GoalType, string> = { emergency:'#4A6FA5', savi
 export const ROLE_LABELS: Record<string, string>   = { primary:'Primary', partner:'Partner', child:'Child', elder:'Elder' };
 
 // ── PROFILE TYPES ──────────────────────────────────────────────
-export const PROFILE_TYPES: Record<ProfileTypeKey, { icon: string; label: string; desc: string }> = {
-  personal:  { icon: '👤', label: 'Personal',             desc: 'Just me' },
-  family:    { icon: '👨‍👩‍👧‍👦', label: 'Family',                desc: 'Household with members' },
-  business:  { icon: '🏢', label: 'Single Business',      desc: 'One company / venture' },
-  multi_biz: { icon: '🏛️', label: 'Multiple Businesses',  desc: 'Holding co · several entities' },
-  shared:    { icon: '🤝', label: 'Shared',               desc: 'Roommates · partner pool' },
+// v10.59.0 (owner, 4 Oct 2026) — four types. Member limits: lib/householdTypes.ts (and the DB).
+export const PROFILE_TYPES: Record<ProfileTypeKey, { icon: string; label: string; desc: string; detail: string }> = {
+  personal: { icon: '👤', label: 'Personal', desc: 'Just you, private',
+    detail: 'Private to you. No one else can be invited.' },
+  couple:   { icon: '💑', label: 'Couple',   desc: 'You and one other person',
+    detail: 'You and one other person share the household. Invite one partner.' },
+  family:   { icon: '👨‍👩‍👧‍👦', label: 'Family',   desc: 'Everyone at home',
+    detail: 'Invite as many people as you need, each with their own access.' },
+  business: { icon: '🏢', label: 'Business', desc: 'A business and its team',
+    detail: 'Invite your team. Insights also cover business terms such as cash runway and setting aside for tax.' },
 };
 
 // ── CURRENCIES & DEFAULT RATES ────────────────────────────────
@@ -225,7 +254,7 @@ export const PM_KIND_LABELS: Record<string, string> = {
 
 // ── KEYWORD AUTO-CATEGORIZE ────────────────────────────────────
 export const KEYWORD_MAP: Record<string, string[]> = {
-  transport:    ['uber','lyft','taxi','bus','train','subway','metro','gas','fuel','parking','toll','ola','rapido','petrol'],
+  travel:       ['uber','lyft','taxi','bus','train','subway','metro','gas','fuel','parking','toll','ola','rapido','petrol','flight','airline','indigo','irctc'],
   entertainment:['netflix','spotify','hulu','disney','youtube','concert','movie','cinema','game','steam','prime','apple tv'],
   food:         ['grocery','grocer','whole foods','trader joe','safeway','kroger','aldi','restaurant','cafe','coffee','starbucks','doordash','ubereats','swiggy','zomato','pizza','sushi','burger'],
   health:       ['gym','doctor','pharmacy','hospital','dental','medical','cvs','walgreens','clinic','therapy','vitamin'],
@@ -234,7 +263,11 @@ export const KEYWORD_MAP: Record<string, string[]> = {
   rent:         ['rent','mortgage','lease','hoa','housing'],
   education:    ['school','tuition','course','udemy','coursera','textbook','book','library'],
   childcare:    ['daycare','babysitter','nanny','preschool','kindergarten'],
-  travel:       ['hotel','airbnb','flight','airline','booking.com','expedia','makemytrip'],
+  holiday_outstay: ['hotel','airbnb','booking.com','expedia','makemytrip','oyo','resort','hostel'],
+  gifts_donations:  ['donation','charity','ngo','gift'],
+  electronics_decor:['croma','reliance digital','ikea','pepperfry','urban ladder','best buy'],
+  personal_care:    ['salon','spa','barber','nykaa','sephora','haircut'],
+  repairs_maintenance:['plumber','electrician','repair','service centre','service center','maintenance'],
   debt_payment: ['credit card payment','loan payment','mortgage payment','emi','installment'],
 };
 
@@ -258,7 +291,7 @@ export const LOCALES: Record<string, { name: string; strings: Record<string, str
     'add-transaction':'Add Transaction',
     'total-balance':'Total Balance','monthly-income':'Monthly Income','monthly-expenses':'Monthly Expenses','savings-rate':'Savings Rate',
     'this-month':'This month','of-income-saved':'of income saved',
-    'view-all':'View all →','income':'Income','expense':'Expense',
+    'view-all':'View all','income':'Income','expense':'Expense',
     'budget-progress':'Budget Progress','recent-transactions':'Recent Transactions',
     'active-goals':'Active Goals','spending-by-category':'Spending by Category',
     'net-worth-snapshot':'Net Worth Snapshot','debt-overview':'Debt Overview',

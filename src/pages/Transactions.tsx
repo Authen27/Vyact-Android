@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  CalendarDays, X, Search, SlidersHorizontal, RotateCcw, ChevronDown,
+  CalendarDays, X, Search, SlidersHorizontal, RotateCcw, ChevronDown, Download,
 } from 'lucide-react';
 import { useStore } from '../store';
 import { useTranslation, useShortcuts } from '../hooks';
@@ -10,14 +10,19 @@ import EmptyState from '../components/ui/EmptyState';
 import { Input } from '../components/ui/Input';
 import HalfSheet from '../components/ui/HalfSheet';
 import Chip from '../components/ui/Chip';
+import CategoryPicker from '../components/ui/CategoryPicker';
 import TxnRow from '../components/transactions/TxnRow';
 import TxnCalendar from '../components/transactions/TxnCalendar';
 import SavedViewsBar from '../components/savedViews/SavedViewsBar';
-import { ALL_CATEGORIES } from '../constants';
-import { getMonthKey, monthName, formatDate, nowMonthKey, today, transactionSortValue, fmt } from '../lib/format';
+import { ALL_CATEGORIES, getCat } from '../constants';
+import { getMonthKey, monthName, formatDate, nowMonthKey, today, compareTxnRecency, fmt, fmtSigned } from '../lib/format';
 import { monthlyData } from '../lib/calculations';
+import { listNet, matchesCategory, matchesType } from '../lib/txnListTotals';
 import { projectRecurringTransactionsForDate } from '../lib/recurring';
+import { transactionsCsv, downloadCsv } from '../lib/transactionsCsv';
 import type { Transaction, TxnType } from '../types';
+import SegRail from '../components/ui/SegRail';
+import PageHead from '../components/ui/PageHead';
 
 type TransactionListItem = {
   txn: Transaction;
@@ -42,6 +47,7 @@ export default function Transactions() {
   const txns    = useStore(s => s.transactions);
   const rates   = useStore(s => s.rates);
   const members = useStore(s => s.members);
+  const toast   = useStore(s => s.toast);
   const schedules = useStore(s => s.recurringSchedules);
   const profile = useStore(s => s.profile);
   // Board B D1 — right-rail month summary: the CURRENT month's true (unfiltered)
@@ -55,6 +61,7 @@ export default function Transactions() {
   const budgets     = useStore(s => s.budgets);
   const budgetAllocations = useStore(s => s.budgetAllocations);
   const debts       = useStore(s => s.debts);
+  const accountsList = useStore(s => s.accounts);
 
   // v7.4.4 — deep-link from Dashboard cards (?type=income/expense, ?cat=foo).
   const [searchParams, setSearchParams] = useSearchParams();
@@ -74,8 +81,12 @@ export default function Transactions() {
   const [showFilters, setShowFilters] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // `/` focuses the search box. The `n` add-transaction shortcut is now
-  // registered app-wide in Layout (v7.4.4) so it works on every page.
+  useEffect(() => {
+    if (type === 'transfer' || type === 'investment') setCat('all');
+  }, [type]);
+
+  // `/` focuses the search box; it only moves focus. (The single-key add shortcuts were removed in
+  // v10.91.0, audit FE-UIS-10.)
   useShortcuts({
     '/': () => searchRef.current?.focus(),
   });
@@ -84,7 +95,7 @@ export default function Transactions() {
   // user changes — but ONLY when no v9.1 §8 context param is present (budgetId /
   // debtId / month / from / to drive a live context chip and must persist).
   useEffect(() => {
-    const hasCtx = ['budgetId','debtId','month','from','to'].some(k => searchParams.get(k));
+    const hasCtx = ['budgetId','debtId','accountId','month','from','to'].some(k => searchParams.get(k));
     if (!hasCtx && (searchParams.get('type') || searchParams.get('cat'))) {
       const next = new URLSearchParams(searchParams);
       next.delete('type'); next.delete('cat');
@@ -130,14 +141,22 @@ export default function Transactions() {
     } else if (from || to) {
       label = `${from ?? '…'} → ${to ?? '…'}`;
     }
-    return { budgetId, debtId, from, to, cats, label };
-  }, [searchParams, budgets, budgetAllocations, debts]);
+    // v10.24.0 (R2) — ?accountId=… is the reconcile sheet's "let me find the
+    // missing spend": that account's transactions, optionally narrowed to a card's
+    // statement window by from/to. It composes with a date range.
+    const accountId = searchParams.get('accountId');
+    if (accountId) {
+      const name = accountsList.find(a => a.id === accountId)?.name ?? 'account';
+      label = `Account: ${name}${from || to ? ` · ${from ?? '…'} → ${to ?? '…'}` : ''}`;
+    }
+    return { budgetId, debtId, accountId, from, to, cats, label };
+  }, [searchParams, budgets, budgetAllocations, debts, accountsList]);
 
   const filtered = useMemo<TransactionListItem[]>(() => {
     let f = [...txns];
     if (selectedDate)       f = f.filter(t => t.date === selectedDate);
-    if (type !== 'all')     f = f.filter(t => t.type === type);
-    if (cat !== 'all')      f = f.filter(t => t.category === cat);
+    if (type !== 'all')     f = f.filter(t => matchesType(t, type));
+    if (cat !== 'all')      f = f.filter(t => matchesCategory(t, cat));
     if (!selectedDate && month !== 'all') f = f.filter(t => getMonthKey(t.date) === month);
     if (memberId !== 'all') f = f.filter(t => t.memberId === memberId);
     // §8 deep-link context
@@ -146,12 +165,15 @@ export default function Transactions() {
     if (ctx.cats) f = f.filter(t => ctx.cats!.has(t.category));
     if (ctx.debtId) f = f.filter(t =>
       t.debtId === ctx.debtId || t.emiSplit?.debt_id === ctx.debtId || t.linkedDebtId === ctx.debtId);
+    if (ctx.accountId) f = f.filter(t => t.accountId === ctx.accountId || t.toAccountId === ctx.accountId);
     if (search) {
       const q = search.toLowerCase();
       f = f.filter(t =>
         t.description.toLowerCase().includes(q) ||
         (t.note || '').toLowerCase().includes(q) ||
-        t.category.toLowerCase().includes(q)
+        t.category.toLowerCase().includes(q) ||
+        // What the person sees: 'Travel', not the stored id ('transport' / 'travel').
+        (t.category ? getCat(t.category).label.toLowerCase().includes(q) : false)
       );
     }
     const rows: TransactionListItem[] = f.map(txn => ({ txn }));
@@ -162,15 +184,16 @@ export default function Transactions() {
           txn,
           projected: true,
         }))
-        .filter(({ txn }) => (type === 'all' ? true : txn.type === type))
-        .filter(({ txn }) => (cat === 'all' ? true : txn.category === cat))
+        .filter(({ txn }) => (type === 'all' ? true : matchesType(txn, type)))
+        .filter(({ txn }) => (cat === 'all' ? true : matchesCategory(txn, cat)))
         .filter(({ txn }) => (memberId === 'all' ? true : txn.memberId === memberId))
         .filter(({ txn }) => {
           if (!search) return true;
           const q = search.toLowerCase();
           return txn.description.toLowerCase().includes(q)
             || (txn.note || '').toLowerCase().includes(q)
-            || txn.category.toLowerCase().includes(q);
+            || txn.category.toLowerCase().includes(q)
+            || (txn.category ? getCat(txn.category).label.toLowerCase().includes(q) : false);
         })
         .filter(({ txn }) => !rows.some(existing =>
           existing.txn.date === txn.date
@@ -183,7 +206,7 @@ export default function Transactions() {
       rows.push(...projected);
     }
 
-    return rows.sort((a, b) => transactionSortValue(b.txn) - transactionSortValue(a.txn) || b.txn.id.localeCompare(a.txn.id));
+    return rows.sort((a, b) => compareTxnRecency(a.txn, b.txn));
   }, [txns, schedules, search, type, cat, month, memberId, selectedDate, ctx]);
 
   // v9.6 — group the (already date-sorted desc) list into month+year sections
@@ -202,18 +225,14 @@ export default function Transactions() {
     }
     const groups: MonthGroup[] = [];
     for (const [key, items] of map) {
-      let net = 0;
-      for (const it of items) {
-        if (it.projected) continue;
-        if (it.txn.type === 'income') net += it.txn.amount;
-        else if (it.txn.type === 'expense') net -= it.txn.amount;
-      }
+      // W7a (FE-UIC-17): real rows only, counted like the dashboard (reportable, your share).
+      const net = listNet(items.filter(it => !it.projected).map(it => it.txn), profile.baseCurrency);
       groups.push({ key, label: monthName(key), items, net });
     }
     // Guard against Map insertion order surprises — pin to descending month key.
     groups.sort((a, b) => b.key.localeCompare(a.key));
     return groups;
-  }, [filtered]);
+  }, [filtered, profile.baseCurrency]);
 
   // Pagination — reveal MONTHS_PER_PAGE months, "Load previous" adds another page.
   const [visibleMonths, setVisibleMonths] = useState(MONTHS_PER_PAGE);
@@ -261,6 +280,12 @@ export default function Transactions() {
     return list;
   }, [type, cat, month, memberId, members, ctx, setSearchParams]);
   const hasFilters = activeFilters.length > 0 || search.length > 0 || selectedDate !== null;
+  function exportShown() {
+    const shown = filtered.filter(i => !i.projected).map(i => i.txn);
+    if (!shown.length) return;
+    downloadCsv(transactionsCsv(shown, { members, accounts: accountsList, baseCurrency: profile.baseCurrency }), `vyact-transactions-${today()}.csv`);
+    toast(`${shown.length} transaction${shown.length === 1 ? '' : 's'} exported`, 'success');
+  }
   function resetAllFilters() {
     setSearch(''); setType('all'); setCat('all'); setMonth('all'); setMemberId('all'); setSelectedDate(null);
     setSearchParams({}, { replace: true });
@@ -269,31 +294,19 @@ export default function Transactions() {
   // Net of the *visible* (non-projected) rows so users see the impact of
   // their filter on real data. Income & investment-sell add; expense &
   // investment-buy & transfers do not contribute to net spend.
-  const filteredNet = useMemo(() => {
-    let net = 0;
-    for (const item of filtered) {
-      if (item.projected) continue;
-      if (item.txn.type === 'income') net += item.txn.amount;
-      else if (item.txn.type === 'expense') net -= item.txn.amount;
-    }
-    return net;
-  }, [filtered]);
+  const filteredNet = useMemo(
+    () => listNet(filtered.filter(i => !i.projected).map(i => i.txn), profile.baseCurrency),
+    [filtered, profile.baseCurrency],
+  );
 
   return (
-    <div>
-      {/* Stack on small screens so the title never collides with the Add button
-          (at ~320px the row layout truncated "Transactions" under the button). */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-start sm:gap-4 mb-5">
-        <div className="min-w-0">
-          <h1 className="display-italic text-4xl text-ink mb-1.5">{t('transactions')}</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            All household income, expenses, investments &amp; transfers
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button className="btn-primary" onClick={() => openAddTxn()}>+ {t('add-transaction')}</button>
-        </div>
-      </div>
+    <div className="ui-pilot">
+      {/* The tab bar's + adds a transaction on phones, so this page has no header + (PH1 B′). */}
+      <PageHead
+        title={t('transactions')}
+        subtitle="All household income, expenses, investments & transfers"
+        action={{ label: `+ ${t('add-transaction')}`, entity: 'transaction', headerPlus: false, onClick: () => openAddTxn() }}
+      />
 
       {/* Board B M1 — search + calendar-toggle live on one row, above the
           type rail (the board's first toolbar row). On lg+ the calendar
@@ -328,7 +341,7 @@ export default function Transactions() {
           onClick={() => setShowCalendar(v => !v)}
           aria-pressed={showCalendar}
           title="Toggle expense calendar"
-          className={`lg:hidden flex-shrink-0 h-[38px] w-[38px] rounded-[9px] border flex items-center justify-center transition-colors ${
+          className={`lg:hidden flex-shrink-0 h-[38px] w-[38px] rounded-r2 border flex items-center justify-center transition-colors ${
             showCalendar
               ? 'bg-coral-tint border-coral/40 text-coral'
               : 'bg-bg border-line text-ink-mid hover:bg-bg3 hover:text-ink'
@@ -338,45 +351,44 @@ export default function Transactions() {
         </button>
       </div>
 
-      {/* Board B M1 §.srail — the type filter is an inset SEGMENTED rail (one
-          sunken pill containing the segments; active = raised accent-tinted
-          chip), with Filters + ★ Views chips on the same row per the board. */}
+      {/* Aurora 4.0 X5 — the type filter is the shared SegRail, with Filters + ★ Views chips
+          on the same row. */}
       <div className="mb-3 flex items-center gap-2 flex-wrap">
-        <div
-          className="inline-flex max-w-full gap-1 p-1 rounded-pill overflow-x-auto [&::-webkit-scrollbar]:hidden"
-          style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)', scrollbarWidth: 'none' }}
-          role="tablist" aria-label="Transaction type"
-        >
-          {([
-            { v: 'all', label: 'All' },
-            { v: 'expense', label: 'Expense' },
-            { v: 'income', label: 'Income' },
-            { v: 'transfer', label: 'Transfer' },
-            { v: 'investment', label: 'Invest' },
-          ] as { v: TxnFilter; label: string }[]).map(o => (
-            <button
-              key={o.v}
-              role="tab" aria-selected={type === o.v}
-              onClick={() => setType(o.v)}
-              className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] whitespace-nowrap flex-shrink-0"
-              style={type === o.v
-                ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
-                : { color: 'var(--ff-ink-3)', background: 'transparent' }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
+        <SegRail<TxnFilter>
+          label="Transaction type"
+          value={type}
+          onChange={setType}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'expense', label: 'Expense' },
+            { value: 'income', label: 'Income' },
+            { value: 'transfer', label: 'Transfer' },
+            { value: 'investment', label: 'Invest' },
+          ]}
+        />
         <button
           type="button"
           onClick={() => setShowFilters(true)}
           aria-haspopup="dialog"
           className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] flex items-center gap-1.5 flex-shrink-0"
           style={activeFilters.length > 0
-            ? { color: 'var(--accent)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
+            ? { color: 'var(--accent-text)', boxShadow: 'var(--neu-inset)', background: 'color-mix(in srgb, var(--accent) 10%, var(--canvas))' }
             : { color: 'var(--ff-ink-3)', background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
         >
           <SlidersHorizontal size={13} /> Filters{activeFilters.length > 0 ? ` · ${activeFilters.length}` : ''}
+        </button>
+        {/* v10.55.0 (#69) — export exactly what the list shows (filters applied), never the
+            projected future bills; Settings › Export CSV still exports everything. */}
+        <button
+          type="button"
+          onClick={exportShown}
+          disabled={!filtered.some(i => !i.projected)}
+          aria-label="Export these transactions as CSV"
+          title="Export these transactions as CSV"
+          className="h-[30px] px-3.5 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px] flex items-center gap-1.5 flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{ color: 'var(--ff-ink-3)', background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
+        >
+          <Download size={13} /> CSV
         </button>
         <SavedViewsBar
           page="transactions"
@@ -445,28 +457,14 @@ export default function Transactions() {
               ))}
               <button
                 onClick={resetAllFilters}
-                className="text-[0.7rem] text-ink-dim hover:text-coral underline-offset-2 hover:underline ml-1"
+                className="text-[12px] min-h-[44px] text-ink-dim hover:text-coral underline-offset-2 hover:underline ml-1"
               >
                 Clear all
               </button>
             </div>
           )}
 
-          {/* Result count + filtered net — instant feedback on what the
-              filter actually returns. Hidden when the list is empty so it
-              doesn't compete with the empty state. */}
-          {filtered.length > 0 && (
-            <div className="mt-2 flex items-center justify-between text-[0.7rem] font-mono text-ink-dim">
-              <span>
-                {filtered.length} {filtered.length === 1 ? 'transaction' : 'transactions'}
-              </span>
-              {(type === 'all' || type === 'income' || type === 'expense') && (
-                <span className={filteredNet >= 0 ? 'text-sage' : 'text-terra'}>
-                  Net {filteredNet >= 0 ? '+' : ''}{fmt(filteredNet, profile.baseCurrency)}
-                </span>
-              )}
-            </div>
-          )}
+          {/* Aurora 4.0 T1 — no separate count/net strip: each month pill carries its count and net. */}
         </div>
 
         {filtered.length === 0 ? (
@@ -479,7 +477,10 @@ export default function Transactions() {
               </button>
             </div>
           ) : (
-            <EmptyState icon="📝" message="No transactions yet — add your first one to get started." />
+            <EmptyState icon="🧾" title="No entries yet"
+              message="Add what you spend and earn, and this becomes your household's history."
+              action={{ label: '+ Add your first expense', onClick: () => openAddTxn({ type: 'expense' }) }}
+              hint={<>or tell Pip: &ldquo;spent 450 on auto&rdquo;</>} />
           )
         ) : (
           <div className="p-2.5 space-y-2.5">
@@ -493,15 +494,15 @@ export default function Transactions() {
                       so it stays visible while its rows scroll past; the
                       collapse toggle is a small circular button on the right. */}
                   <div
-                    className="sticky top-0 z-10 flex items-center gap-2.5 px-3.5 py-2.5 rounded-r3"
+                    className="sticky top-0 z-10 flex items-center gap-2.5 px-3.5 py-2.5 rounded-r2"
                     style={{ background: 'var(--glass)', backdropFilter: 'var(--blur)', WebkitBackdropFilter: 'var(--blur)', border: '1px solid var(--glass-line)' }}
                   >
-                    <span className="font-display font-bold text-ink text-[0.86rem]">{group.label}</span>
-                    <span className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">
-                      {group.items.length} {group.items.length === 1 ? 'txn' : 'txns'}
+                    <span className="font-display font-medium text-ink text-[0.9rem]">{group.label}</span>
+                    <span className="text-[12px] text-ink-dim">
+                      {group.items.length} {group.items.length === 1 ? 'entry' : 'entries'}
                     </span>
-                    <span className={`ml-auto font-mono text-[0.72rem] font-bold ${group.net >= 0 ? 'text-sage' : 'text-terra'}`}>
-                      {group.net >= 0 ? '+' : ''}{fmt(group.net, profile.baseCurrency)}
+                    <span className={`ml-auto num text-[0.8rem] font-semibold ${group.net >= 0 ? 'text-sage' : 'text-terra'}`}>
+                      {fmtSigned(group.net, profile.baseCurrency)}
                     </span>
                     <button
                       type="button"
@@ -539,12 +540,12 @@ export default function Transactions() {
               <div className="py-2.5 flex flex-col items-center gap-1.5">
                 <button
                   onClick={() => setVisibleMonths(c => c + MONTHS_PER_PAGE)}
-                  className="h-[32px] px-4 rounded-pill border-none cursor-pointer font-display font-semibold text-[11.5px]"
+                  className="min-h-[44px] px-4 rounded-pill border-none cursor-pointer font-display font-semibold text-[12.5px]"
                   style={{ color: 'var(--ff-ink-3)', background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
                 >
                   Load previous {MONTHS_PER_PAGE} months
                 </button>
-                <span className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">
+                <span className="text-[12px] text-ink-dim">
                   Showing {visibleGroups.length} of {monthGroups.length} months
                 </span>
               </div>
@@ -569,7 +570,7 @@ export default function Transactions() {
           <div className="flex justify-between items-center py-1 text-[13px]">
             <span className="text-ink-dim">Net</span>
             <b className={`num ${railMonth.income - railMonth.expense >= 0 ? 'text-sage' : 'text-terra'}`}>
-              {railMonth.income - railMonth.expense >= 0 ? '+' : ''}{fmt(railMonth.income - railMonth.expense, profile.baseCurrency)}
+              {fmtSigned(railMonth.income - railMonth.expense, profile.baseCurrency)}
             </b>
           </div>
         </div>
@@ -607,15 +608,7 @@ export default function Transactions() {
               ))}
             </div>
           </div>
-          <div>
-            <div className="mono-label mb-1.5">Category</div>
-            <div className="flex gap-1.5 flex-wrap max-h-[168px] overflow-y-auto">
-              <Chip on={cat === 'all'} onClick={() => setCat('all')}>All</Chip>
-              {ALL_CATEGORIES.map(c => (
-                <Chip key={c.id} on={cat === c.id} onClick={() => setCat(c.id)}>{c.icon} {c.label}</Chip>
-              ))}
-            </div>
-          </div>
+          <CategoryPicker type={type} value={cat} includeAll onChange={setCat} />
           {months.length > 0 && (
             <div>
               <div className="mono-label mb-1.5">Month</div>

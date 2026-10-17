@@ -1,19 +1,20 @@
 // Aurora mobile header (Batch A fidelity pass · board M1 §m-header).
 // The board has NO fixed top bar on phones — this header scrolls with the
-// page. One row: pip → home · page identity (greeting on Home, section cap +
-// page title elsewhere) · household-type chip → HouseholdSheet · bell →
-// NotificationSheet · avatar → account menu. Desktop keeps TopBar; this
-// renders below `sm` only.
-import { useState } from 'react';
+// page. One row: pip → home · page identity (greeting on Home, section +
+// page title elsewhere) · the page's own + · bell → NotificationSheet ·
+// avatar → account menu. Desktop keeps TopBar; this renders below `sm` only.
+// Aurora 4.0: the household-type chip is gone — the avatar carries a household
+// badge and its menu holds the switcher (HDR1). The page's add action is the
+// small outlined + next to the bell (PH1 B′), since the page title row is
+// hidden on phones (X3).
 import { Link, useLocation } from 'react-router-dom';
+import { Plus } from 'lucide-react';
 import { useStore } from '../../store';
 import { Pip } from './Brand';
 import AccountMenu from './AccountMenu';
 import NotificationCenter from './NotificationCenter';
-import HouseholdSheet from './HouseholdSheet';
-import { SECTIONS, ACCOUNT_ROUTES, sectionForPath } from './navModel';
-import { PROFILE_TYPES } from '../../constants';
-import type { ProfileTypeKey } from '../../types';
+import { SECTIONS, ACCOUNT_ROUTES, STANDALONE_ROUTES, sectionForPath } from './navModel';
+import { usePageAction } from './pageAction';
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -22,17 +23,15 @@ function greeting(): string {
 
 export default function MobileHeader() {
   const location = useLocation();
-  const [hhOpen, setHhOpen] = useState(false);
   const profile = useStore(s => s.profile);
-  const households = useStore(s => s.households);
-  const currentHouseholdId = useStore(s => s.currentHouseholdId);
-  const active = households.find(h => h.id === currentHouseholdId);
-  const typeLabel = PROFILE_TYPES[(active?.type ?? 'family') as ProfileTypeKey]?.label ?? 'Family';
+  const pageAction = usePageAction();
+  const plus = pageAction && pageAction.headerPlus !== false ? pageAction : null;
 
   const isHome = location.pathname === '/dashboard' || location.pathname === '/';
   const sectionId = sectionForPath(location.pathname);
   const section = SECTIONS.find(s => s.id === sectionId);
-  const route = (section ? section.routes : ACCOUNT_ROUTES).find(r => location.pathname.startsWith(r.to));
+  const standalone = sectionId === 'standalone';   // v10.53.0 — Pip's own page
+  const route = (section ? section.routes : standalone ? STANDALONE_ROUTES : ACCOUNT_ROUTES).find(r => location.pathname.startsWith(r.to));
   const firstName = (profile.name || '').trim().split(/\s+/)[0];
 
   return (
@@ -52,8 +51,8 @@ export default function MobileHeader() {
           </>
         ) : (
           <>
-            <div className="font-mono text-[8.5px] tracking-[0.15em] uppercase text-ink-dim leading-tight">
-              {section ? section.label : 'Account'}
+            <div className="text-[11.5px] leading-tight text-ink-dim">
+              {section ? section.label : standalone ? 'Ask' : 'Account'}
             </div>
             <div className="font-display font-bold text-[18px] leading-tight tracking-tight text-ink truncate">
               {route?.label ?? 'Vyact'}
@@ -62,24 +61,24 @@ export default function MobileHeader() {
         )}
       </div>
 
-      {/* Household-type chip → the same pull-down sheet as the desktop chip. */}
-      <button
-        type="button"
-        onClick={() => setHhOpen(true)}
-        aria-label={`Switch household — ${active?.name ?? 'Household'}`}
-        className="flex-shrink-0 flex items-center gap-1.5 h-[38px] px-3 rounded-pill border-none cursor-pointer"
-        style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}
-      >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-ink-dim" aria-hidden>
-          <path d="M4 11l8-7 8 7M6 10v9h12v-9" />
-        </svg>
-        <span className="font-mono text-[9px] tracking-[0.15em] uppercase text-ink-dim">{typeLabel}</span>
-      </button>
+      {/* PH1 B′ — the page's own add action, a small outlined + (Transactions and the
+          Dashboard leave it off: the tab bar's + already adds a transaction). */}
+      {plus && (
+        <button
+          type="button"
+          onClick={plus.onClick}
+          aria-label={plus.label}
+          title={plus.label.replace(/^\+\s*/, '')}
+          data-testid="header-plus"
+          className="flex-shrink-0 w-[38px] h-[38px] rounded-full flex items-center justify-center border cursor-pointer bg-transparent"
+          style={{ borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)', color: 'var(--accent-text)' }}
+        >
+          <Plus size={18} strokeWidth={2.2} aria-hidden />
+        </button>
+      )}
 
       <NotificationCenter />
       <AccountMenu trigger="avatar" />
-
-      <HouseholdSheet open={hhOpen} onClose={() => setHhOpen(false)} />
     </div>
   );
 }

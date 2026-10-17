@@ -7,12 +7,22 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeftRight, Wallet, BarChart3, Sparkles, Plus } from 'lucide-react';
 import { useStore } from '../../store';
-import { sectionForPath } from './navModel';
+import { SECTIONS, sectionForPath } from './navModel';
+
+/** A section's landing page: its first route in the nav model. That's the
+ *  same target the desktop TopBar tab opens (`s.routes[0].to`), so the two
+ *  can't drift. v10.52.0: Analyze was hard-coded to /reports here while
+ *  desktop opened /networth. */
+function landingFor(id: string): string {
+  const s = SECTIONS.find(x => x.id === id);
+  if (!s) throw new Error(`navModel has no section "${id}"`);
+  return s.routes[0].to;
+}
 
 const SECTION_TABS = [
-  { id: 'track',   label: 'Track',   to: '/dashboard', icon: ArrowLeftRight },
-  { id: 'plan',    label: 'Plan',    to: '/budgets',   icon: Wallet },
-  { id: 'analyze', label: 'Analyze', to: '/reports',   icon: BarChart3 },
+  { id: 'track',   label: 'Track',   to: landingFor('track'),   icon: ArrowLeftRight },
+  { id: 'plan',    label: 'Plan',    to: landingFor('plan'),    icon: Wallet },
+  { id: 'analyze', label: 'Analyze', to: landingFor('analyze'), icon: BarChart3 },
 ] as const;
 
 export default function MobileTabBar() {
@@ -62,7 +72,7 @@ export default function MobileTabBar() {
         <TabButton tab={SECTION_TABS[2]} on={section === 'analyze'} onClick={() => navigate(SECTION_TABS[2].to)} className={tabCls} />
 
         {/* ✦ Ask — coral, matching the desktop Ask chip. */}
-        <button type="button" onClick={openAsk} aria-label="Ask Vyact" className={tabCls} style={{ color: 'var(--accent)' }}>
+        <button type="button" onClick={openAsk} aria-label="Ask Pip" className={tabCls} style={{ color: 'var(--accent-text)' }}>
           <Sparkles size={19} strokeWidth={1.9} />
           <span className="font-display text-[10px] font-semibold">Ask</span>
         </button>
@@ -86,7 +96,7 @@ function TabButton({ tab, on, onClick, className }: {
       /* Board §.m-tab.on — the active tab sits on an accent-tinted pill, not
          just a recolored icon. */
       style={on
-        ? { color: 'var(--accent)', background: 'color-mix(in srgb, var(--accent) 14%, transparent)' }
+        ? { color: 'var(--accent-text)', background: 'color-mix(in srgb, var(--accent) 14%, transparent)' }
         : { color: 'var(--ff-ink-3)' }}
     >
       <tab.icon size={19} strokeWidth={on ? 2.2 : 1.8} />

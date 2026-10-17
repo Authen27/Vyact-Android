@@ -6,10 +6,38 @@
 // existing values. Pure + unit-tested. Budgets v2 is a permanent part of the app.
 
 import type {
-  Transaction, Budget, Debt, Goal, RecurringSchedule, ExchangeRates, BudgetPeriod,
+  Transaction, Budget, Debt, RecurringSchedule, ExchangeRates, BudgetPeriod,
 } from '../types';
 import { spendByCategory, monthlyData, periodMonths } from './calculations';
 import { getMonthKey, nowMonthKey } from './format';
+import { EXPENSE_CATEGORIES, LEGACY_CATEGORY_ALIASES } from '../constants';
+import { ruleOf, isLoanEmiSchedule } from './recurring';
+
+const EXPENSE_IDS = new Set<string>(EXPENSE_CATEGORIES.map(c => c.id));
+
+/**
+ * W4h (v10.77.0; owner decision D27) — the category a budget line can carry: the CURRENT expense id
+ * (a legacy id like `rent` or `transport` resolved through LEGACY_CATEGORY_ALIASES), or null for
+ * anything the budget form does not show (`savings` from the retired Goals, income ids, unknown ids).
+ * A line the form cannot show was still counted and saved: the "huge total, tiny split" report.
+ */
+export function budgetCategoryOf(id: string | null | undefined): string | null {
+  if (!id) return null;
+  const current = LEGACY_CATEGORY_ALIASES[id] ?? id;
+  return EXPENSE_IDS.has(current) ? current : null;
+}
+
+/** How often a schedule's own rule falls in a year (W3e: the rule, not the frequency label). */
+function timesPerYear(s: RecurringSchedule): number {
+  const r = ruleOf(s);
+  const every = Math.max(1, r.interval);
+  switch (r.freq) {
+    case 'DAILY': return 365 / every;
+    case 'WEEKLY': return (52 / every) * Math.max(1, r.byDay?.length ?? 1);
+    case 'MONTHLY': return (12 / every) * (r.bySetPos?.length ? 1 : Math.max(1, r.byMonthDay?.length ?? 1));
+    default: return 1 / every;
+  }
+}
 
 // ── B2.4(a) — copy from previous month ─────────────────────────────────────────
 /** Clone the category + limit set so the user can carry a budget forward. Returns
@@ -24,67 +52,64 @@ export interface BudgetSuggestion {
   /** Proposed monthly limit, rounded. */
   limit: number;
   /** Where the number came from — shown so the proposal is transparent (A1). */
-  basis: 'recurring' | 'debt' | 'goal' | 'history';
+  basis: 'recurring' | 'debt' | 'history';
 }
 
-/** Build an editable budget proposal. Each line is traceable to a real source:
- *  recurring fixed costs (by category), debt minimum payments, goal monthly pace,
- *  and a 3-month spending average for categories with neither. Never invents money. */
+/**
+ * Build an editable budget proposal (W4h, owner decision D27). Every line is a category the budget
+ * form SHOWS (budgetCategoryOf) and traceable to a real source:
+ *   • recurring — active expense schedules, monthly-normalised from each one's own rule (a daily bill
+ *     is ×365/12, a quarterly one ÷3) and SUMMED per category (two bills in one category are both paid);
+ *   • debt      — each live loan's EMI, once (receivables and paid-off loans are not the household's to
+ *     pay; an EMI schedule is not counted on top — it is the same EMI);
+ *   • history   — the last three completed months' average, where that is more than the commitments.
+ * No goal line (Goals are retired) and no category the form hides. Never invents money.
+ */
 export function suggestBudget(input: {
   transactions: Transaction[];
   debts: Debt[];
-  goals: Goal[];
   recurring: RecurringSchedule[];
   baseCurrency: string;
   rates: ExchangeRates;
 }): BudgetSuggestion[] {
-  const { transactions, debts, goals, recurring, baseCurrency, rates } = input;
-  const byCat = new Map<string, BudgetSuggestion>();
-  const put = (category: string, limit: number, basis: BudgetSuggestion['basis']) => {
-    const rounded = Math.round(limit);
-    if (rounded <= 0) return;
-    const existing = byCat.get(category);
-    // Prefer the more concrete basis; otherwise take the larger estimate.
-    if (!existing || rounded > existing.limit) byCat.set(category, { category, limit: rounded, basis });
+  const { transactions, debts, recurring, baseCurrency, rates } = input;
+  const committed = new Map<string, { amount: number; basis: BudgetSuggestion['basis'] }>();
+  const add = (category: string, amount: number, basis: BudgetSuggestion['basis']) => {
+    const current = committed.get(category);
+    committed.set(category, { amount: (current?.amount ?? 0) + amount, basis: current?.basis ?? basis });
   };
 
-  // Recurring fixed costs → their category (monthly-normalised).
   for (const r of recurring) {
     const t = r.transactionTemplate;
-    if (!t || t.type !== 'expense') continue;
-    const monthly = r.frequency === 'weekly' ? t.amount * 52 / 12
-      : r.frequency === 'yearly' ? t.amount / 12
-      : t.amount; // monthly / custom_day ≈ monthly
-    put(t.category, monthly, 'recurring');
+    if (!t || t.type !== 'expense' || r.active === false || isLoanEmiSchedule(r)) continue;
+    const category = budgetCategoryOf(t.category);
+    if (!category || !(t.amount > 0)) continue;
+    add(category, (t.amount * timesPerYear(r)) / 12, 'recurring');
   }
 
-  // Debt minimum payments → the v9 loan_emi category (txn-redesign §3).
-  const debtMin = debts.reduce((s, d) => s + (d.minimumPayment || 0), 0);
-  if (debtMin > 0) put('loan_emi', debtMin, 'debt');
-
-  // Goal monthly pace → savings category.
-  let goalMonthly = 0;
-  for (const g of goals) {
-    if (g.completed || g.target <= g.current) continue;
-    const remaining = g.target - g.current;
-    const months = g.deadline
-      ? Math.max(1, Math.ceil((new Date(g.deadline).getTime() - Date.now()) / (30 * 86400000)))
-      : 12;
-    goalMonthly += remaining / months;
+  for (const d of debts) {
+    if ((d.direction ?? 'owed_by_me') === 'owed_to_me' || d.paidOffAt || !(d.currentBalance > 0)) continue;
+    if (d.minimumPayment > 0) add('loan_emi', d.minimumPayment, 'debt');
   }
-  if (goalMonthly > 0) put('savings', goalMonthly, 'goal');
 
-  // Fill remaining everyday categories from a 3-month average where no proposal yet.
+  // The last three completed months' average, by the category the form shows.
   const months = [...new Set(transactions.map(t => getMonthKey(t.date)))].sort().filter(m => m !== nowMonthKey()).slice(-3);
-  const avg = new Map<string, number>();
+  const average = new Map<string, number>();
   for (const mk of months) {
-    for (const [cat, amt] of Object.entries(spendByCategory(transactions, mk, baseCurrency, rates))) {
-      avg.set(cat, (avg.get(cat) || 0) + amt / months.length);
+    for (const [raw, amt] of Object.entries(spendByCategory(transactions, mk, baseCurrency, rates))) {
+      const category = budgetCategoryOf(raw);
+      if (category) average.set(category, (average.get(category) || 0) + amt / months.length);
     }
   }
-  for (const [cat, amt] of avg) if (!byCat.has(cat)) put(cat, amt, 'history');
 
-  return [...byCat.values()].sort((a, b) => b.limit - a.limit);
+  const out = new Map<string, BudgetSuggestion>();
+  for (const [category, { amount, basis }] of committed) out.set(category, { category, limit: Math.round(amount), basis });
+  for (const [category, amount] of average) {
+    const limit = Math.round(amount);
+    const existing = out.get(category);
+    if (!existing || limit > existing.limit) out.set(category, { category, limit, basis: 'history' });
+  }
+  return [...out.values()].filter(s => s.limit > 0).sort((a, b) => b.limit - a.limit);
 }
 
 // ── B2.2 — budget history & timeline ────────────────────────────────────────────

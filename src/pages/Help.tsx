@@ -1,228 +1,117 @@
 import { useState } from 'react';
-import { Mail } from 'lucide-react';
-import { useTranslation } from '../hooks';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Banknote, CalendarClock, ChevronDown, ExternalLink, Search, X } from 'lucide-react';
+import Button from '../components/ui/Button';
+import { Panel } from '../components/ui/Card';
+import { Field, Input, Textarea } from '../components/ui/Input';
+import { HELP_TOPICS, searchHelpTopics, type HelpTopic } from '../lib/helpContent';
+import HelpTopicBody from '../components/help/HelpTopicBody';
+import PageHead from '../components/ui/PageHead';
 
-// Temporary support inbox — Section 14 of the Privacy Policy / 13 of the Terms
-// / 7 of the Cookie Policy all point here. Will move to a ticketing system as
-// the support volume grows past what a single inbox can triage.
-const SUPPORT_EMAIL = 'uday.kr27@gmail.com';
-
-interface Media { src: string; alt: string; }
-interface Section { q: string; a: string | JSX.Element; media?: Media; }
-
-const SECTIONS: Section[] = [
-  {
-    q: 'Getting started & keyboard shortcuts',
-    a: (
-      <div className="space-y-3">
-        <p>
-          Sign up with your email and you're in — your first household is created automatically, and
-          onboarding (template → household size → primary concern → currency) is optional, not a wall.
-          Add your first transaction from the Dashboard or Transactions page, or press <b>N</b>.
-        </p>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-[0.84rem]">
-          {[['N','Add transaction'],['G','Add goal'],['D','Add debt'],['A','Add asset'],['/','Focus search'],['Esc','Close modal']].map(([k, v]) => (
-            <div key={k} className="flex items-center gap-2">
-              <kbd className="font-mono text-[0.72rem] bg-bg3 border border-line rounded px-2 py-0.5 text-ink">{k}</kbd>
-              <span className="text-ink-mid">{v}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    ),
-    media: { src: '/help/getting-started.webp', alt: 'Vyact dashboard overview' },
-  },
-  {
-    q: 'Adding transactions — types, payment methods & privacy',
-    a: 'Press N or click Add Transaction. Pick a type: Expense and Income count toward your cash-flow totals and Pulse Score; Investment records an outflow linked to an Asset; Transfer moves money between accounts (neutral, excluded from totals). Tag a payment method, a household member, make it recurring, or mark it 🔒 Private to hide it from all aggregations.',
-    media: { src: '/help/add-transaction.gif', alt: 'Adding a transaction step by step' },
-  },
-  {
-    q: 'Splitting a bill — and shared income',
-    a: 'In the Add Transaction modal, tick "🤝 Split this bill" on an expense (or "🤝 Share this income with others" on an income). Choose who paid (or received the money) and add each participant with their share — the shares must add up to the total. Only your share counts toward your own expenses or income; the rest is tracked as IOUs on the Splits page where you Mark paid / Settle each balance and see total owed-to-you vs you-owe. On a "you owe" row, click Track as debt to convert the IOU into a real Debt that shows up on the Debts page and reduces your Net Worth — useful when the obligation is going to outlive a quick reimbursement (e.g. a friend covered your half of a deposit).',
-    media: { src: '/help/split-bill.gif', alt: 'Splitting a bill across participants' },
-  },
-  {
-    q: 'Saved Views — reusable filters on Transactions, Reports & Insights',
-    a: (
-      <div className="space-y-3">
-        <p>
-          Saved Views remember the filters you applied to Transactions, Reports, or Insights so you
-          can recall them in one click instead of re-picking month / category / track every time.
-          Use the <strong>Save view</strong> button on each page to capture the current filter set,
-          then pick it from the <strong>Views</strong> dropdown later.
-        </p>
-        <p className="text-[0.82rem]">
-          <strong>Common use cases:</strong> "Q1 dining out", "Salary by member", "Rent &
-          utilities", "This year's investments only", "Insights I've favourited".
-        </p>
-        <p className="text-[0.82rem]">
-          <strong>Sharing.</strong> Tick <em>Share with household</em> on save to make a view
-          visible to other members of the same household; leave it unchecked to keep it private to
-          your account. Either way, search terms, member ids, and transaction ids are
-          <strong> always stripped before saving</strong> — saved views can never leak free-text
-          notes or who-spent-what details to other people.
-        </p>
-        <p className="text-[0.82rem] text-ink-dim">
-          Saved Views require a cloud account (they're row-level-security scoped per household).
-          Local-only mode hides the bar entirely.
-        </p>
-      </div>
-    ),
-    media: { src: '/help/saved-views.webp', alt: 'Saved Views bar on the Reports page' },
-  },
-  {
-    q: 'The Family Pulse Score',
-    a: 'A single 0–100 health score from 5 components: Budget Compliance (25%), Savings Rate (25%), Goal Progress (15%), Expense Trend (15%), Debt Health (20%). Bands: Excellent ≥ 80 · Good ≥ 65 · Fair ≥ 45 · Needs Work below. It updates live as you add data.',
-              media: { src: '/help/getting-started.webp', alt: 'Vyact dashboard overview' },
-  },
-  {
-    q: 'Budgets & Goals',
-    a: 'Budgets: set a spending limit per category; progress bars go green (on-track) → amber (≥ 80%) → red (over), and you can pick monthly, quarterly, half-yearly, annual or custom windows. Goals: six types (Emergency Fund, Savings, Debt Payoff, Investment, Purchase, Custom) with a target, optional deadline, and a "+ Progress" button to log contributions.',
-    media: { src: '/help/budgets-goals.webp', alt: 'Budgets page with category progress bars' },
-  },
-  {
-    q: 'Debt payoff & Net Worth',
-    a: 'Debts: add each balance, APR and minimum payment, then choose Avalanche (highest APR first — saves the most interest) or Snowball (smallest balance first — faster wins). Vyact ranks them, shows months-to-payoff, and splits each recorded payment into interest vs principal. Net Worth: assets − liabilities, grouped by liquidity, with Liquidity, Debt-to-Asset, Emergency Coverage and Savings ratios.',
-    media: { src: '/help/debt-networth.webp', alt: 'Debts page with payoff strategy' },
-  },
-  {
-    q: 'Planner, Insights & Recurring',
-    a: 'Planner is a deterministic rules engine (no AI, no hallucination) that reviews your data and surfaces prioritised recommendations across Income, Expenses, Investments, Debt and Tax (Critical · Watch · Info). Insights is your reading list of articles published by the Vyact team — search and favourite them. Recurring manages repeating transactions (weekly/monthly/yearly/custom) with auto-confirm or reminder lead-days.',
-    media: { src: '/help/planner.webp', alt: 'Planner recommendations' },
-  },
-  {
-    q: 'Households, currency, backup, themes & privacy',
-    a: 'Create multiple households (Personal, Family, Business) and switch between them — each has isolated data, and you can invite others by email with a role (Admin/Member/Viewer/Child) enforced by database row-level security. Every record stores its own currency and converts to your base currency via the editable rates table. Back up to JSON or CSV from Settings → Sync. Three themes (Paper Warm, Dark, System), six languages, and — in cloud mode — RLS-isolated data over a PKCE auth flow.',
-    media: { src: '/help/settings.webp', alt: 'Households and settings' },
-  },
-];
+const SUPPORT_EMAIL = 'support@vyact.app';
+const GROUPS: HelpTopic['group'][] = ['Start here', 'Everyday money', 'Planning', 'Access and support'];
 
 export default function Help() {
-  const { t } = useTranslation();
-  const [open, setOpen]   = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [ticketSubject, setTicketSubject] = useState('');
   const [ticketMessage, setTicketMessage] = useState('');
+  const [emailAttempted, setEmailAttempted] = useState(false);
+  const filtered = searchHelpTopics(query);
+  const searching = query.trim().length > 0;
 
-  function sendTicket(e: React.FormEvent) {
-    e.preventDefault();
-    const subject = encodeURIComponent(ticketSubject || 'Vyact support request');
-    const body = encodeURIComponent(ticketMessage);
+  function sendEmail(event: React.FormEvent) {
+    event.preventDefault();
+    const subject = encodeURIComponent(ticketSubject.trim() || 'Vyact support request');
+    const body = encodeURIComponent(`${ticketMessage.trim()}\n\nVyact Consumer v${__APP_VERSION__}`);
     window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+    setEmailAttempted(true);
   }
 
-  const filtered = query.trim()
-    ? SECTIONS.filter(s => s.q.toLowerCase().includes(query.toLowerCase()) || (typeof s.a === 'string' && s.a.toLowerCase().includes(query.toLowerCase())))
-    : SECTIONS;
-
+  // v10.59.0 (owner) — the same type and layout as Households, the app's default page style:
+  // display-italic title with no caption, display-italic section headings, content in Panels.
   return (
-    <div>
-      <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
-        <div>
-          <h1 className="display-italic text-4xl text-ink mb-1.5">{t('help')}</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            {SECTIONS.length} topics · with screenshots &amp; guides
-          </p>
+    <div className="ui-pilot">
+      <PageHead title="Help & Guide" />
+
+      <h2 id="help-start" className="display-italic text-2xl text-ink mb-3">Your next step</h2>
+      <Panel className="mb-6">
+        <div className="grid sm:grid-cols-3">
+          {[
+            { to: '/accounts', label: 'Set up an account', detail: 'Start with the money you use.', icon: Banknote },
+            { to: '/transactions', label: 'Record an entry', detail: 'An expense, income or money move.', icon: ArrowRight },
+            { to: '/recurring', label: 'Plan a repeating bill', detail: 'Keep its next date in view.', icon: CalendarClock },
+          ].map(({ to, label, detail, icon: Icon }) => (
+            <Link key={to} to={to} className="flex items-start gap-3 p-4 min-h-[44px] text-ink hover:text-coral border-b sm:border-b-0 sm:border-r last:border-0 border-line">
+              <Icon size={18} aria-hidden className="shrink-0 mt-0.5 text-coral" />
+              <span className="min-w-0"><span className="block font-semibold">{label}</span><span className="block text-[0.78rem] text-ink-mid mt-0.5">{detail}</span></span>
+            </Link>
+          ))}
         </div>
-      </div>
+      </Panel>
 
-      {/* Contact / raise a support ticket */}
-      <div id="contact" className="bg-bg3 border border-line rounded-lg p-5 mb-5 scroll-mt-20">
-        <div className="flex items-center gap-2 mb-2">
-          <Mail size={16} className="text-coral" />
-          <h2 className="text-lg font-semibold text-ink">Contact support</h2>
-        </div>
-        <p className="text-[0.84rem] text-ink-mid mb-3">
-          Raise a support ticket, ask a question about your data, or flag a privacy/legal concern.
-          This currently routes to a monitored inbox (<strong className="text-ink">{SUPPORT_EMAIL}</strong>,
-          temporary — we'll add in-app ticketing and more channels as we grow).
-        </p>
-        <form onSubmit={sendTicket} className="space-y-3">
-          <input
-            className="input w-full"
-            value={ticketSubject}
-            onChange={e => setTicketSubject(e.target.value)}
-            placeholder="Subject (e.g. Account deletion question)"
-          />
-          <textarea
-            className="input w-full min-h-24"
-            value={ticketMessage}
-            onChange={e => setTicketMessage(e.target.value)}
-            placeholder="Describe what you need help with…"
-          />
-          <button type="submit" className="btn-primary">
-            <Mail size={14} /> Send via email
-          </button>
-        </form>
-      </div>
-
-      {/* Search */}
-      <div className="mb-5">
-        <input
-          className="input w-full"
-          value={query}
-          onChange={e => { setQuery(e.target.value); setOpen(null); }}
-          placeholder="Search help topics…"
-        />
-      </div>
-
-      {/* Accordion */}
-      <div className="space-y-2">
-        {filtered.length === 0 && (
-          <div className="text-center py-10 text-ink-mid">
-            No topics match "{query}"
+      <Panel title="Search Help & Guide" className="mb-6">
+        <div className="p-4">
+          <Input type="search" value={query} placeholder="Try cash, split, investment or sync" aria-label="Search Help & Guide"
+            onChange={event => setQuery(event.target.value)} autoComplete="off" />
+          <div className="flex items-center justify-between gap-3 min-h-[44px] mt-1">
+            <p role="status" className="text-[12px] text-ink-dim flex items-center gap-2"><Search size={12} aria-hidden />
+              {searching ? `${filtered.length} matching ${filtered.length === 1 ? 'answer' : 'answers'}` : `${HELP_TOPICS.length} answers`}
+            </p>
+            {searching && <Button variant="ghost" onClick={() => setQuery('')}><X size={14} aria-hidden /> Clear search</Button>}
           </div>
-        )}
-        {filtered.map((s, i) => {
-          const isOpen = open === i;
-          return (
-            // Board E — .faq: neu accordion, deeper shadow while open.
-            <div key={i} className="rounded-r2 overflow-hidden transition-shadow" style={{ background: 'var(--canvas)', boxShadow: isOpen ? 'var(--neu)' : 'var(--neu-sm)' }}>
-              <button
-                className="w-full text-left px-4 py-3.5 flex items-center justify-between gap-4 border-none bg-transparent cursor-pointer"
-                onClick={() => setOpen(isOpen ? null : i)}
-              >
-                <span className="font-semibold text-ink text-[0.9rem] leading-snug">{s.q}</span>
-                <span className="text-ink-dim flex-shrink-0 transition-transform" style={{ transform: isOpen ? 'rotate(45deg)' : 'rotate(0deg)' }} aria-hidden>
-                  +
-                </span>
-              </button>
-              {isOpen && (
-                <div className="px-4 pb-4 text-[0.84rem] text-ink-mid leading-relaxed">
-                  <div>{s.a}</div>
-                  {s.media && (
-                    <figure className="mt-4">
-                      <img
-                        src={s.media.src}
-                        alt={s.media.alt}
-                        loading="lazy"
-                        className="w-full rounded-lg shadow-sm bg-bg2"
-                        onError={e => { (e.currentTarget.closest('figure') as HTMLElement)?.style.setProperty('display', 'none'); }}
-                      />
-                      <figcaption className="mt-1.5 font-mono text-[0.58rem] tracking-wider uppercase text-ink-dim">
-                        {s.media.alt}
-                      </figcaption>
-                    </figure>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+          {!searching && <nav aria-label="Help topics" className="flex flex-wrap gap-x-5 gap-y-1">
+            {GROUPS.map(group => <a key={group} href={`#help-${group.toLowerCase().replace(/ /g, '-')}`}
+              className="text-[13px] font-medium text-coral inline-flex items-center min-h-[44px]">{group}</a>)}
+          </nav>}
+        </div>
+      </Panel>
 
-      {/* Footer tip */}
-      <div className="mt-8 text-center">
-        <p className="text-[0.8rem] text-ink-dim">
-          Something missing? Use the <span className="font-semibold text-ink">Planner</span> for personalised recommendations,
-          or <span className="font-semibold text-ink">Ask Vyact</span> for AI-powered answers about your data.
-        </p>
-        {/* Version sub-note — sourced from package.json at build time */}
-        <p className="num mt-3 font-mono text-[0.6rem] tracking-[0.12em] uppercase text-ink-dim">
-                    Vyact Consumer · v{__APP_VERSION__}
-        </p>
-      </div>
+      {filtered.length === 0 && (
+        <Panel className="mb-6">
+          <section className="p-5" aria-label="No matching answers">
+            <h2 className="font-semibold text-ink mb-1">No answers found</h2>
+            <p className="text-[0.85rem] text-ink-mid">Try a shorter search, or <a href="#contact" className="text-coral underline">email support</a> with your question.</p>
+          </section>
+        </Panel>
+      )}
+
+      {GROUPS.map(group => {
+        const topics = filtered.filter(topic => topic.group === group);
+        if (!topics.length) return null;
+        const groupId = `help-${group.toLowerCase().replace(/ /g, '-')}`;
+        return <section key={group} aria-labelledby={groupId} className="mb-6">
+          <h2 id={groupId} className="display-italic text-2xl text-ink mb-3 scroll-mt-36">{group}</h2>
+          <Panel>
+            {topics.map(topic => <details key={`${topic.id}-${searching}`} open={searching ? true : undefined} className="group border-b border-line last:border-0">
+              <summary className="list-none [&::-webkit-details-marker]:hidden flex items-center justify-between gap-4 px-4 py-3.5 cursor-pointer min-h-[52px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-coral">
+                <h3 className="font-semibold leading-snug">{topic.question}</h3>
+                <ChevronDown size={18} aria-hidden className="shrink-0 text-ink-dim group-open:rotate-180" />
+              </summary>
+              <div className="px-4 pb-5">
+                <HelpTopicBody topic={topic} />
+              </div>
+            </details>)}
+          </Panel>
+        </section>;
+      })}
+
+      <section id="contact" aria-labelledby="help-contact" className="mb-6 scroll-mt-36">
+        <h2 id="help-contact" className="display-italic text-2xl text-ink mb-3">Contact support</h2>
+        <Panel>
+          <div className="p-5">
+            <p className="text-[0.85rem] text-ink-mid leading-relaxed mb-4 max-w-2xl">Tell us which page you were on, what you expected and what happened. Leave out passwords, verification codes and full account numbers. Redact financial details from any screenshot you attach.</p>
+            <form onSubmit={sendEmail} className="max-w-2xl">
+              <Field label="Subject"><Input value={ticketSubject} onChange={event => setTicketSubject(event.target.value)} required maxLength={160} /></Field>
+              <Field label="What happened?" hint="Include the page name and any error message."><Textarea value={ticketMessage} onChange={event => setTicketMessage(event.target.value)} required maxLength={4000} /></Field>
+              <Button type="submit"><ExternalLink size={16} aria-hidden /> Open email draft</Button>
+            </form>
+            <p className="text-[0.75rem] text-ink-dim mt-3 leading-relaxed">Opens your email app; nothing is sent until you send it there. You can also email <a className="text-coral underline break-all" href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>.</p>
+            {emailAttempted && <p role="status" className="text-[0.85rem] text-ink-mid mt-3">If no draft opened, use the email address above. No support ticket has been submitted here.</p>}
+            <div className="flex flex-wrap gap-5 mt-4 text-[13px] font-medium"><Link to="/privacy" className="text-coral">Privacy</Link><Link to="/terms" className="text-coral">Terms</Link></div>
+          </div>
+        </Panel>
+      </section>
+      <p className="text-[12px] text-ink-dim">Vyact Consumer v{__APP_VERSION__}</p>
     </div>
   );
 }

@@ -29,8 +29,8 @@ export default function PulseGauge({ score }: Props) {
   };
 
   return (
-    <div className="rounded-r4 p-4 relative overflow-hidden text-center" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
-      <div className="mono-label mb-3.5" style={{ color: 'var(--accent)' }}>
+    <div className="rounded-r3 p-4 relative overflow-hidden text-center" style={{ background: 'var(--elevated)', boxShadow: 'var(--neu)' }}>
+      <div className="mono-label mb-3.5" style={{ color: 'var(--accent-text)' }}>
         Family Pulse Score™
       </div>
       <div className="flex justify-center mb-3">

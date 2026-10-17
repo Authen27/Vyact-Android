@@ -1,11 +1,14 @@
-import { Lock, ArrowRightLeft, TrendingUp, Users, Pencil } from 'lucide-react';
+import { ArrowRightLeft, TrendingUp, Users, Pencil } from 'lucide-react';
 import type { Transaction } from '../../types';
 import { useStore } from '../../store';
 import { getCat } from '../../constants';
 import { formatDate, formatTime } from '../../lib/format';
-import { resolveAccount } from '../../lib/accounts';
+import { txnAccountLabel } from '../../lib/accounts';
+import { isLoanPrincipalRow } from '../../lib/calculations';
+import { PAYMENT_MODE_LABEL } from '../../lib/accountsView';
 import Badge from '../ui/Badge';
 import Money from '../ui/Money';
+import EstimatedTag from '../ui/EstimatedTag';
 
 interface Props {
   txn: Transaction;
@@ -19,17 +22,22 @@ export default function TxnRow({ txn: t, showActions = false, onEdit }: Props) {
   const baseCurrency = useStore(s => s.profile.baseCurrency);
   const assets = useStore(s => s.assets);
   const debts2 = useStore(s => s.debts);
+  const accounts = useStore(s => s.accounts);
 
   const cat = getCat(t.category);
   // Board B — the account rides in the SUB-LINE ("Groceries · Today · Visa"),
   // not as a leading chip.
-  const acct = t.paymentMethod ? resolveAccount(t.paymentMethod, assets, debts2) : null;
+  // W7a (FE-UIC-16): the accounts FK names the account (it used to read "Linked account").
+  const acctLabel = txnAccountLabel(t, accounts, assets, debts2);
   const member = members.find(m => m.id === t.memberId);
-  const cur = t.currency || baseCurrency;
-  const showCur = cur !== baseCurrency;
+  // W3b (D14): every row counts at face value in the household's currency, so it is SHOWN in it
+  // too — an old row's own label would contradict the totals it is part of.
+  const cur = baseCurrency;
   const isInv   = t.type === 'investment';
   const isXfer  = t.type === 'transfer';
   const isSplit = t.split?.isSplit;
+  // Track E (v10.97.0) — a loan payment's principal stays a transfer, but counts as Loan / EMI spending.
+  const loanSpend = isLoanPrincipalRow(t);
 
   const sign  = t.type === 'income' ? '+' : isInv ? '↗' : isXfer ? '⇄' : '−';
   const amtCls= t.type === 'income'  ? 'text-olive'
@@ -40,6 +48,14 @@ export default function TxnRow({ txn: t, showActions = false, onEdit }: Props) {
   const amount = isSplit ? t.split!.yourShare : t.amount;
 
   const wrapperBg = t.excluded ? 'opacity-65' : isInv ? 'bg-honey/[0.04]' : isXfer ? 'bg-denim/[0.03]' : '';
+
+  // Honest data (CLAUDE.md, binding): any value whose confidence !== 'confirmed'
+  // renders <EstimatedTag/>. Legacy/user rows carry no `confidence` at all, so
+  // this is false for every row that exists today and the markup is unchanged
+  // for them. It sits beside the amount rather than in the `hidden sm:flex`
+  // badge column — the badge column disappears on mobile, and an honesty marker
+  // that vanishes on the primary surface is not an honesty marker.
+  const unconfirmed = t.confidence !== undefined && t.confidence !== 'confirmed';
   const clickable = showActions && onEdit;
 
   return (
@@ -56,7 +72,7 @@ export default function TxnRow({ txn: t, showActions = false, onEdit }: Props) {
           account remains visible in the edit sheet and via filters. Transfer/
           investment rows get their type glyph on a denim tint. */}
       <div
-        className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center text-base flex-shrink-0"
+        className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-base flex-shrink-0"
         style={{
           background: (isXfer || isInv)
             ? 'color-mix(in srgb, hsl(var(--denim)) 15%, transparent)'
@@ -74,21 +90,27 @@ export default function TxnRow({ txn: t, showActions = false, onEdit }: Props) {
           {t.recurring && <span aria-label={`Recurring ${t.recurring}`} title={`Recurring · ${t.recurring}`} className="ml-1.5 text-ink-dim text-[0.72rem]">↻</span>}
         </div>
         <div className="font-mono text-[0.59rem] text-ink-dim mt-px truncate">
-          {(isXfer || isInv) ? (isXfer ? 'Transfer' : 'Investment') : cat.label} · {formatDate(t.date, dateFormat)}{t.time ? ` · ${formatTime(t.time)}` : ''}{acct ? ` · ${acct.label}` : ''}{t.note ? ' · ' + t.note : ''}
+          {loanSpend ? 'Loan principal · counted in Loan / EMI spending' : (isXfer || isInv) ? (isXfer ? 'Transfer' : 'Investment') : cat.label} · {formatDate(t.date, dateFormat)}{t.time ? ` · ${formatTime(t.time)}` : ''}{acctLabel ? ` · ${acctLabel}` : ''}{t.paymentMode ? ` · ${PAYMENT_MODE_LABEL[t.paymentMode]}` : ''}{t.note ? ' · ' + t.note : ''}
+          {/* v10.55.0 (#69) — who added it, on phones too (the badge column is sm+ only). */}
+          {member && members.length > 1 && <span className="sm:hidden" data-testid="txn-added-by"> · {member.name}</span>}
         </div>
       </div>
+      {unconfirmed && (
+        <EstimatedTag confidence={t.confidence!} source={t.source} className="flex-shrink-0" />
+      )}
       <div className={`font-mono text-[0.86rem] font-medium whitespace-nowrap flex items-center gap-0.5 ${amtCls}`}>
         <span aria-hidden>{sign}</span>
         <Money amount={amount} currency={cur} maxChars={14} />
       </div>
 
       <div className="hidden sm:flex flex-col gap-0.5 items-end flex-shrink-0">
-        {t.excluded && <Badge tone="neutral"><Lock size={10}/> Private</Badge>}
+        {/* W0 (FE-PUB-01) — "excluded" leaves totals; it never hides the row from the
+            household, so it must not wear a lock or say "Private". */}
+        {t.excluded && <Badge tone="neutral">Not in totals</Badge>}
         {isInv      && <Badge tone="warn"><TrendingUp size={10}/> Invest</Badge>}
         {isXfer     && <Badge tone="denim"><ArrowRightLeft size={10}/> Transfer</Badge>}
         {isSplit    && <Badge tone="plum"><Users size={10}/> Split {t.split!.participants.length}</Badge>}
         {member     && <Badge tone="denim">{member.name}</Badge>}
-        {showCur    && <Badge tone="plum">{cur}</Badge>}
       </div>
 
       {/* Edit affordance overlays the right edge on hover instead of reserving a

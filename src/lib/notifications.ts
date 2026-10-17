@@ -5,20 +5,25 @@
 // This pass WIRES the types whose producing data already exists synchronously:
 //   recurring_due_confirm · recurring_reminder · budget_threshold ·
 //   debt_payment_due · stale_balance · income_landed.
-// The remaining types (recurring_posted, insight_fresh, trend_alert,
-// member_activity, sync_conflict, invite_received, milestone) keep their type +
+// The remaining types (recurring_posted, member_activity, sync_conflict, milestone) keep their type +
 // NOTIF_META + settings toggle so the sheet renders them, but their producers
 // are follow-ups (need a query/engine not available in this synchronous pass —
-// e.g. trend detection, activity-log subscription, invite lookup). sync_conflict
-// already has its persistent banner.
+// e.g. an activity-log subscription). v10.107.0: trend_alert and insight_fresh are Pip's nudges
+// (pipNudgeNotifs). sync_conflict
+// already has its persistent banner. invite_received and invite_pending (v10.95.0) are built from
+// live invitation lists and never saved (see "Household invitations" below).
 
 import type {
   Notification, NotifType, NotifPriority, NotifActionSpec, NotificationPrefs,
-  RecurringSchedule, Transaction, Budget, Debt, Account, ExchangeRates, SharedSplit,
+  RecurringSchedule, Transaction, Budget, BudgetAllocation, Debt, Account, ExchangeRates, SharedSplit, AppRole,
 } from '../types';
-import { uid, today, getMonthKey, fmt } from './format';
-import { upcomingSchedules } from './recurring';
-import { spendByCategory } from './calculations';
+import { uid, today, getMonthKey, fmt, convert } from './format';
+import { upcomingSchedules, isLoanEmiSchedule } from './recurring';
+import { spendByCategoryInRange, spendByCategory } from './calculations';
+import { getCat } from '../constants';
+import { staleAccounts } from './accountsView';
+import { roleLabel } from './permissions';
+import type { MyInvitation, HouseholdInvitation } from './invitations';
 
 // ── Per-type render metadata (icon glyph + default tint + priority) ──────────
 export interface NotifMeta { icon: string; tint: string; priority: NotifPriority }
@@ -39,6 +44,7 @@ export const NOTIF_META: Record<NotifType, NotifMeta> = {
   split_received:        { icon: '🤝', tint: 'var(--accent)', priority: 'P1' },
   split_settled:         { icon: '🤝', tint: 'var(--good)', priority: 'P2' },
   split_closed:          { icon: '🤝', tint: 'var(--ff-ink-3)', priority: 'P2' },
+  invite_pending:        { icon: '⌂', tint: 'var(--info)', priority: 'P1' },
 };
 
 /** Settings grouping (Settings ▸ Notifications). */
@@ -46,7 +52,7 @@ export const NOTIF_GROUPS: { label: string; types: NotifType[] }[] = [
   { label: 'Money movement', types: ['recurring_due_confirm', 'recurring_reminder', 'recurring_posted', 'income_landed'] },
   { label: 'Budgets & debts', types: ['budget_threshold', 'debt_payment_due'] },
   { label: 'Insights',        types: ['insight_fresh', 'trend_alert', 'milestone'] },
-  { label: 'Household',       types: ['invite_received', 'member_activity'] },
+  { label: 'Household',       types: ['invite_received', 'invite_pending', 'member_activity'] },
   { label: 'Splits',          types: ['split_received', 'split_settled', 'split_closed'] },
   { label: 'System',          types: ['stale_balance', 'sync_conflict'] },
 ];
@@ -68,6 +74,7 @@ export const NOTIF_TYPE_LABEL: Record<NotifType, string> = {
   split_received:        'Split shared with you',
   split_settled:         'Split settled',
   split_closed:          'Split closed',
+  invite_pending:        'Invitation waiting',
 };
 
 /** `sync_conflict` can never be silenced (spec §4). */
@@ -97,13 +104,13 @@ export function isInQuietHours(prefs: NotificationPrefs, now = new Date()): bool
 
 // ── helpers ──────────────────────────────────────────────────────────────
 const iso = () => new Date().toISOString();
-function daysUntil(dateStr: string): number {
+function daysUntil(dateStr: string, tz?: string | null): number {
   const d = new Date(dateStr + 'T00:00:00').getTime();
-  const now = new Date(today() + 'T00:00:00').getTime();
+  const now = new Date(today(tz) + 'T00:00:00').getTime();
   return Math.round((d - now) / 86400000);
 }
-function relDate(dateStr: string): string {
-  const n = daysUntil(dateStr);
+function relDate(dateStr: string, tz?: string | null): string {
+  const n = daysUntil(dateStr, tz);
   if (n === 0) return 'today';
   if (n === 1) return 'tomorrow';
   if (n === -1) return 'yesterday';
@@ -115,6 +122,8 @@ interface Ctx {
   householdId: string;
   baseCurrency: string;
   rates: ExchangeRates;
+  /** W3a — the household's zone on the server; absent in the app (the device's day). */
+  tz?: string | null;
 }
 function base(type: NotifType, dedupeKey: string, ctx: Ctx): Pick<Notification, 'id' | 'type' | 'priority' | 'status' | 'createdAt' | 'householdId' | 'dedupeKey'> {
   return { id: uid(), type, priority: NOTIF_META[type].priority, status: 'unread', createdAt: iso(), householdId: ctx.householdId, dedupeKey };
@@ -125,16 +134,19 @@ function base(type: NotifType, dedupeKey: string, ctx: Ctx): Pick<Notification, 
 /** 1 · recurring_due_confirm (P1) — due/overdue, active, auto-confirm OFF. */
 export function recurringDueNotifs(schedules: RecurringSchedule[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
   if (!typeEnabled(prefs, 'recurring_due_confirm')) return [];
-  const now = today();
+  const now = today(ctx.tz);
   const out: Notification[] = [];
   for (const s of schedules) {
     if (!s.active || s.autoConfirm || s.nextDueDate > now) continue;
+    // Track E, E6a (owner, E-3): a leftover EMI schedule cannot be approved (the loan pays its EMI, and
+    // the loan's own EMI-day reminder asks for it).
+    if (isLoanEmiSchedule(s)) continue;
     const key = `recurring_due_confirm:${s.id}:${s.nextDueDate}`;
     if (existing.some(n => n.dedupeKey === key)) continue;
     const amt = s.transactionTemplate.amount ?? 0;
     out.push({
       ...base('recurring_due_confirm', key, ctx),
-      title: `${s.transactionTemplate.description} · ${fmt(amt, s.transactionTemplate.currency || ctx.baseCurrency)} — due ${relDate(s.nextDueDate)}`,
+      title: `${s.transactionTemplate.description} · ${fmt(amt, ctx.baseCurrency)} — due ${relDate(s.nextDueDate, ctx.tz)}`,
       body: 'Auto-approve is off for this schedule',
       dueAt: s.nextDueDate, amountRef: amt, scheduleId: s.id,
       deepLink: `/recurring?id=${s.id}`,
@@ -144,19 +156,57 @@ export function recurringDueNotifs(schedules: RecurringSchedule[], prefs: Notifi
   return out;
 }
 
+/**
+ * W4d (audit FE-UIS-04, INT-TXN-13) — the occurrence a bill card is about, as YYYY-MM-DD. A card
+ * read back from the cloud carries `due_at` as a timestamp ("2026-10-21T00:00:00+00:00"), which never
+ * equalled the schedule's due date, so Approve quietly did nothing while saying it had posted.
+ */
+export function notificationOccurrence(n: Pick<Notification, 'dueAt'>): string | undefined {
+  return n.dueAt ? n.dueAt.slice(0, 10) : undefined;
+}
+
+/**
+ * Aurora 4.0 NT1 — a card waiting on the person: unread, action-required (P1) and carrying buttons.
+ * The bell lists these as "Needs you" above Today and Earlier and keeps each one there until it is
+ * handled, instead of letting a bill to approve fall into "Earlier" once a day passes.
+ */
+export function needsYou(n: Pick<Notification, 'status' | 'priority' | 'actions'>): boolean {
+  return n.status === 'unread' && n.priority === 'P1' && (n.actions?.length ?? 0) > 0;
+}
+
+/**
+ * W4d — unread "approve this bill" cards whose bill was already handled: approved or skipped in the
+ * app, "paid X" on WhatsApp, another member, or the schedule paused. Its schedule has moved past the
+ * card's occurrence. A card whose schedule this device does not hold is left alone (it may simply not
+ * have loaded yet).
+ */
+export function resolvedBillCards(notifications: Notification[], schedules: RecurringSchedule[]): string[] {
+  const byId = new Map(schedules.map(s => [s.id, s]));
+  return notifications
+    .filter(n => n.type === 'recurring_due_confirm' && n.status === 'unread' && n.scheduleId)
+    .filter(n => {
+      const s = byId.get(n.scheduleId!);
+      const occurrence = notificationOccurrence(n);
+      // E6a: a card for a leftover EMI schedule is settled too — that schedule is retired (E-3).
+      return !!s && (s.active === false || isLoanEmiSchedule(s) || (!!occurrence && s.nextDueDate > occurrence));
+    })
+    .map(n => n.id);
+}
+
 /** 2 · recurring_reminder (P2) — lead-time reminder for upcoming schedules. */
 export function recurringReminderNotifs(schedules: RecurringSchedule[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
   if (!typeEnabled(prefs, 'recurring_reminder')) return [];
   const out: Notification[] = [];
   for (const s of schedules) {
+    if (isLoanEmiSchedule(s)) continue;   // E6a: the loan reminds about its own EMI
     const lead = s.reminderLeadDays ?? prefs.defaultLeadDays;
-    if (!upcomingSchedules([s], lead).length) continue;
+    if (!upcomingSchedules([s], lead, today(ctx.tz)).length) continue;
     const key = `recurring_reminder:${s.id}:${s.nextDueDate}`;
     if (existing.some(n => n.dedupeKey === key)) continue;
     const amt = s.transactionTemplate.amount ?? 0;
     out.push({
       ...base('recurring_reminder', key, ctx),
-      title: `${s.transactionTemplate.description} · ${fmt(amt, s.transactionTemplate.currency || ctx.baseCurrency)} — ${relDate(s.nextDueDate)}`,
+      title: `${s.transactionTemplate.description} · ${fmt(amt, ctx.baseCurrency)} — ${relDate(s.nextDueDate, ctx.tz)}`,
       body: 'Upcoming recurring charge',
       dueAt: s.nextDueDate, amountRef: amt, scheduleId: s.id,
       deepLink: `/recurring?id=${s.id}`,
@@ -166,30 +216,60 @@ export function recurringReminderNotifs(schedules: RecurringSchedule[], prefs: N
   return out;
 }
 
-/** 4 · budget_threshold (P1) — allocation crosses 80% / 100%. */
-export function budgetThresholdNotifs(budgets: Budget[], txns: Transaction[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/**
+ * 4 · budget_threshold (P1) — a budget LINE crosses 80% / 100% of its allocation.
+ *
+ * v10.48.0 (TD-39) — since v9.1 a budget is a period container whose categories live
+ * in `BudgetAllocation` rows; the budget itself has no `category`. This rule used to
+ * read `b.category`, so for every current budget it looked up spend for '' and never
+ * fired (production had zero budget_threshold notifications). It now checks each
+ * allocation over the budget's own period with the Budgets screen's figure
+ * (`spendByCategoryInRange` in base currency). A legacy single-category budget (no
+ * allocations) is still checked as one line for the current month.
+ */
+export function budgetThresholdNotifs(
+  budgets: Budget[], allocations: BudgetAllocation[], txns: Transaction[],
+  prefs: NotificationPrefs, existing: Notification[], ctx: Ctx, now: string = today(ctx.tz),
+): Notification[] {
   if (!typeEnabled(prefs, 'budget_threshold')) return [];
   const out: Notification[] = [];
-  const mk = getMonthKey(today());
-  const spend = spendByCategory(txns, mk, ctx.baseCurrency, ctx.rates);
+  const cur = ctx.baseCurrency;
   for (const b of budgets) {
-    const limitBase = b.limit * ((ctx.rates[b.currency] / ctx.rates[ctx.baseCurrency]) || 1);
-    const spent = spend[b.category ?? ''] || 0;
-    const pct = limitBase > 0 ? spent / limitBase : 0;
-    const threshold: 80 | 100 | null = pct >= 1 ? 100 : pct >= 0.8 ? 80 : null;
-    if (!threshold) continue;
-    const key = `budget_threshold:${b.id}:${mk}:${threshold}`;
-    if (existing.some(n => n.dedupeKey === key)) continue;
-    const remaining = Math.max(0, limitBase - spent);
-    out.push({
-      ...base('budget_threshold', key, ctx),
-      tint: threshold === 100 ? 'var(--crit)' : 'var(--warn)',
-      title: `${b.category ?? 'Budget'} at ${Math.round(pct * 100)}% of ${mk} budget`,
-      body: `${fmt(remaining, ctx.baseCurrency)} left`,
-      budgetId: b.id, amountRef: remaining,
-      deepLink: `/budgets?budgetId=${b.id}`,
-      actions: [A('review', 'Review budget', 'primary'), A('see_txns', 'See transactions', 'ghost')],
-    });
+    const own = allocations.filter(a => a.budgetId === b.id);
+    let start = b.periodStart, end = b.periodEnd;
+    const lines: { category: string; limit: number }[] = own.length
+      ? own.map(a => ({ category: a.category, limit: convert(a.amount, b.currency, cur, ctx.rates) }))
+      : b.category ? [{ category: b.category, limit: convert(b.limit, b.currency, cur, ctx.rates) }] : [];
+    if (!own.length && (!start || !end)) {            // legacy: the current month
+      const mk = getMonthKey(now);
+      start = `${mk}-01`;
+      end = `${mk}-31`;
+    }
+    if (!lines.length || !start || !end || start > now || end < now) continue;
+    const spend = spendByCategoryInRange(txns, start, end, cur, ctx.rates);
+    const period = b.scope === 'annual' ? `${b.periodYear ?? start.slice(0, 4)}`
+      : MONTH_NAMES[Number(start.slice(5, 7)) - 1] ?? start.slice(0, 7);
+    for (const line of lines) {
+      if (!(line.limit > 0)) continue;
+      const spent = spend[line.category] || 0;
+      const pct = spent / line.limit;
+      const threshold: 80 | 100 | null = pct >= 1 ? 100 : pct >= 0.8 ? 80 : null;
+      if (!threshold) continue;
+      const key = `budget_threshold:${b.id}:${line.category}:${start}:${threshold}`;
+      if (existing.some(n => n.dedupeKey === key)) continue;
+      const remaining = Math.max(0, line.limit - spent);
+      out.push({
+        ...base('budget_threshold', key, ctx),
+        tint: threshold === 100 ? 'var(--crit)' : 'var(--warn)',
+        title: `${getCat(line.category).label} at ${Math.round(pct * 100)}% of the ${period} budget`,
+        body: spent > line.limit ? `${fmt(spent - line.limit, cur)} over` : `${fmt(remaining, cur)} left`,
+        budgetId: b.id, amountRef: remaining,
+        deepLink: `/budgets?budgetId=${b.id}`,
+        actions: [A('review', 'Review budget', 'primary'), A('see_txns', 'See transactions', 'ghost')],
+      });
+    }
   }
   return out;
 }
@@ -199,19 +279,22 @@ export function debtDueNotifs(debts: Debt[], prefs: NotificationPrefs, existing:
   if (!typeEnabled(prefs, 'debt_payment_due')) return [];
   const out: Notification[] = [];
   for (const d of debts) {
-    if (d.direction === 'owed_to_me' || !d.dueDate || d.currentBalance <= 0) continue;
-    const n = daysUntil(d.dueDate);
+    // W4g (D19): the loan's NEXT EMI date (pay_loan moves it on); a paid-off loan has none.
+    if (d.direction === 'owed_to_me' || !d.dueDate || d.currentBalance <= 0 || d.paidOffAt) continue;
+    const n = daysUntil(d.dueDate, ctx.tz);
     if (n < 0 || n > 3) continue;
     const key = `debt_payment_due:${d.id}:${d.dueDate}`;
     if (existing.some(x => x.dedupeKey === key)) continue;
     const amt = d.minimumPayment ?? 0;
     out.push({
       ...base('debt_payment_due', key, ctx),
-      title: `${d.name} payment · ${fmt(amt, d.currency)} — due ${relDate(d.dueDate)}`,
-      body: 'Minimum payment coming up',
+      title: `${d.name} payment · ${fmt(amt, ctx.baseCurrency)} — due ${relDate(d.dueDate, ctx.tz)}`,
+      body: d.autoRecord ? 'Vyact records this EMI on the day' : 'EMI coming up',
       dueAt: d.dueDate, amountRef: amt, debtId: d.id,
       deepLink: `/debts?debtId=${d.id}`,
-      actions: [A('record', 'Record payment', 'primary'), A('view', 'View debt', 'ghost')],
+      actions: d.autoRecord
+        ? [A('view', 'View loan', 'ghost')]
+        : [A('record', 'Record payment', 'primary'), A('view', 'View loan', 'ghost')],
     });
   }
   return out;
@@ -220,7 +303,7 @@ export function debtDueNotifs(debts: Debt[], prefs: NotificationPrefs, existing:
 /** 5 · income_landed (P2) — income transaction posted today. */
 export function incomeLandedNotifs(txns: Transaction[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
   if (!typeEnabled(prefs, 'income_landed')) return [];
-  const now = today();
+  const now = today(ctx.tz);
   const out: Notification[] = [];
   for (const t of txns) {
     if (t.type !== 'income' || t.date !== now) continue;
@@ -228,7 +311,7 @@ export function incomeLandedNotifs(txns: Transaction[], prefs: NotificationPrefs
     if (existing.some(n => n.dedupeKey === key)) continue;
     out.push({
       ...base('income_landed', key, ctx),
-      title: `${t.description || 'Income'} landed — +${fmt(t.amount, t.currency || ctx.baseCurrency)}`,
+      title: `${t.description || 'Income'} landed — +${fmt(t.amount, ctx.baseCurrency)}`,
       body: 'Money in',
       amountRef: t.amount, txnId: t.id,
       deepLink: `/transactions?id=${t.id}`,
@@ -238,17 +321,12 @@ export function incomeLandedNotifs(txns: Transaction[], prefs: NotificationPrefs
   return out;
 }
 
-/** 9 · stale_balance (P1) — liquid account balances >30 d old (aggregated, ≤1/wk). */
+/** 9 · stale_balance (P1) — bank, card and cash balances not checked in 30 days (aggregated, ≤1/wk). */
 export function staleBalanceNotifs(accounts: Account[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx): Notification[] {
   if (!typeEnabled(prefs, 'stale_balance')) return [];
-  const LIQUID: Account['kind'][] = ['bank', 'cash', 'investment'];
-  const cutoff = Date.now() - 30 * 86400000;
-  const lastTouched = (a: Account): number => {
-    const rec = a.reconciliationLog?.length ? a.reconciliationLog[a.reconciliationLog.length - 1].at : undefined;
-    const stamp = a.confirmedAt || rec || a.estimatedAt;
-    return stamp ? new Date(stamp).getTime() : 0;
-  };
-  const stale = accounts.filter(a => !a.isArchived && LIQUID.includes(a.kind) && lastTouched(a) < cutoff);
+  // W8a (audit INT-PAR-05): the one stale rule (lib/accountsView.ts) — bank, card and cash, by the last
+  // check, else creation. A just-added account is not "out of date".
+  const stale = staleAccounts(accounts, new Date());
   if (!stale.length) return [];
   // Aggregate; re-notify at most weekly.
   const weekKey = Math.floor(Date.now() / (7 * 86400000));
@@ -261,6 +339,95 @@ export function staleBalanceNotifs(accounts: Account[], prefs: NotificationPrefs
     deepLink: '/accounts',
     actions: [A('update', 'Update balances', 'primary'), A('dismiss', 'Dismiss', 'ghost')],
   }];
+}
+
+// ── v10.107.0 — Pip's proactive nudges ──────────────────────────────────────
+//
+// Pip speaks first only when something is worth knowing, and rarely: at most PIP_NUDGE_DAILY_CAP a
+// day and PIP_NUDGE_WEEKLY_CAP a week across every kind, P2 (in the bell, never pushed), each with
+// its own switch in Settings › Notifications ("fewer like this" is turning that kind off). A nudge
+// opens Pip with its question in the field (/chat?ask=…); nothing is asked or sent for the person.
+// Every figure is computed here from the ledger, the same way the Transactions page totals it.
+
+export const PIP_NUDGE_DAILY_CAP = 1;
+export const PIP_NUDGE_WEEKLY_CAP = 3;
+/** A category nudge needs it to be this much above a WHOLE usual month already, and at least 2 months of history. */
+export const TREND_NUDGE_RATIO = 1.25;
+const PIP_NUDGE_PREFIX = 'pip:';
+
+const askPip = (question: string) => `/chat?ask=${encodeURIComponent(question)}`;
+
+/** How many more Pip nudges may be raised now (0 when the day's or the week's are used). */
+export function pipNudgeRoom(existing: Notification[], nowMs = Date.now()): number {
+  const pip = existing.filter(n => n.dedupeKey?.startsWith(PIP_NUDGE_PREFIX));
+  const startOfDay = new Date(nowMs); startOfDay.setHours(0, 0, 0, 0);
+  const today_ = pip.filter(n => Date.parse(n.createdAt) >= startOfDay.getTime()).length;
+  const week = pip.filter(n => Date.parse(n.createdAt) >= nowMs - 7 * 86_400_000).length;
+  return Math.max(0, Math.min(PIP_NUDGE_DAILY_CAP - today_, PIP_NUDGE_WEEKLY_CAP - week));
+}
+
+/**
+ * trend_alert — a category that has ALREADY gone past a whole usual month, this month. Compared with a
+ * whole month (not a pro-rated one), so the sentence is true whatever day it is: nothing is projected.
+ * The largest such gap only; once per category per month.
+ */
+function categoryTrendNudge(txns: Transaction[], existing: Notification[], ctx: Ctx, now: string): Notification | null {
+  const month = getMonthKey(now);
+  const history = [...new Set(txns.map(t => getMonthKey(t.date)))].filter(m => m < month).sort().slice(-3);
+  if (history.length < 2) return null;
+  const nowSpend = spendByCategory(txns, month, ctx.baseCurrency, ctx.rates);
+  const past = history.map(m => spendByCategory(txns, m, ctx.baseCurrency, ctx.rates));
+  let best: { category: string; spent: number; usual: number } | null = null;
+  for (const [category, spent] of Object.entries(nowSpend)) {
+    // Loan payments run on their own schedule; a prepayment is a decision, not a trend.
+    if (category === 'loan_emi') continue;
+    const usual = past.reduce((s, p) => s + (p[category] || 0), 0) / history.length;
+    if (!(usual > 0) || spent < usual * TREND_NUDGE_RATIO) continue;
+    if (existing.some(n => n.dedupeKey === `${PIP_NUDGE_PREFIX}trend:${category}:${month}`)) continue;
+    if (!best || spent - usual > best.spent - best.usual) best = { category, spent, usual };
+  }
+  if (!best) return null;
+  const label = getCat(best.category).label;
+  return {
+    ...base('trend_alert', `${PIP_NUDGE_PREFIX}trend:${best.category}:${month}`, ctx),
+    title: `${label} is already above a usual month`,
+    body: `${fmt(Math.round(best.spent), ctx.baseCurrency)} so far, against ${fmt(Math.round(best.usual), ctx.baseCurrency)} in a usual month`,
+    amountRef: Math.round(best.spent),
+    deepLink: askPip(`Why is my ${label.toLowerCase()} spending so high?`),
+    actions: [A('ask_pip', 'Ask Pip why', 'primary')],
+  };
+}
+
+/** insight_fresh — in the first five days of a month, last month's review is ready (once per month). */
+function monthReviewNudge(txns: Transaction[], existing: Notification[], ctx: Ctx, now: string): Notification | null {
+  if (Number(now.slice(8, 10)) > 5) return null;
+  const [y, m] = getMonthKey(now).split('-').map(Number);
+  const prev = new Date(Date.UTC(y, m - 2, 1));
+  const prevKey = `${prev.getUTCFullYear()}-${String(prev.getUTCMonth() + 1).padStart(2, '0')}`;
+  const key = `${PIP_NUDGE_PREFIX}review:${prevKey}`;
+  if (existing.some(n => n.dedupeKey === key)) return null;
+  if (!txns.some(t => getMonthKey(t.date) === prevKey)) return null;
+  return {
+    ...base('insight_fresh', key, ctx),
+    title: `Your ${MONTH_NAMES[prev.getUTCMonth()]} review is ready`,
+    body: 'What came in, what went out and what moved',
+    deepLink: askPip('Give me a review of last month.'),
+    actions: [A('ask_pip', 'Ask Pip', 'primary')],
+  };
+}
+
+/** Pip's nudges for this refresh, most useful first, within the day's and the week's allowance. */
+export function pipNudgeNotifs(
+  txns: Transaction[], prefs: NotificationPrefs, existing: Notification[], ctx: Ctx,
+  now: string = today(ctx.tz), nowMs = Date.now(),
+): Notification[] {
+  const room = pipNudgeRoom(existing, nowMs);
+  if (room <= 0) return [];
+  const candidates = [
+    typeEnabled(prefs, 'trend_alert') ? categoryTrendNudge(txns, existing, ctx, now) : null,
+    typeEnabled(prefs, 'insight_fresh') ? monthReviewNudge(txns, existing, ctx, now) : null,
+  ].filter((n): n is Notification => n !== null);
+  return candidates.slice(0, room);
 }
 
 /** 14 · split_settled (P2, owner-facing) — a participant self-settled their
@@ -331,6 +498,53 @@ export function splitClosedNotifs(withMe: SharedSplit[], prefs: NotificationPref
     });
   }
   return out;
+}
+
+// ── Household invitations (v10.95.0, #9; owner decisions 13 Oct 2026) ─────────
+// Built on the device from live invitation lists on every render and NEVER saved: the notifications
+// table is readable by every member of the open household, and an invitee's card would tell them which
+// other household invited this person. A card disappears as soon as its invitation is answered, revoked
+// or expires, so there is nothing to dedupe or resolve. (No lock-screen push: that reads the table.)
+
+const expiryDay = (iso: string) => iso.slice(0, 10);
+
+/** invite_received (P1, invitee-facing) — Join / Decline, whichever household is open. */
+export function invitationReceivedNotifs(invites: MyInvitation[], prefs: NotificationPrefs, now = Date.now()): Notification[] {
+  if (!typeEnabled(prefs, 'invite_received')) return [];
+  return invites
+    .filter(i => new Date(i.expiresAt).getTime() > now)
+    .map(i => ({
+      id: `invite_received:${i.id}`,
+      type: 'invite_received' as const,
+      priority: NOTIF_META.invite_received.priority,
+      status: 'unread' as const,
+      createdAt: i.createdAt,
+      dedupeKey: `invite_received:${i.id}`,
+      invitationId: i.id,
+      title: `${i.invitedByName} invited you to ${i.householdName}`,
+      body: `Join as ${roleLabel(i.role as AppRole)}. The invitation expires on ${expiryDay(i.expiresAt)}.`,
+      actions: [A('join', 'Join', 'primary'), A('decline', 'Decline', 'ghost')],
+    }));
+}
+
+/** invite_pending (P1, owner/admin-facing) — each open invitation of the open household, with Revoke. */
+export function invitationPendingNotifs(invites: HouseholdInvitation[], prefs: NotificationPrefs, householdId: string, now = Date.now()): Notification[] {
+  if (!typeEnabled(prefs, 'invite_pending')) return [];
+  return invites
+    .filter(i => i.householdId === householdId && new Date(i.expiresAt).getTime() > now)
+    .map(i => ({
+      id: `invite_pending:${i.id}`,
+      type: 'invite_pending' as const,
+      priority: NOTIF_META.invite_pending.priority,
+      status: 'unread' as const,
+      createdAt: i.createdAt,
+      householdId,
+      dedupeKey: `invite_pending:${i.id}`,
+      invitationId: i.id,
+      title: i.recipientEmail ? `Invitation to ${i.recipientEmail} is waiting` : 'An invitation link is waiting',
+      body: `${roleLabel(i.role as AppRole)} access. Expires on ${expiryDay(i.expiresAt)}.`,
+      actions: [A('revoke', 'Revoke', 'ghost')],
+    }));
 }
 
 // ── Web Push (unchanged) ─────────────────────────────────────────────────────

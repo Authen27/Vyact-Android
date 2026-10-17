@@ -19,12 +19,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { ArrowRight, Check, ShieldCheck, Lock } from 'lucide-react';
+import { ArrowRight, Check, ShieldCheck, Users } from 'lucide-react';
 import { useStore } from '../store';
 import { CURRENCIES } from '../constants';
 import { fmt } from '../lib/format';
 import Button from '../components/ui/Button';
 import Chip from '../components/ui/Chip';
+import { Field, Select } from '../components/ui/Input';
 import { Pip } from '../components/layout/Brand';
 import { isOnboardingEnabled } from '../config/features';
 import { SEGMENTS, SEGMENT_ORDER } from '../lib/onboardingTemplates';
@@ -35,6 +36,7 @@ import {
 import type { TemplateKey } from '../lib/templates';
 import { track } from '../lib/analytics';
 import { wireOnboardingToMoney } from '../lib/onboardingWiring';
+import { groupDigits, groupedValue } from '../lib/groupDigits';
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -59,6 +61,10 @@ const CHIP_EMOJI: Record<string, string> = {
 
 // Step-2 "what matters" — salaried-person wording; `concern` maps to the
 // profile.primaryConcern space (spending / debt / savings).
+// Aurora 4.0 OB1 — the common currencies as chips on phones (the chosen one always among them),
+// with More… for the full list.
+const COMMON_CURRENCIES = ['INR', 'USD', 'GBP', 'EUR'];
+
 const CONCERNS: { key: string; concern: 'spending' | 'debt' | 'savings'; emoji: string; label: string }[] = [
   { key: 'see',       concern: 'spending', emoji: '🔍', label: 'See where my money actually goes' },
   { key: 'save',      concern: 'savings',  emoji: '💰', label: 'Save a bit more each month' },
@@ -73,6 +79,10 @@ export default function Onboarding() {
   const refresh = useStore(s => s.refresh);
   const toast = useStore(s => s.toast);
   const profileName = useStore(s => s.profile.name);
+  // W3b (audit FE-UIS-03): a household that has been through onboarding already has a currency the
+  // owner chose; a re-run starts from it instead of guessing again from the browser language, which
+  // relabelled every amount for anyone whose browser locale differed from their money.
+  const onboardedCurrency = useStore(s => (s.profile.onboardedAt ? s.profile.baseCurrency : null));
 
   const [startedAt] = useState(() => Date.now());
   const [step, setStep] = useState<Step>(0);
@@ -81,11 +91,14 @@ export default function Onboarding() {
   const [concerns, setConcerns] = useState<string[]>([]);
   const [income, setIncome] = useState<string>('');
   const [incomeSteady, setIncomeSteady] = useState<boolean>(true);
+  // Aurora 4.0 ON3 — "I'll add bills later": the bills step can be passed without amounts; the reveal
+  // then shows pay only, and the Dashboard's setup checklist keeps "Add your fixed bills" open.
+  const [billsLater, setBillsLater] = useState(false);
   const [billAmounts, setBillAmounts] = useState<Record<string, string>>({});
-  const [currency, setCurrency] = useState<string>(() =>
-    navigator.language?.includes('IN') ? 'INR' : navigator.language?.includes('GB') ? 'GBP' : 'USD',
-  );
+  const [currency, setCurrency] = useState<string>(() => onboardedCurrency
+    ?? (navigator.language?.includes('IN') ? 'INR' : navigator.language?.includes('GB') ? 'GBP' : 'USD'));
   const [submitting, setSubmitting] = useState(false);
+  const [moreCurrencies, setMoreCurrencies] = useState(false);
 
   useEffect(() => {
     if (!isOnboardingEnabled()) {
@@ -97,7 +110,8 @@ export default function Onboarding() {
   }, [householdId, navigate]);
 
   const tpl = segment ? SEGMENTS[segment] : null;
-  const incomeAmt = Number(income) || 0;
+  // ON1 — the fields hold grouped text ("1,45,000"); the figures read through groupedValue.
+  const incomeAmt = groupedValue(income);
   const curSym = CURRENCIES[currency]?.symbol ?? '';
 
   // Bills with a parsed amount (>0) or a name-only inclusion via the amount map key.
@@ -105,15 +119,12 @@ export default function Onboarding() {
     if (!tpl) return [] as { key: string; label: string; amount: number }[];
     return tpl.fixedCostChips
       .filter(c => c.key in billAmounts)
-      .map(c => ({ key: c.key, label: c.label, amount: Number(billAmounts[c.key]) || 0 }));
+      .map(c => ({ key: c.key, label: c.label, amount: groupedValue(billAmounts[c.key]) }));
   }, [tpl, billAmounts]);
 
   const fixedTotal = bills.reduce((s, b) => s + b.amount, 0);
   const roomLeft = incomeAmt - fixedTotal;
   const biggestBill = bills.filter(b => b.amount > 0).sort((a, b) => b.amount - a.amount)[0] ?? null;
-  const pulseEstimate = incomeAmt > 0
-    ? Math.max(30, Math.min(85, Math.round(52 + (roomLeft / incomeAmt) * 40)))
-    : null;
 
   function advance(next: Step) {
     track('onboarding_step_completed', { segment: segment ?? 'none', step_index: step, duration_ms: Date.now() - startedAt });
@@ -138,20 +149,28 @@ export default function Onboarding() {
         incomeType: incomeSteady ? 'steady' : 'variable',
       };
 
-      // Reference baseline (StartingBaselineBand) — a complementary UI overlay.
+      // Reference baseline — the Dashboard's estimate hero (components/dashboard/EstimateHero).
       const baseline: OnboardingBaseline = {
         cash: incomeAmt, debt: 0, monthlyIncome: incomeAmt,
-        fixedCosts: bills.map(b => ({ key: b.key, label: b.label })),
+        fixedCosts: billsLater ? [] : bills.map(b => ({ key: b.key, label: b.label })),
         currency, segment, primaryConcern, capturedAt: new Date().toISOString(),
+        fixedTotal: billsLater ? 0 : fixedTotal,
+        billsLater,
       };
       setBaseline(householdId, baseline);
+
+      // v10.54.0 — the currency goes FIRST. Writing the cash balance while the
+      // household was still in its old currency stored "20,000 USD" for a ₹20,000
+      // answer until the currency switch relabelled it, and the open session
+      // showed ₹16.6 lakh of net worth in between.
+      await updateProfile({ baseCurrency: currency });
 
       // The real money wiring (cash balance + paycheck + bill schedules + budget).
       const st = useStore.getState();
       const primaryMember = st.members[0]?.id;
       await wireOnboardingToMoney({
         monthlyIncome: incomeAmt,
-        bills,
+        bills: billsLater ? [] : bills,
         currency,
         memberId: primaryMember,
         fns: {
@@ -174,7 +193,8 @@ export default function Onboarding() {
       });
       await refresh();
 
-      track('onboarding_completed', { segment, total_ms: Date.now() - startedAt, confirmed_pct: 35 });
+      // W6 (audit FE-UIS-11): no "percent confirmed" property — it was a hard-coded number, not a measurement.
+      track('onboarding_completed', { segment, total_ms: Date.now() - startedAt });
       toast(`You're all set${name.trim() ? `, ${name.trim()}` : ''} — welcome to Vyact`, 'success');
       navigate('/dashboard');
     } finally {
@@ -183,7 +203,7 @@ export default function Onboarding() {
   }
 
   return (
-    <div className="fixed inset-0 z-[150] bg-bg overflow-y-auto">
+    <div className="ui-pilot fixed inset-0 z-[150] bg-bg overflow-y-auto">
       <div className="max-w-xl mx-auto px-6 py-8">
 
         {/* pip header + coral progress ribbon (steps ≥1). */}
@@ -191,7 +211,8 @@ export default function Onboarding() {
           <>
             <div className="flex items-center gap-3 mb-4">
               <Pip size={38} />
-              <div className="flex-1 min-w-0 rounded-r3 px-4 py-2.5 glass-panel">
+              <div className="flex-1 min-w-0 rounded-r3 px-4 py-2.5" data-testid="pip-bubble"
+                style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
                 <div className="text-[0.86rem] text-ink leading-snug">{pipLine(step, name)}</div>
               </div>
             </div>
@@ -217,25 +238,40 @@ export default function Onboarding() {
             </p>
             <div className="w-full space-y-3 mb-7 text-left">
               <div className="flex items-start gap-3 rounded-r3 p-3.5" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
-                <Lock size={16} className="text-sage mt-0.5 shrink-0" />
-                <div className="text-[0.85rem] text-ink-mid"><span className="font-semibold text-ink">No bank login, ever.</span> No statements or card numbers — you type what you know.</div>
+                <Users size={16} className="text-sage mt-0.5 shrink-0" />
+                <div className="text-[0.85rem] text-ink-mid"><span className="font-semibold text-ink">Built for your whole household.</span> Invite your partner or family any time — everyone works from the same numbers.</div>
               </div>
               <div className="flex items-start gap-3 rounded-r3 p-3.5" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
                 <ShieldCheck size={16} className="text-denim mt-0.5 shrink-0" />
                 <div className="text-[0.85rem] text-ink-mid"><span className="font-semibold text-ink">Nothing is locked in.</span> Every number here is a starting point you refine later.</div>
               </div>
             </div>
-            <div className="w-full flex items-center justify-between mb-3">
-              <span className="mono-label">Currency · set once</span>
-              <select value={currency} onChange={e => setCurrency(e.target.value)}
-                className="ff-select rounded-pill px-3 py-1.5 text-[0.82rem] font-ui cursor-pointer"
-                style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
-                {Object.entries(CURRENCIES).map(([code, c]) => <option key={code} value={code}>{c.symbol} {code} — {c.name}</option>)}
-              </select>
+            <div className="w-full mb-3 text-left">
+              {/* OB1 — phones: four chips and More…; the select is the desktop control and the More… list. */}
+              {!moreCurrencies && (
+                <div className="sm:hidden">
+                  <div id="ob-currency" className="ui-label mb-related">Currency</div>
+                  <div role="group" aria-labelledby="ob-currency" className="flex flex-wrap gap-1.5">
+                    {(COMMON_CURRENCIES.includes(currency) ? COMMON_CURRENCIES : [currency, ...COMMON_CURRENCIES.slice(0, 3)]).map(code => (
+                      <Chip key={code} on={currency === code} onClick={() => setCurrency(code)}>
+                        {CURRENCIES[code]?.symbol} {code}
+                      </Chip>
+                    ))}
+                    <Chip onClick={() => setMoreCurrencies(true)}>More…</Chip>
+                  </div>
+                </div>
+              )}
+              <div className={moreCurrencies ? '' : 'hidden sm:block'}>
+                <Field label="Currency">
+                <Select value={currency} onChange={e => setCurrency(e.target.value)}>
+                  {Object.entries(CURRENCIES).map(([code, c]) => <option key={code} value={code}>{c.symbol} {code} — {c.name}</option>)}
+                </Select>
+                </Field>
+              </div>
             </div>
             <Button onClick={() => advance(1)} full>Let's go <ArrowRight size={15} /></Button>
             <Link to="/auth/sign-in" className="mono-label mt-4 hover:text-ink">
-              Already have an account? <span style={{ color: 'var(--accent)' }}>Sign in</span>
+              Already have an account? <span style={{ color: 'var(--accent-text)' }}>Sign in</span>
             </Link>
           </div>
         )}
@@ -243,17 +279,17 @@ export default function Onboarding() {
         {/* ── Step 1 — Who + name ──────────────────────────────────────── */}
         {step === 1 && (
           <div>
-            <label className="mono-label mb-1.5 block">Your first name</label>
-            <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Rohan"
+            <label htmlFor="ob-name" className="mono-label mb-1.5 block">Your first name</label>
+            <input id="ob-name" autoComplete="given-name" autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Rohan"
               className="w-full rounded-r2 px-4 min-h-[52px] text-ink text-[1.05rem] mb-6 border-none"
-              style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }} />
-            <label className="mono-label mb-2 block">Who's this picture for?</label>
-            <div className="flex flex-col gap-3 mb-7">
+              style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }} />
+            <div id="ob-segment" className="mono-label mb-2 block">Who's this picture for?</div>
+            <div role="group" aria-labelledby="ob-segment" className="flex flex-col gap-3 mb-7">
               {SEGMENT_ORDER.map(key => {
                 const s = SEGMENTS[key];
                 const on = segment === key;
                 return (
-                  <button key={key} onClick={() => setSegment(key)}
+                  <button key={key} type="button" aria-pressed={on} onClick={() => setSegment(key)}
                     className="flex items-center gap-3.5 p-4 rounded-r3 text-left transition-shadow relative"
                     style={{ background: 'var(--canvas)', boxShadow: on ? 'var(--neu-sm), 0 0 0 2px var(--accent)' : 'var(--neu-sm)' }}>
                     <span className="text-2xl">{s.icon}</span>
@@ -273,12 +309,12 @@ export default function Onboarding() {
         {/* ── Step 2 — What matters (multi-select) ─────────────────────── */}
         {step === 2 && (
           <div>
-            <label className="mono-label mb-2 block">Pick what matters most · you can pick a few</label>
-            <div className="flex flex-col gap-3 mb-7">
+            <div id="ob-concerns" className="mono-label mb-2 block">Pick what matters most · you can pick a few</div>
+            <div role="group" aria-labelledby="ob-concerns" className="flex flex-col gap-3 mb-7">
               {CONCERNS.map(c => {
                 const on = concerns.includes(c.key);
                 return (
-                  <button key={c.key}
+                  <button key={c.key} type="button" aria-pressed={on}
                     onClick={() => setConcerns(cs => on ? cs.filter(k => k !== c.key) : [...cs, c.key])}
                     className="flex items-center gap-3 p-3.5 rounded-r3 text-left transition-shadow"
                     style={{ background: 'var(--canvas)', boxShadow: on ? 'var(--neu-sm), 0 0 0 2px var(--accent)' : 'var(--neu-sm)' }}>
@@ -296,16 +332,16 @@ export default function Onboarding() {
         {/* ── Step 3 — Money in (take-home) ────────────────────────────── */}
         {step === 3 && (
           <div>
-            <label className="mono-label mb-1.5 block">Monthly take-home pay</label>
-            <div className="flex items-baseline gap-2 rounded-r2 px-4 min-h-[64px] mb-2" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+            <label htmlFor="ob-income" className="mono-label mb-1.5 block">Monthly take-home pay</label>
+            <div className="flex items-baseline gap-2 rounded-r2 px-4 min-h-[64px] mb-2" style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>
               <span className="num text-ink-dim text-[1.1rem]">{curSym}</span>
-              <input autoFocus inputMode="decimal" type="number" min="0" value={income}
-                onChange={e => setIncome(e.target.value)} placeholder="0"
+              <input id="ob-income" autoFocus inputMode="decimal" type="text" value={income}
+                onChange={e => setIncome(groupDigits(e.target.value, currency))} placeholder="0"
                 className="flex-1 bg-transparent border-none num font-bold text-[1.7rem] text-ink outline-none min-w-0" />
             </div>
             <div className="text-[0.78rem] text-ink-dim mb-6">What actually lands in your account after tax. This becomes your starting cash and your monthly paycheck.</div>
-            <label className="mono-label mb-2 block">Does it arrive on a schedule?</label>
-            <div className="flex gap-2 mb-4">
+            <div id="ob-schedule" className="mono-label mb-2 block">Does it arrive on a schedule?</div>
+            <div role="group" aria-labelledby="ob-schedule" className="flex gap-2 mb-4">
               <Chip on={incomeSteady} onClick={() => setIncomeSteady(true)}>Same day each month</Chip>
               <Chip on={!incomeSteady} onClick={() => setIncomeSteady(false)}>It varies</Chip>
             </div>
@@ -322,8 +358,8 @@ export default function Onboarding() {
         {/* ── Step 4 — Money out (fixed bills, amounts inline) ─────────── */}
         {step === 4 && tpl && (
           <div>
-            <label className="mono-label mb-2 block">Which fixed bills do you have? Tap to add an amount.</label>
-            <div className="flex flex-col gap-2.5 mb-4">
+            <div id="ob-bills" className="mono-label mb-2 block">Which fixed bills do you have? Tap to add an amount.</div>
+            <div role="group" aria-labelledby="ob-bills" className="flex flex-col gap-2.5 mb-4">
               {tpl.fixedCostChips.map(chip => {
                 const on = chip.key in billAmounts;
                 return (
@@ -331,29 +367,37 @@ export default function Onboarding() {
                     className="flex items-center gap-3 px-3.5 py-2.5 rounded-r2 transition-shadow"
                     style={{ background: 'var(--canvas)', boxShadow: on ? 'var(--neu-sm), 0 0 0 2px var(--accent)' : 'var(--neu-sm)' }}>
                     <button onClick={() => toggleBill(chip.key)} className="flex items-center gap-3 flex-1 min-w-0 text-left border-none bg-transparent cursor-pointer">
-                      <span className="w-9 h-9 rounded-[10px] flex items-center justify-center text-[15px] shrink-0" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>{CHIP_EMOJI[chip.key] ?? '💸'}</span>
+                      <span className="w-9 h-9 rounded-r2 flex items-center justify-center text-[15px] shrink-0" style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>{CHIP_EMOJI[chip.key] ?? '💸'}</span>
                       <span className="font-semibold text-[0.86rem] text-ink truncate">{chip.label}</span>
                     </button>
                     {on ? (
-                      <div className="flex items-baseline gap-1 rounded-lg px-2.5 py-1.5" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+                      <div className="flex items-baseline gap-1 rounded-lg px-2.5 py-1.5" style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>
                         <span className="num text-[0.72rem] text-ink-dim">{curSym}</span>
-                        <input autoFocus inputMode="decimal" type="number" min="0" value={billAmounts[chip.key]}
-                          onChange={e => setBillAmounts(m => ({ ...m, [chip.key]: e.target.value }))}
+                        <input aria-label={`${chip.label} amount per month`} autoFocus inputMode="decimal" type="text" value={billAmounts[chip.key]}
+                          onChange={e => setBillAmounts(m => ({ ...m, [chip.key]: groupDigits(e.target.value, currency) }))}
                           placeholder="0"
-                          className="w-[76px] bg-transparent border-none num font-semibold text-[0.9rem] text-ink outline-none text-right" />
+                          className="w-[92px] bg-transparent border-none num font-semibold text-[0.9rem] text-ink outline-none text-right" />
                       </div>
                     ) : (
-                      <button onClick={() => toggleBill(chip.key)} className="mono-label border-none bg-transparent cursor-pointer" style={{ color: 'var(--accent)' }}>＋ add</button>
+                      <button onClick={() => toggleBill(chip.key)} className="min-h-[44px] px-1 text-[13px] font-medium border-none bg-transparent cursor-pointer" style={{ color: 'var(--accent-text)' }}>＋ Add</button>
                     )}
                   </div>
                 );
               })}
             </div>
-            <div className="flex items-center justify-between px-4 py-3 rounded-r2 mb-6" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+            <div className="flex items-center justify-between px-4 py-3 rounded-r2 mb-6" style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>
               <span className="text-[0.82rem] text-ink-mid">Fixed costs so far</span>
               <span className="num font-bold text-[1rem] text-ink">{fmt(fixedTotal, currency)}<span className="text-ink-dim font-medium text-[0.72rem]"> /mo</span></span>
             </div>
-            <FootNav onBack={() => setStep(3)} onNext={() => advance(5)} nextDisabled={false} nextLabel="See my picture" />
+            <FootNav onBack={() => setStep(3)} onNext={() => { setBillsLater(false); advance(5); }} nextDisabled={false} nextLabel="See my picture"
+              below={
+                <div className="text-center mt-1">
+                  <button type="button" onClick={() => { setBillsLater(true); advance(5); }}
+                    className="min-h-[44px] px-2 text-[0.84rem] font-medium" style={{ color: 'var(--accent-text)' }}>
+                    I&apos;ll add bills later
+                  </button>
+                </div>
+              } />
           </div>
         )}
 
@@ -362,28 +406,32 @@ export default function Onboarding() {
           <div>
             <div className="mono-label text-sage mb-2">Your starting picture</div>
             <h1 className="display-italic text-[1.7rem] text-ink mb-6">Here's your month{name.trim() ? `, ${name.trim()}` : ''}.</h1>
+            {billsLater ? (
+              <div className="grid grid-cols-1 gap-3 mb-4">
+                <RevealStat label="Monthly pay" value={fmt(incomeAmt, currency)} hint="add your fixed bills in Recurring when you're ready" tone="hsl(var(--sage))" />
+              </div>
+            ) : (
             <div className="grid grid-cols-2 gap-3 mb-4">
               <RevealStat label="Room left this month" value={fmt(roomLeft, currency)} hint="after fixed bills, before daily spend" tone="hsl(var(--sage))" />
-              <RevealStat label="First Pulse" value={pulseEstimate != null ? String(pulseEstimate) : '—'} hint="builds as you log" tone="hsl(var(--honey))" />
+              {/* v10.54.0 (owner) — was "First Pulse": Pulse is hidden in the app
+                  (FEATURES.dashboard), so a score here meant nothing to a new user. */}
+              <RevealStat label="Fixed bills" value={fmt(fixedTotal, currency)} hint="a month, ready to review in Recurring" tone="hsl(var(--honey))" />
             </div>
-            {biggestBill && (
+            )}
+            {biggestBill && !billsLater && (
               <div className="flex items-center gap-3 rounded-r3 p-4 mb-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
-                <span className="w-10 h-10 rounded-[11px] flex items-center justify-center text-[17px] shrink-0" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>{CHIP_EMOJI[biggestBill.key] ?? '💸'}</span>
+                <span className="w-10 h-10 rounded-r2 flex items-center justify-center text-[17px] shrink-0" style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>{CHIP_EMOJI[biggestBill.key] ?? '💸'}</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-[0.86rem] font-semibold text-ink">{biggestBill.label} is your biggest fixed cost</div>
                   <div className="text-[0.76rem] text-ink-mid">{fmt(biggestBill.amount, currency)}{incomeAmt > 0 ? ` — about ${Math.round((biggestBill.amount / incomeAmt) * 100)}% of take-home pay` : ''}</div>
                 </div>
               </div>
             )}
+            {/* W6 (audit FE-UIS-11): this showed a fixed "picture confirmed" percentage that measured
+                nothing. What is true: these are estimates until real money confirms them. */}
             <div className="rounded-r3 p-4 mb-7" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[0.8rem] text-ink-mid">Picture confirmed</span>
-                <span className="num font-bold text-ink">35%</span>
-              </div>
-              <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-                <div className="h-full rounded-full" style={{ width: '35%', background: 'hsl(var(--sage))' }} />
-              </div>
-              <div className="text-[0.72rem] text-ink-dim mt-2">Log a week of real spending and this climbs toward 80% — that's when the forecast gets sharp. Your paycheck and bills are waiting in <strong>Recurring</strong> for you to review.</div>
+              <div className="text-[0.8rem] text-ink-mid mb-1">These figures are estimates for now</div>
+              <div className="text-[0.72rem] text-ink-dim">Log a week of real spending and reconcile your cash, and they become real numbers — that's when the forecast gets sharp. Your paycheck and bills are waiting in <strong>Recurring</strong> for you to review.</div>
             </div>
             <Button onClick={complete} disabled={submitting} full>
               {submitting ? 'Setting up…' : 'Go to my dashboard'} <ArrowRight size={15} />
@@ -407,13 +455,19 @@ function pipLine(step: Step, name: string): string {
   }
 }
 
-function FootNav({ onBack, onNext, nextDisabled, nextLabel }: {
-  onBack: () => void; onNext: () => void; nextDisabled: boolean; nextLabel: string;
+/** Aurora 4.0 ON2 — Back / Continue stay pinned to the bottom with a soft fade above them, so the bills
+ *  list scrolls underneath (on a 390×844 phone the six rows pushed them below the fold). */
+function FootNav({ onBack, onNext, nextDisabled, nextLabel, below }: {
+  onBack: () => void; onNext: () => void; nextDisabled: boolean; nextLabel: string; below?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2.5">
-      <Button variant="ghost" onClick={onBack}>Back</Button>
-      <Button onClick={onNext} disabled={nextDisabled} full>{nextLabel} <ArrowRight size={14} /></Button>
+    <div className="sticky bottom-0 z-[1] -mx-6 px-6 pt-8 pb-[max(16px,env(safe-area-inset-bottom))]" data-testid="onboarding-footnav"
+      style={{ background: 'linear-gradient(to top, hsl(var(--bg)) 62%, transparent)' }}>
+      <div className="flex items-center gap-2.5">
+        <Button variant="ghost" onClick={onBack}>Back</Button>
+        <Button onClick={onNext} disabled={nextDisabled} full>{nextLabel} <ArrowRight size={14} /></Button>
+      </div>
+      {below}
     </div>
   );
 }
@@ -423,7 +477,7 @@ function RevealStat({ label, value, hint, tone }: { label: string; value: string
     <div className="rounded-r3 p-4" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
       <div className="mono-label mb-1.5">{label}</div>
       <div className="num font-bold text-[1.5rem]" style={{ color: tone }}>{value}</div>
-      {hint && <div className="text-[0.68rem] text-ink-dim mt-1 leading-snug">{hint}</div>}
+      {hint && <div className="text-[12px] text-ink-dim mt-1 leading-snug">{hint}</div>}
     </div>
   );
 }

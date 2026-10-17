@@ -8,6 +8,7 @@ import Button from '../../components/ui/Button';
 import { Input, Field } from '../../components/ui/Input';
 import { requestPasswordReset, updatePassword, getSession, signInMagicLink } from '../../lib/auth';
 import { isCloudEnabled, supabase } from '../../lib/supabase';
+import { markRecovery, recoveryActive, clearRecovery, recoveryStore } from '../../lib/passwordRecovery';
 import GoogleButton from '../../components/auth/GoogleButton';
 import { AuthShell } from './SignIn';
 
@@ -49,7 +50,9 @@ export default function ResetPassword() {
   //  1. PKCE recovery link: URL has `?code=...` — exchange it for a session.
   //  2. Legacy hash-token recovery: handled automatically by detectSessionInUrl,
   //     surfaces via the PASSWORD_RECOVERY auth event.
-  //  3. Already-active recovery session (e.g. page refresh).
+  //  3. A refresh of this page within 15 minutes of 1 or 2 (W6, audit FE-UIS-13). An ordinary
+  //     signed-in session is NOT a recovery: it used to open this step, so anyone holding an
+  //     unlocked, signed-in device could set a new password with no link and no code.
   useEffect(() => {
     if (!isCloudEnabled() || !supabase) return;
     let cancelled = false;
@@ -69,15 +72,19 @@ export default function ResetPassword() {
         }
         url.searchParams.delete('code');
         window.history.replaceState({}, '', url.pathname + (url.search || ''));
+        markRecovery(recoveryStore(), Date.now());
         setStep('set');
         return;
       }
       const session = await getSession();
-      if (!cancelled && session?.user) setStep('set');
+      if (!cancelled && session?.user && recoveryActive(recoveryStore(), Date.now())) setStep('set');
     })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') setStep('set');
+      if (event === 'PASSWORD_RECOVERY') {
+        markRecovery(recoveryStore(), Date.now());
+        setStep('set');
+      }
     });
 
     return () => { cancelled = true; sub.subscription.unsubscribe(); };
@@ -103,6 +110,7 @@ export default function ResetPassword() {
     setError(''); setSubmitting(true);
     try {
       await updatePassword(newPassword);
+      clearRecovery(recoveryStore());
       setStep('done');
       setTimeout(() => navigate('/dashboard'), 1500);
     } catch (e) { setError((e as Error).message); }
@@ -226,6 +234,7 @@ export default function ResetPassword() {
           <Field label="New password" hint="min 8 chars">
             <div className="relative">
               <Input
+                aria-label="New password"
                 type={showPw ? 'text' : 'password'}
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
@@ -256,7 +265,7 @@ export default function ResetPassword() {
                   />
                 ))}
               </div>
-              <div className="font-mono text-[0.6rem] tracking-[0.12em] uppercase text-ink-dim">
+              <div className="text-[12px] text-ink-dim">
                 Strength: <span className="text-ink-mid">{strength.label}</span>
               </div>
             </div>
@@ -310,7 +319,7 @@ export default function ResetPassword() {
 
       <div className="my-4 flex items-center gap-3">
         <div className="flex-1 h-px bg-line" />
-        <span className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">or</span>
+        <span className="text-[12px] text-ink-dim">or</span>
         <div className="flex-1 h-px bg-line" />
       </div>
 

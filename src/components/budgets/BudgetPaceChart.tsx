@@ -67,7 +67,7 @@ export default function BudgetPaceChart({ series, limit, daysInMonth, currency }
           <circle cx={todayX} cy={todayY} r="4" fill="var(--accent)" stroke="var(--canvas)" strokeWidth="2" />
         )}
       </svg>
-      <span className="absolute top-0 right-0.5 font-mono text-[7.5px] tracking-wide uppercase text-terra">
+      <span className="absolute top-0 right-0.5 text-[11px] text-terra">
         limit {fmtShort(limit, currency)}
       </span>
     </div>

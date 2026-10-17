@@ -5,12 +5,12 @@ exports[`Money-Model regression — aggregation golden file (C4.1) > CON-UNIT-MM
   "aiSummary": {
     "budgets": [
       {
-        "category": "food",
+        "category": "food_dining",
         "limit": 400,
         "spentPct": 75,
       },
       {
-        "category": "transport",
+        "category": "travel",
         "limit": 200,
         "spentPct": 75,
       },
@@ -24,8 +24,11 @@ exports[`Money-Model regression — aggregation golden file (C4.1) > CON-UNIT-MM
       },
     ],
     "netWorth": {
+      "cardDues": 0,
       "debtToAssetPct": 38.1,
-      "liquidityMonths": 3.45,
+      "essentialMonths": 40,
+      "liquidAssets": 6000,
+      "liquidityMonths": 3.4,
       "netWorth": 13000,
       "totalAssets": 21000,
       "totalLiabilities": 8000,
@@ -43,7 +46,7 @@ exports[`Money-Model regression — aggregation golden file (C4.1) > CON-UNIT-MM
   },
   "netWorth": 13000,
   "pulseComponents": {
-    "budget": 25,
+    "budget": 100,
     "debt": 100,
     "savings": 100,
     "trend": 0,
@@ -59,7 +62,7 @@ exports[`Money-Model regression — aggregation golden file (C4.1) > CON-UNIT-MM
     "entertainment": 90,
     "food": 300,
     "rent": 1200,
-    "transport": 150,
+    "travel": 150,
   },
   "totalBalance": 3260,
 }

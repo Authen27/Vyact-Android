@@ -3,23 +3,31 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Download, FileText, Clipboard, ShieldAlert, Cloud, Trash2, PauseCircle, XOctagon } from 'lucide-react';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
-import { Panel } from '../components/ui/Card';
 import { fmt, today } from '../lib/format';
-import { CURRENCIES, DEFAULT_RATES, LOCALES } from '../constants';
-import { sb } from '../lib/supabase';
+import { CURRENCIES, LOCALES } from '../constants';
+import { FULLY_TRANSLATED, languageOptionLabel } from '../lib/i18n';
+import { sb, isCloudEnabled } from '../lib/supabase';
 import {
-  enrollMfaTotp, verifyMfaEnrolment, listMfaFactors, unenrollMfaFactor, updatePassword,
-  eraseHouseholdData, deactivateAccount, requestAccountDeletion, executeAccountDeletion, signOut,
+  updatePassword,
+  eraseHouseholdData, deactivateAccount, executeAccountDeletion, AccountDeletionError, signOut,
   sendAccountActionCode, verifyAccountActionCode,
 } from '../lib/auth';
 import WhatsAppLink from '../components/settings/WhatsAppLink';
+import WhatsAppIcon from '../components/whatsapp/WhatsAppIcon';
+import { transactionsCsv, downloadCsv } from '../lib/transactionsCsv';
+import { buildBackup } from '../lib/backup';
+import PushNotifications from '../components/settings/PushNotifications';
 import { POLICY_VERSION } from './Privacy';
 import Chip from '../components/ui/Chip';
+import { Select } from '../components/ui/Input';
 import {
-  NOTIF_GROUPS, NOTIF_TYPE_LABEL, NOTIF_LOCKED, typeEnabled, requestWebPushPermission,
+  NOTIF_GROUPS, NOTIF_TYPE_LABEL, NOTIF_LOCKED, typeEnabled,
 } from '../lib/notifications';
 import type { Profile, Theme, NotifType } from '../types';
-import type { Factor } from '@supabase/supabase-js';
+import { canEditHouseholdRow } from '../lib/permissions';
+import PageHead from '../components/ui/PageHead';
+import { askSheet, confirmSheet } from '../lib/confirmSheet';
+import { deactivateRequest, deleteAccountRequest, eraseDataRequest, verificationCodeRequest } from '../lib/confirmCopy';
 
 const THEMES: { key: Theme; label: string; desc: string }[] = [
   { key: 'dark',   label: 'Nocturne',   desc: 'Aurora dark — default' },
@@ -62,7 +70,7 @@ function SettingRow({ icon, label, value, open, onToggle, children, id }: {
           {icon}
         </span>
         <span className="flex-1 text-[0.86rem] text-ink font-medium truncate">{label}</span>
-        {value && <span className="text-[0.76rem] text-ink-dim whitespace-nowrap">{value}</span>}
+        {value && <span className="text-[12px] text-ink-dim whitespace-nowrap truncate max-w-[45%]">{value}</span>}
         <span
           className="text-ink-dim text-lg leading-none flex-shrink-0"
           style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s ease' }}
@@ -72,6 +80,32 @@ function SettingRow({ icon, label, value, open, onToggle, children, id }: {
         </span>
       </button>
       {open && <div className="pb-1">{children}</div>}
+    </div>
+  );
+}
+
+/** Aurora 4.0 ST1 — a row that goes somewhere instead of opening in place (same look as SettingRow). */
+function SettingLinkRow({ icon, label, value, to }: { icon: ReactNode; label: string; value?: string; to: string }) {
+  return (
+    <Link to={to} className="w-full flex items-center gap-3 px-3.5 py-3 text-left">
+      <span className="w-7 h-7 rounded-full flex items-center justify-center text-[13px] flex-shrink-0"
+        style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>{icon}</span>
+      <span className="flex-1 text-[0.86rem] text-ink font-medium truncate">{label}</span>
+      {value && <span className="text-[12px] text-ink-dim whitespace-nowrap">{value}</span>}
+      <span className="text-ink-dim text-lg leading-none flex-shrink-0" aria-hidden>›</span>
+    </Link>
+  );
+}
+
+/** Aurora 4.0 MIST3 — a tiny version of the theme itself: its own tokens, scoped by data-theme. */
+function ThemePreview({ theme }: { theme: 'dark' | 'warm' }) {
+  return (
+    <div data-theme={theme} className="h-full w-full p-2" style={{ background: 'hsl(var(--bg))' }}>
+      <div className="rounded-[7px] p-1.5 h-full flex flex-col gap-1" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+        <span className="h-1.5 w-[55%] rounded-full" style={{ background: 'hsl(var(--ink))' }} />
+        <span className="h-1 w-[80%] rounded-full" style={{ background: 'hsl(var(--ink-dim))' }} />
+        <span className="mt-auto h-2 w-[40%] rounded-full" style={{ background: 'var(--accent)' }} />
+      </div>
     </div>
   );
 }
@@ -96,7 +130,6 @@ export default function Settings() {
   const { t } = useTranslation();
   const navigate    = useNavigate();
   const profile     = useStore(s => s.profile);
-  const rates       = useStore(s => s.rates);
   const theme       = useStore(s => s.theme);
   const cloudEnabled = useStore(s => s.cloudEnabled);
   const session      = useStore(s => s.session);
@@ -108,8 +141,6 @@ export default function Settings() {
   const assets      = useStore(s => s.assets);
   const members     = useStore(s => s.members);
   const updateProfile = useStore(s => s.updateProfile);
-  const upsertRate  = useStore(s => s.upsertRate);
-  const resetRates  = useStore(s => s.resetRates);
   const setTheme    = useStore(s => s.setTheme);
   const toast       = useStore(s => s.toast);
   const notificationPrefs = useStore(s => s.notificationPrefs);
@@ -118,7 +149,6 @@ export default function Settings() {
   // Danger Zone (v9.8.0) — erase / deactivate / delete
   const [erasing, setErasing] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
-  const [deletePending, setDeletePending] = useState<string | null>(null); // ISO date once requested
   const [deleting, setDeleting] = useState(false);
 
   // Sends a 6-digit code to the account's own email and blocks until the
@@ -133,11 +163,17 @@ export default function Settings() {
       toast(`Could not send verification code: ${(e as Error).message}`, 'error');
       return false;
     }
-    toast(`Verification code sent to ${email}`, 'info');
-    const code = window.prompt(`Enter the 6-digit code sent to ${email} to confirm: ${actionLabel}`);
-    if (!code) return false;
+    // Aurora 4.0 CF17 — a proper 6-digit field with Resend, not a browser prompt.
+    const { ok, value: code } = await askSheet(verificationCodeRequest({
+      email, action: actionLabel,
+      resend: async () => {
+        try { await sendAccountActionCode(); toast(`New code sent to ${email}`, 'info'); }
+        catch (e) { toast(`Could not resend the code: ${(e as Error).message}`, 'error'); }
+      },
+    }));
+    if (!ok || !code) return false;
     try {
-      await verifyAccountActionCode(email, code.trim());
+      await verifyAccountActionCode(email, code);
       return true;
     } catch (e) {
       toast((e as Error).message, 'error');
@@ -147,9 +183,7 @@ export default function Settings() {
 
   async function onEraseHouseholdData() {
     if (!cloudEnabled || !session) { toast('Erase requires cloud mode', 'error'); return; }
-    if (!window.confirm(
-      'This permanently deletes every transaction, budget, debt, asset, account, goal, and recurring schedule in this household. Your login and household stay intact. This cannot be undone.\n\nContinue?'
-    )) return;
+    if (!(await confirmSheet(eraseDataRequest()))) return;
     setErasing(true);
     try {
       if (!(await confirmWithEmailCode('erase all household data'))) return;
@@ -163,7 +197,7 @@ export default function Settings() {
 
   async function onDeactivate() {
     if (!cloudEnabled || !session) { toast('Deactivation requires cloud mode', 'error'); return; }
-    if (!window.confirm('Deactivate your account? You will be signed out immediately. Your data is kept exactly as-is and restored the moment you sign back in.')) return;
+    if (!(await confirmSheet(deactivateRequest()))) return;   // Aurora 4.0 CF18
     setDeactivating(true);
     try {
       if (!(await confirmWithEmailCode('deactivate your account'))) return;
@@ -176,44 +210,40 @@ export default function Settings() {
     } finally { setDeactivating(false); }
   }
 
-  async function onRequestDeletion() {
+  // W1b (v10.63.0, owner decision): deletion is immediate. One server transaction erases the
+  // account; the old 30-day schedule was never executed by anything. The server also checks
+  // that the emailed code was just confirmed (a recent sign-in), not only this page.
+  async function onDeleteAccount() {
     if (!cloudEnabled || !session) { toast('Account deletion requires cloud mode', 'error'); return; }
-    if (!window.confirm(
-      'This schedules PERMANENT deletion of your account and every household you own, in 30 days. You will be signed out now; signing back in within 30 days cancels the deletion. After 30 days this cannot be undone.\n\nContinue?'
-    )) return;
+    if (!(await confirmSheet(deleteAccountRequest()))) return;
     setDeleting(true);
     try {
-      if (!(await confirmWithEmailCode('schedule permanent account deletion'))) return;
-      const scheduledFor = await requestAccountDeletion();
-      setDeletePending(scheduledFor);
-      await signOut();
-      toast(`Deletion scheduled for ${new Date(scheduledFor).toLocaleDateString()} — sign back in any time before then to cancel`, 'info');
-      navigate('/auth/sign-in');
-    } catch (e) {
-      toast(`Could not schedule deletion: ${(e as Error).message}`, 'error');
-    } finally { setDeleting(false); }
-  }
-
-  async function onDeleteImmediately() {
-    if (!cloudEnabled || !session) return;
-    if (!window.confirm('This immediately and irreversibly deletes your account and all data you own, skipping the 30-day undo window.\n\nContinue?')) return;
-    setDeleting(true);
-    try {
-      if (!(await confirmWithEmailCode('delete your account immediately, skipping the undo window'))) return;
-      await requestAccountDeletion();
-      await executeAccountDeletion(true);
+      if (!(await confirmWithEmailCode('permanently delete your account'))) return;
+      await executeAccountDeletion();
+      // The login is gone; clear this device's copy of the ledger too.
+      await signOut().catch(() => undefined);
       toast('Account permanently deleted', 'info');
       navigate('/auth/sign-in');
     } catch (e) {
-      toast(`Could not delete account: ${(e as Error).message}`, 'error');
+      const code = e instanceof AccountDeletionError ? e.code : '';
+      if (code === 'transfer_required') {
+        toast('You own a household other people use. Make one of them the owner first (Households › Members), then delete your account.', 'error');
+      } else if (code === 'reauth_required') {
+        toast('Please confirm with a new emailed code and try again.', 'error');
+      } else {
+        toast(`Could not delete account: ${(e as Error).message}`, 'error');
+      }
     } finally { setDeleting(false); }
   }
 
   const [name, setName]       = useState(profile.name);
-  const [email, setEmail]     = useState(profile.email);
   const [saving, setSaving]   = useState(false);
-  const [rateEdits, setRateEdits] = useState<Record<string, string>>({});
   const [extraPay, setExtraPay] = useState(String(profile.extraPayment || 0));
+  // W6 (audit FE-UIS-06): only the owner can change what lives on the household row. Everyone else
+  // sees the values, read-only, instead of a "saved" toast for a write the database refuses.
+  const myRole = useStore(s => s.myRole);
+  const canEditHousehold = canEditHouseholdRow(myRole, cloudEnabled);
+  const ownerOnlyNote = 'Only the household owner can change this.';
 
   // Board E · M1 — one row open at a time across the grouped settings list.
   // A direct #notifications deep-link (Help/legal footers already link there)
@@ -223,13 +253,9 @@ export default function Settings() {
   );
   const toggleRow = (key: string) => setOpenRow(r => r === key ? null : key);
 
-  // MFA / Security state (TD-15)
-  const [mfaQr, setMfaQr] = useState('');
-  const [mfaFactorId, setMfaFactorId] = useState('');
-  const [mfaCode, setMfaCode] = useState('');
-  const [mfaEnrolling, setMfaEnrolling] = useState(false);
-  const [mfaFactors, setMfaFactors] = useState<Factor[]>([]);
-  const [loadingFactors, setLoadingFactors] = useState(false);
+  // W0 (owner decision, audit 2026-10-04): no two-factor authentication. The old Security
+  // row enrolled TOTP factors that sign-in never challenged (FE-UIS-02) and sent the secret
+  // to Google Charts to draw the QR (FE-PLT-02), so it promised protection it didn't give.
 
   // Password change state (v7.4.4)
   const [pwNew, setPwNew] = useState('');
@@ -242,6 +268,9 @@ export default function Settings() {
     if (pwNew !== pwConfirm) { toast('Passwords do not match', 'error'); return; }
     setPwSaving(true);
     try {
+      // W7a (audit FE-UIS-13): the same emailed-code gate as the Danger Zone — an unlocked, signed-in
+      // device alone must not be able to change the password and lock the owner out.
+      if (!(await confirmWithEmailCode('change your password'))) return;
       await updatePassword(pwNew);
       setPwNew(''); setPwConfirm(''); setPwShow(false);
       toast('Password updated', 'success');
@@ -253,26 +282,37 @@ export default function Settings() {
   async function saveProfile() {
     setSaving(true);
     try {
-      await updateProfile({ name, email });
+      // W6 (audit FE-UIS-06): the name only. The email field saved nowhere (no profile column, not the
+      // sign-in address) while saying "Profile saved"; the account email is shown, not edited, here.
+      await updateProfile({ name });
       toast('Profile saved', 'success');
     } catch { toast('Save failed', 'error'); }
     finally { setSaving(false); }
   }
 
-  async function applyRate(code: string) {
-    const val = parseFloat(rateEdits[code] ?? '');
-    if (isNaN(val) || val <= 0) return;
-    await upsertRate(code, val);
-    setRateEdits(r => { const n = {...r}; delete n[code]; return n; });
-    toast(`${code} rate updated`, 'success');
+  // One snapshot for both 'Download Backup' and 'Copy to Clipboard' (the copy used to leave out
+  // members and the version while its button said 'Full backup'). W3b: no exchange rates — a
+  // household has one currency and nothing is converted. W7a: built by lib/backup (all the data).
+  function backupSnapshot() {
+    const s = useStore.getState();
+    return buildBackup({
+      profile, transactions, budgets, goals, members, debts, assets,
+      accounts: s.accounts, budgetAllocations: s.budgetAllocations,
+      recurringSchedules: s.recurringSchedules, netWorthSnapshots: s.netWorthSnapshots,
+    }, today(), __APP_VERSION__);
+  }
+
+  async function copyBackup() {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(backupSnapshot(), null, 2));
+      toast('Backup copied', 'success');
+    } catch {
+      toast('Could not copy — use Download Backup instead', 'error');
+    }
   }
 
   function downloadBackup() {
-    const backup = {
-      version: '6.4.9', exported: today(),
-      profile, transactions, budgets, goals, members, debts, assets,
-      exchangeRates: rates,
-    };
+    const backup = backupSnapshot();
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = `vyact-backup-${today()}.json`; a.click();
@@ -281,15 +321,8 @@ export default function Settings() {
   }
 
   function exportCSV() {
-    const rows = [
-      ['Date','Type','Description','Category','Amount','Currency','Note'],
-      ...transactions.map(t => [t.date, t.type, t.description, t.category, t.amount, t.currency, t.note || '']),
-    ];
-    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `vyact-transactions-${today()}.csv`; a.click();
-    URL.revokeObjectURL(url);
+    // v10.55.0 (#69) — one builder with the Transactions page; adds who added it, accounts, mode.
+    downloadCsv(transactionsCsv(transactions, { members, accounts: useStore.getState().accounts, baseCurrency: profile.baseCurrency }), `vyact-transactions-${today()}.csv`);
     toast('CSV exported', 'success');
   }
 
@@ -313,95 +346,84 @@ export default function Settings() {
     }
   }
 
-  async function fetchMfaFactors() {
-    if (!cloudEnabled || !session) return setMfaFactors([]);
-    setLoadingFactors(true);
-    try {
-      const factors = await listMfaFactors();
-      setMfaFactors(factors?.all ?? []);
-    } catch (e) {
-      // ignore — best-effort UI
-      setMfaFactors([]);
-    } finally { setLoadingFactors(false); }
-  }
-
-  useEffect(() => {
-    if (cloudEnabled && session) fetchMfaFactors();
-  }, [cloudEnabled, session]);
-
   return (
-    <div>
-      <div className="flex justify-between items-start mb-5 gap-4 flex-wrap">
-        <div>
-          <h1 className="display-italic text-4xl text-ink mb-1.5">{t('settings')}</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            Profile · Appearance · Currency · Sync
-          </p>
-        </div>
-      </div>
+    <div className="ui-pilot">
+      <PageHead title={t('settings')} />
 
       <div className="space-y-4">
 
-        {/* ── Profile ─────────────────────────────────────── */}
-        <Panel title="Profile">
-          <div className="p-5 grid sm:grid-cols-2 gap-4">
-            <div>
-              <label className="mono-label mb-1.5 block">Display Name</label>
-              <input className="input w-full" value={name} onChange={e => setName(e.target.value)} placeholder="Your name" />
+        {/* ── Profile (Aurora 4.0 ST1): a group of rows like the rest of the page, each with its editor ── */}
+        <SettingsGroup caption="Profile">
+          <SettingRow icon="👤" label="Display name" value={profile.name || undefined}
+            open={openRow === 'name'} onToggle={() => toggleRow('name')}>
+            <div className="px-3.5 pb-3">
+              <label htmlFor="settings-display-name" className="mono-label mb-1.5 block">Display Name</label>
+              <div className="flex gap-2">
+                <input id="settings-display-name" className="input flex-1 min-w-0" value={name} onChange={e => setName(e.target.value)} placeholder="Your name"
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveProfile(); } }} />
+                <button className="btn-primary" onClick={saveProfile} disabled={saving || !name.trim() || name.trim() === profile.name}>
+                  {saving ? 'Saving…' : 'Save name'}
+                </button>
+              </div>
             </div>
-            <div>
-              <label className="mono-label mb-1.5 block">Email</label>
-              <input className="input w-full" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
+          </SettingRow>
+
+          <SettingRow icon="✉️" label="Email"
+            value={userEmail ? (cloudEnabled && session ? `${userEmail} · ${emailVerified ? 'verified' : 'not verified'}` : userEmail) : '—'}
+            open={openRow === 'email'} onToggle={() => toggleRow('email')}>
+            <div className="px-3.5 pb-3 space-y-2">
+              <p id="settings-email" className="text-[0.9rem] text-ink break-all">{userEmail || '—'}</p>
+              <p className="text-[12px] text-ink-dim">Your sign-in address. It is shown here, not changed here.</p>
+              {cloudEnabled && session && (
+                <div className="flex items-center justify-between gap-3 well px-4 py-3">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className="text-[12px] font-medium px-2 py-0.5 rounded-full"
+                      style={emailVerified
+                        ? { background: 'color-mix(in srgb, hsl(var(--sage)) 14%, transparent)', color: 'var(--good-text)' }
+                        : { background: 'color-mix(in srgb, hsl(var(--honey)) 14%, transparent)', color: 'var(--warn-text)' }}>
+                      {emailVerified ? 'Email verified' : 'Verification pending'}
+                    </span>
+                    <span className="text-[0.78rem] text-ink-mid">
+                      {emailVerified
+                        ? 'Password recovery is enabled.'
+                        : 'You have full access — verifying enables password recovery.'}
+                    </span>
+                  </div>
+                  {!emailVerified && (
+                    <button className="btn-ghost" onClick={resendVerification}>
+                      Resend
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-            <div>
-              <label className="mono-label mb-1.5 block">Date Format</label>
-              <select className="input w-full" value={profile.dateFormat}
+          </SettingRow>
+
+          <SettingRow icon="📅" label="Date format" value={DATE_FORMATS.find(df => df.key === profile.dateFormat)?.example}
+            open={openRow === 'date'} onToggle={() => toggleRow('date')}>
+            <div className="px-3.5 pb-3">
+              <label htmlFor="settings-date-format" className="mono-label mb-1.5 block">Date Format</label>
+              <Select id="settings-date-format" value={profile.dateFormat}
                 onChange={e => updateProfile({ dateFormat: e.target.value as Profile['dateFormat'] })}>
                 {DATE_FORMATS.map(df => (
                   <option key={df.key} value={df.key}>{df.label} — {df.example}</option>
                 ))}
-              </select>
+              </Select>
             </div>
-            {cloudEnabled && session && (
-              <div className="sm:col-span-2 flex items-center justify-between gap-3 bg-bg3 border border-line rounded-md px-4 py-3">
-                <div className="flex items-center gap-2.5">
-                  <span className={`font-mono text-[0.6rem] tracking-widest uppercase px-2 py-0.5 rounded-full ${
-                    emailVerified
-                      ? 'bg-sage/10 border border-sage/30 text-sage'
-                      : 'bg-honey/10 border border-honey/40 text-honey'
-                  }`}>
-                    {emailVerified ? 'Email verified' : 'Verification pending'}
-                  </span>
-                  <span className="text-[0.78rem] text-ink-mid">
-                    {emailVerified
-                      ? 'Password recovery is enabled.'
-                      : 'You have full access — verifying enables password recovery.'}
-                  </span>
-                </div>
-                {!emailVerified && (
-                  <button className="btn-ghost text-xs py-1 px-2.5" onClick={resendVerification}>
-                    Resend
-                  </button>
-                )}
-              </div>
-            )}
+          </SettingRow>
 
-            <div className="sm:col-span-2 flex items-center justify-between gap-3">
-              <Link
-                to="/onboarding"
-                className="text-[0.8rem] text-coral hover:underline font-medium"
-              >
-                {profile.onboardedAt ? 'Re-run onboarding wizard' : 'Run onboarding wizard'} →
-              </Link>
-              <button className="btn-primary" onClick={saveProfile} disabled={saving}>
-                {saving ? 'Saving…' : 'Save Profile'}
-              </button>
-            </div>
-          </div>
-        </Panel>
+          <SettingLinkRow icon="🧭" label={profile.onboardedAt ? 'Re-run the setup wizard' : 'Run the setup wizard'} to="/onboarding" />
+        </SettingsGroup>
 
-        {/* ── WhatsApp link (cloud-only; renders nothing in local mode) ── */}
-        <WhatsAppLink />
+        {/* ── Connections (Aurora 4.0 ST2): WhatsApp is a row, not a standalone panel. Cloud only. ── */}
+        {isCloudEnabled() && (
+          <SettingsGroup caption="Connections">
+            <SettingRow icon={<WhatsAppIcon size={14} className="text-[#25D366]" />} label="WhatsApp" id="whatsapp"
+              open={openRow === 'whatsapp'} onToggle={() => toggleRow('whatsapp')}>
+              <WhatsAppLink embedded />
+            </SettingRow>
+          </SettingsGroup>
+        )}
 
         {/* ── Preferences (board E · .set-group grouped list) ── */}
         <SettingsGroup caption="Preferences">
@@ -414,15 +436,14 @@ export default function Settings() {
                   <button key={th.key} onClick={() => setTheme(th.key)}
                     className="rounded-r3 p-3.5 text-left border-none cursor-pointer transition-shadow"
                     style={{ background: 'var(--canvas)', boxShadow: on ? 'var(--neu-sm), 0 0 0 2px var(--accent)' : 'var(--neu-sm)' }}>
-                    <div className="flex flex-col gap-1 mb-2" aria-hidden>
-                      {[0, 1, 2].map(i => (
-                        <span key={i} className="h-1.5 rounded-full"
-                          style={{ background: i === 0 ? 'var(--accent)' : 'var(--ff-line-2)', width: `${90 - i * 18}%` }} />
-                      ))}
+                    <div className="h-[64px] rounded-r2 overflow-hidden mb-2.5 flex" aria-hidden data-testid={`theme-preview-${th.key}`}>
+                      {th.key === 'system'
+                        ? <><div className="w-1/2"><ThemePreview theme="dark" /></div><div className="w-1/2"><ThemePreview theme="warm" /></div></>
+                        : <ThemePreview theme={th.key === 'warm' ? 'warm' : 'dark'} />}
                     </div>
                     <div className="text-[0.86rem] font-display font-semibold text-ink mb-0.5">{th.label}</div>
-                    <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim">{th.desc}</div>
-                    {on && <div className="mt-2 text-[0.65rem] font-mono uppercase tracking-widest" style={{ color: 'var(--accent)' }}>Active</div>}
+                    <div className="text-[12px] text-ink-dim">{th.desc}</div>
+                    {on && <div className="mt-2 text-[12px] font-medium" style={{ color: 'var(--accent-text)' }}>Active</div>}
                   </button>
                 );
               })}
@@ -448,7 +469,7 @@ export default function Settings() {
               {NOTIF_GROUPS.map(g => (
                 <div key={g.label}>
                   <div className="mono-label mb-1.5">{g.label}</div>
-                  <div className="rounded-r3 overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+                  <div className="rounded-r3 overflow-hidden" style={{ background: 'var(--well-bg)', boxShadow: 'var(--well-shadow)', border: '1px solid var(--well-border)' }}>
                     {g.types.map((ty: NotifType, i) => {
                       const locked = NOTIF_LOCKED.includes(ty);
                       const enabled = typeEnabled(notificationPrefs, ty);
@@ -479,13 +500,13 @@ export default function Settings() {
                 <div className="mono-label mb-1.5">Quiet hours</div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="mono-label mb-1 block">From</label>
-                    <input type="time" className="input w-full" value={notificationPrefs.quietStart}
+                    <label htmlFor="settings-quiet-start" className="mono-label mb-1 block">From</label>
+                    <input id="settings-quiet-start" type="time" className="input w-full" value={notificationPrefs.quietStart}
                       onChange={e => updateNotificationPrefs({ quietStart: e.target.value })} />
                   </div>
                   <div>
-                    <label className="mono-label mb-1 block">To</label>
-                    <input type="time" className="input w-full" value={notificationPrefs.quietEnd}
+                    <label htmlFor="settings-quiet-end" className="mono-label mb-1 block">To</label>
+                    <input id="settings-quiet-end" type="time" className="input w-full" value={notificationPrefs.quietEnd}
                       onChange={e => updateNotificationPrefs({ quietEnd: e.target.value })} />
                   </div>
                 </div>
@@ -506,24 +527,7 @@ export default function Settings() {
                 </div>
               </div>
 
-              <label className="flex items-center justify-between gap-3 cursor-pointer">
-                <div>
-                  <div className="text-sm font-semibold text-ink">Browser push</div>
-                  <div className="text-[0.76rem] text-ink-dim mt-0.5">Show a system notification for action-required alerts.</div>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={notificationPrefs.webPushEnabled}
-                  onChange={async e => {
-                    if (e.target.checked) {
-                      const granted = await requestWebPushPermission();
-                      if (!granted) { toast('Enable notifications for Vyact in your browser settings first', 'error'); return; }
-                    }
-                    updateNotificationPrefs({ webPushEnabled: e.target.checked });
-                  }}
-                  className="accent-coral w-[18px] h-[18px] flex-shrink-0"
-                />
-              </label>
+              <PushNotifications />
             </div>
           </SettingRow>
 
@@ -531,62 +535,42 @@ export default function Settings() {
             open={openRow === 'language'} onToggle={() => toggleRow('language')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="mono-label mb-1.5 block">Language</label>
-                <select className="input w-full" value={profile.language}
+                <label htmlFor="settings-language" className="mono-label mb-1.5 block">Language</label>
+                <Select id="settings-language" value={profile.language} disabled={!canEditHousehold}
                   onChange={e => updateProfile({ language: e.target.value })}>
-                  {Object.entries(LOCALES).map(([k, v]) => (
-                    <option key={k} value={k}>{v.name}</option>
+                  {Object.keys(LOCALES).map(k => (
+                    <option key={k} value={k}>{languageOptionLabel(k)}</option>
                   ))}
-                </select>
+                </Select>
+                {/* W8a (FE-UIS-15): only English is complete; the rest translate the navigation. */}
+                {!FULLY_TRANSLATED.has(profile.language) && (
+                  <p className="text-[0.75rem] text-ink-dim mt-1.5">Preview: only the navigation is translated so far; the rest of the app stays in English.</p>
+                )}
               </div>
               <div>
-                <label className="mono-label mb-1.5 block">Base Currency</label>
-                <select className="input w-full" value={profile.baseCurrency}
+                <label htmlFor="settings-currency" className="mono-label mb-1.5 block">Household currency</label>
+                <Select id="settings-currency" value={profile.baseCurrency} disabled={!canEditHousehold}
                   onChange={e => updateProfile({ baseCurrency: e.target.value })}>
                   {Object.entries(CURRENCIES).map(([code, meta]) => (
                     <option key={code} value={code}>{meta.symbol} {code} — {meta.name}</option>
                   ))}
-                </select>
+                </Select>
+                {/* W3b (owner decision D14): one currency per household; changing it changes the symbol only. */}
+                <p className="text-[0.74rem] text-ink-dim mt-1.5">
+                  Every amount in this household is in this currency. Changing it changes the symbol only; amounts are not converted.
+                </p>
+                {!canEditHousehold && <p className="text-[0.74rem] text-ink-dim mt-1">{ownerOnlyNote}</p>}
               </div>
               <div className="sm:col-span-2">
-                <label className="mono-label mb-1.5 block">Number System</label>
-                <select className="input w-full" value={profile.numberSystem ?? 'western'}
+                <label htmlFor="settings-number-system" className="mono-label mb-1.5 block">Number System</label>
+                <Select id="settings-number-system" value={profile.numberSystem ?? 'western'}
                   onChange={e => updateProfile({ numberSystem: e.target.value as 'western' | 'indian' })}>
                   <option value="western">Western — K (thousand) · M (million) · B (billion) · T (trillion)</option>
                   <option value="indian">Indian — K (thousand) · L (lakh = 1,00,000) · Cr (crore = 1,00,00,000)</option>
-                </select>
+                </Select>
                 <p className="text-[0.74rem] text-ink-dim mt-1.5">
                   Used when large amounts are compacted (KPI tiles, summary rows, charts).
                 </p>
-              </div>
-            </div>
-          </SettingRow>
-
-          <SettingRow icon="⇄" label="Exchange rates" value={`${Object.keys(CURRENCIES).length - 1} currencies`}
-            open={openRow === 'rates'} onToggle={() => toggleRow('rates')}>
-            <div className="px-3.5 pb-3">
-              <p className="text-[0.84rem] text-ink-mid mb-3">
-                Rates relative to USD. All multi-currency amounts are converted through these.
-              </p>
-              <div className="grid sm:grid-cols-3 gap-2">
-                {Object.entries(CURRENCIES).filter(([c]) => c !== 'USD').map(([code]) => (
-                  <div key={code} className="flex items-center gap-2 bg-bg3 border border-line rounded-md px-3 py-2">
-                    <span className="font-mono text-[0.7rem] text-ink-dim w-8 flex-shrink-0">{code}</span>
-                    <input
-                      className="input flex-1 text-right text-sm py-1 px-2"
-                      value={rateEdits[code] ?? String(rates[code] ?? DEFAULT_RATES[code] ?? '')}
-                      onChange={e => setRateEdits(r => ({ ...r, [code]: e.target.value }))}
-                      onBlur={() => applyRate(code)}
-                      onKeyDown={e => e.key === 'Enter' && applyRate(code)}
-                      placeholder={String(DEFAULT_RATES[code] ?? '')}
-                    />
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 flex justify-end">
-                <button className="btn-ghost btn-sm" onClick={() => { resetRates(); toast('Rates reset to defaults', 'info'); }}>
-                  Reset to defaults
-                </button>
               </div>
             </div>
           </SettingRow>
@@ -595,20 +579,22 @@ export default function Settings() {
             open={openRow === 'debt'} onToggle={() => toggleRow('debt')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="mono-label mb-1.5 block">Payoff Strategy</label>
-                <select className="input w-full" value={profile.payoffStrategy}
+                <label htmlFor="settings-payoff" className="mono-label mb-1.5 block">Payoff Strategy</label>
+                <Select id="settings-payoff" value={profile.payoffStrategy} disabled={!canEditHousehold}
                   onChange={e => updateProfile({ payoffStrategy: e.target.value as Profile['payoffStrategy'] })}>
                   <option value="avalanche">Avalanche — highest APR first (saves money)</option>
                   <option value="snowball">Snowball — smallest balance first (motivation)</option>
-                </select>
+                </Select>
               </div>
               <div>
-                <label className="mono-label mb-1.5 block">Monthly Extra Payment ({profile.baseCurrency})</label>
-                <input className="input w-full" type="number" min="0" value={extraPay}
-                  onChange={e => setExtraPay(e.target.value)} placeholder="0" />
+                <label htmlFor="settings-extra-payment" className="mono-label mb-1.5 block">Monthly Extra Payment ({profile.baseCurrency})</label>
+                <input id="settings-extra-payment" className="input w-full" type="number" min="0" value={extraPay}
+                  disabled={!canEditHousehold} onChange={e => setExtraPay(e.target.value)} placeholder="0" />
               </div>
               <div className="sm:col-span-2 flex justify-end">
-                <button className="btn-primary" onClick={saveDebtPrefs}>Save Preferences</button>
+                {canEditHousehold
+                  ? <button className="btn-primary" onClick={saveDebtPrefs}>Save Preferences</button>
+                  : <p className="text-[0.74rem] text-ink-dim">{ownerOnlyNote}</p>}
               </div>
             </div>
           </SettingRow>
@@ -619,6 +605,11 @@ export default function Settings() {
           <SettingRow icon="☁️" label="Sync & backup" value="JSON · CSV"
             open={openRow === 'sync'} onToggle={() => toggleRow('sync')}>
             <div className="px-3.5 pb-3 space-y-4">
+              {!cloudEnabled && (
+                <div className="rounded-md border border-line px-4 py-3 text-[0.84rem] text-ink">
+                  Cloud not configured. Running locally only. Your data lives in this browser — download a backup to keep a copy.
+                </div>
+              )}
               {cloudEnabled && (
                 <div className="flex items-center gap-2.5 bg-sage/10 border border-sage/30 rounded-md px-4 py-3">
                   <Cloud size={16} className="text-sage flex-shrink-0" />
@@ -632,19 +623,19 @@ export default function Settings() {
               <div className="grid sm:grid-cols-3 gap-3">
                 <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto" onClick={downloadBackup}>
                   <Download size={20} strokeWidth={1.6} />
-                  <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Download Backup</span>
-                  <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">JSON snapshot</span>
+                  <span className="text-[13px] font-medium">Download Backup</span>
+                  <span className="text-[12px] text-ink-dim">JSON snapshot</span>
                 </button>
                 <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto" onClick={exportCSV}>
                   <FileText size={20} strokeWidth={1.6} />
-                  <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Export CSV</span>
-                  <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">Transactions</span>
+                  <span className="text-[13px] font-medium">Export CSV</span>
+                  <span className="text-[12px] text-ink-dim">Transactions</span>
                 </button>
                 <button className="btn-secondary flex flex-col items-center justify-center gap-2 py-5 h-auto"
-                  onClick={() => { navigator.clipboard.writeText(JSON.stringify({ profile, transactions, budgets, goals, debts, assets }, null, 2)); toast('Copied to clipboard', 'success'); }}>
+                  onClick={() => void copyBackup()}>
                   <Clipboard size={20} strokeWidth={1.6} />
-                  <span className="font-mono text-[11px] tracking-[0.08em] uppercase">Copy to Clipboard</span>
-                  <span className="font-mono text-[9px] tracking-[0.14em] uppercase text-ink-dim normal-case">Full backup</span>
+                  <span className="text-[13px] font-medium">Copy to Clipboard</span>
+                  <span className="text-[12px] text-ink-dim">Full backup</span>
                 </button>
               </div>
             </div>
@@ -654,7 +645,7 @@ export default function Settings() {
             open={openRow === 'password'} onToggle={() => toggleRow('password')}>
             <div className="px-3.5 pb-3">
               {!cloudEnabled || !session ? (
-                <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
+                <div className="well p-4 text-sm text-ink-mid">
                   Password management requires cloud mode. Sign in with a cloud account to change your password.
                 </div>
               ) : (
@@ -664,8 +655,9 @@ export default function Settings() {
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="mono-label mb-1.5 block">New password</label>
+                      <label htmlFor="settings-new-password" className="mono-label mb-1.5 block">New password</label>
                       <input
+                        id="settings-new-password"
                         type={pwShow ? 'text' : 'password'}
                         className="input w-full"
                         value={pwNew}
@@ -675,8 +667,9 @@ export default function Settings() {
                       />
                     </div>
                     <div>
-                      <label className="mono-label mb-1.5 block">Confirm new password</label>
+                      <label htmlFor="settings-confirm-password" className="mono-label mb-1.5 block">Confirm new password</label>
                       <input
+                        id="settings-confirm-password"
                         type={pwShow ? 'text' : 'password'}
                         className="input w-full"
                         value={pwConfirm}
@@ -705,103 +698,21 @@ export default function Settings() {
             </div>
           </SettingRow>
 
-          <SettingRow icon="🛡️" label="Security" value={mfaFactors.length > 0 ? '2FA on' : undefined}
-            open={openRow === 'security'} onToggle={() => toggleRow('security')}>
-            <div className="px-3.5 pb-3 space-y-3">
-              {!cloudEnabled || !session ? (
-                <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
-                  Two-factor authentication requires cloud mode (Supabase). Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to enable.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="text-[0.9rem] text-ink-mid">Two-factor authentication (TOTP) adds an extra layer of account protection.</div>
-                  <div className="flex items-center gap-3">
-                    <button className="btn-primary" onClick={async () => {
-                      setMfaEnrolling(true);
-                      try {
-                        const enrolled = await enrollMfaTotp('Vyact TOTP');
-                        // Supabase TOTP enrol returns { id, type:'totp', totp:{ uri, qr_code, secret } }.
-                        const otpauth = enrolled?.type === 'totp' ? enrolled.totp.uri : null;
-                        if (otpauth) setMfaQr(`https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=${encodeURIComponent(otpauth)}`);
-                        setMfaFactorId(enrolled?.id ?? '');
-                        await fetchMfaFactors();
-                      } catch (e) {
-                        toast(`MFA enrolment failed: ${(e as Error).message}`, 'error');
-                      } finally { setMfaEnrolling(false); }
-                    }} disabled={mfaEnrolling}>
-                      {mfaEnrolling ? 'Working…' : 'Enable two-factor auth'}
-                    </button>
-                    {mfaQr && (
-                      <div className="flex items-center gap-3">
-                        <img src={mfaQr} alt="TOTP QR" className="w-24 h-24 border rounded-md" />
-                        <div className="flex flex-col">
-                          <input className="input w-40 mb-2" placeholder="Enter 6-digit code" value={mfaCode} onChange={e => setMfaCode(e.target.value)} />
-                          <div className="flex gap-2">
-                            <button className="btn-primary" onClick={async () => {
-                              if (!mfaFactorId || !mfaCode) return toast('Enter code', 'error');
-                              setMfaEnrolling(true);
-                              try {
-                                await verifyMfaEnrolment(mfaFactorId, mfaCode);
-                                toast('Two-factor authentication enabled', 'success');
-                                setMfaQr(''); setMfaCode(''); setMfaFactorId('');
-                                await fetchMfaFactors();
-                              } catch (e) { toast(`Verification failed: ${(e as Error).message}`, 'error'); }
-                              finally { setMfaEnrolling(false); }
-                            }}>{mfaEnrolling ? 'Verifying…' : 'Verify'}</button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                  </div>
-
-                  <div>
-                    <div className="text-sm font-semibold mb-2">Enrolled factors</div>
-                    <div>
-                      {loadingFactors ? <div className="text-sm text-ink-mid">Loading…</div> : (
-                        mfaFactors.length === 0 ? <div className="text-sm text-ink-mid">No enrolled 2FA factors.</div> : (
-                          <ul className="space-y-2">
-                            {mfaFactors.map((f: any) => (
-                              <li key={f.id} className="flex items-center justify-between bg-bg3 border border-line rounded-md p-2">
-                                <div>
-                                  <div className="font-medium">{f.friendly_name || f.factor_type || 'Factor'}</div>
-                                  <div className="text-sm text-ink-mid">{f.status || 'unknown'}</div>
-                                </div>
-                                <div>
-                                  <button className="btn-ghost text-sm" onClick={async () => {
-                                    if (!confirm('Unenroll this factor?')) return;
-                                    try { await unenrollMfaFactor(f.id); toast('Factor removed', 'success'); await fetchMfaFactors(); }
-                                    catch (e) { toast(`Could not remove factor: ${(e as Error).message}`, 'error'); }
-                                  }}>Remove</button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        )
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </SettingRow>
-
           <SettingRow icon="📊" label="Account stats"
             open={openRow === 'stats'} onToggle={() => toggleRow('stats')}>
             <div className="px-3.5 pb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
                 { label: 'Transactions', value: transactions.length },
                 { label: 'Budgets',      value: budgets.length },
-                { label: 'Goals',        value: goals.length },
                 { label: 'Debts',        value: debts.length },
                 { label: 'Assets',       value: assets.length },
                 { label: 'Members',      value: members.length },
                 { label: 'Income txns',  value: transactions.filter(t => t.type === 'income').length },
                 { label: 'Expense txns', value: transactions.filter(t => t.type === 'expense').length },
               ].map(s => (
-                <div key={s.label} className="bg-bg3 border border-line rounded-md p-3 text-center">
+                <div key={s.label} className="well p-3 text-center">
                   <div className="text-2xl font-semibold text-coral">{s.value}</div>
-                  <div className="font-mono text-[0.62rem] tracking-wider text-ink-dim uppercase mt-0.5">{s.label}</div>
+                  <div className="text-[12px] text-ink-dim mt-0.5">{s.label}</div>
                 </div>
               ))}
             </div>
@@ -813,17 +724,17 @@ export default function Settings() {
           <SettingRow icon="📄" label="Legal & policies"
             open={openRow === 'legal'} onToggle={() => toggleRow('legal')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-3 gap-3">
-              <Link to="/privacy" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
+              <Link to="/privacy" className="tile px-4 py-4 hover:shadow-neu-hover transition-shadow">
                 <div className="text-sm font-semibold text-ink mb-1">Privacy Policy</div>
-                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
+                <div className="text-[12px] text-ink-dim">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
               </Link>
-              <Link to="/terms" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
+              <Link to="/terms" className="tile px-4 py-4 hover:shadow-neu-hover transition-shadow">
                 <div className="text-sm font-semibold text-ink mb-1">Terms of Service</div>
-                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
+                <div className="text-[12px] text-ink-dim">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
               </Link>
-              <Link to="/cookies" className="bg-bg3 border border-line rounded-md px-4 py-4 hover:border-coral/40 transition-colors">
+              <Link to="/cookies" className="tile px-4 py-4 hover:shadow-neu-hover transition-shadow">
                 <div className="text-sm font-semibold text-ink mb-1">Cookie Policy</div>
-                <div className="font-mono text-[0.6rem] tracking-wider text-ink-dim uppercase">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
+                <div className="text-[12px] text-ink-dim">Last updated {formatPolicyDate(POLICY_VERSION)}</div>
               </Link>
             </div>
           </SettingRow>
@@ -832,11 +743,11 @@ export default function Settings() {
         {/* ── Danger zone — quarantined (board E: sunken/inset, never merged
             into the regular groups so it can't be mistaken for a normal row) ── */}
         <SettingsGroup caption="Danger zone" danger>
-          <SettingRow icon={<span style={{ color: 'hsl(var(--terra))' }}>⚠</span>} label="Delete · reset"
+          <SettingRow icon={<span style={{ color: 'var(--crit-text)' }}>⚠</span>} label="Delete · reset"
             open={openRow === 'danger'} onToggle={() => toggleRow('danger')}>
             <div className="px-3.5 pb-3 space-y-4">
               {!cloudEnabled || !session ? (
-                <div className="bg-bg3 border border-line rounded-md p-4 text-sm text-ink-mid">
+                <div className="well p-4 text-sm text-ink-mid">
                   Data erasure and account controls require cloud mode. Sign in with a cloud account to manage them here.
                 </div>
               ) : (
@@ -844,13 +755,6 @@ export default function Settings() {
                   <p className="text-[0.76rem] text-ink-dim -mt-1">
                     Every action below requires a verification code sent to your account email before it takes effect.
                   </p>
-
-                  {deletePending && (
-                    <div className="flex items-start gap-2.5 rounded-md border border-terra/40 bg-terra/10 px-4 py-3 text-[0.82rem] leading-relaxed text-ink">
-                      <XOctagon size={16} className="text-terra flex-shrink-0 mt-0.5" />
-                      <span>Account deletion is scheduled for {new Date(deletePending).toLocaleDateString()}. Sign back in before then to cancel.</span>
-                    </div>
-                  )}
 
                   <div className="border border-line rounded-md p-4">
                     <div className="flex items-start gap-3">
@@ -884,14 +788,11 @@ export default function Settings() {
                       <div className="flex-1">
                         <div className="text-sm font-semibold text-ink">Delete account (permanent)</div>
                         <div className="text-[0.82rem] text-ink-mid mt-0.5">
-                          Schedules permanent deletion of your account and every household you own, with a <strong>30-day undo window</strong> — sign back in any time before then to cancel automatically. After 30 days, your profile, owned households, and login are erased for good and cannot be recovered.
+                          Deletes your account <strong>now</strong>: your login, your profile, and every household where you are the only member, with everything in it. In households you share, your entries stay with the household. If you own a household other people use, make one of them the owner first. This cannot be undone — download a backup first if you want a copy.
                         </div>
                         <div className="flex flex-wrap items-center gap-3 mt-3">
-                          <button className="btn-secondary text-xs whitespace-nowrap" onClick={onRequestDeletion} disabled={deleting}>
-                            {deleting ? 'Working…' : 'Schedule deletion (30-day undo)'}
-                          </button>
-                          <button className="text-xs text-terra hover:underline whitespace-nowrap" onClick={onDeleteImmediately} disabled={deleting}>
-                            Delete immediately instead
+                          <button className="btn-secondary text-xs whitespace-nowrap" onClick={onDeleteAccount} disabled={deleting}>
+                            {deleting ? 'Deleting…' : 'Delete account'}
                           </button>
                         </div>
                       </div>

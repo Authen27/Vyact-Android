@@ -5,7 +5,7 @@
 // toggles back on tap. Two minimal controls — Play / Text — flip the card to
 // a back face showing the autoplaying video or the article body. A single
 // back control flips to the front again. Share/Save intentionally live only
-// on the grid tile (EvergreenLearn/WhatsNew) — not duplicated here.
+// on the grid tile (EvergreenLearn) — not duplicated here.
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { PlayCircle, BookOpen, RotateCcw, ExternalLink } from 'lucide-react';

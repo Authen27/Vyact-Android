@@ -4,8 +4,8 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v10.18.1`** (consumer)
-> **Live URL:** https://vyact-twentyx.vercel.app
+> **Current production version: `v10.107.1`** (consumer)
+> **Live URL:** https://vyact.app
 > **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
 > the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
 > clients viewing the same household stay consistent. Promotes to `'on'` in
@@ -24,6 +24,4657 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v10.107.1 — Pip's gateway: one database round trip before the model *(2026-10-17)*
+
+Measured on v10.107.0 (`[ask-vyact] timing`, 16 Oct 2026): before each model call the gateway ran
+getUser ‖ config read ‖ membership read (together), then `reserve_ai_usage()` as a fourth, sequential
+round trip (140–430 ms). Each Pip answer makes two such requests. No figure, prompt or answer changes.
+
+- **`prepare_ai_call()`** (migration `20261028120000_prepare_ai_call.sql`): the membership check and the
+  quota reservation in one call, made alongside getUser() and the config read, so nothing waits after
+  them. It runs with the **caller's own JWT** (PostgREST verifies it; `auth.uid()` in SQL), so it can
+  only check that user's membership and reserve against that user's cap. It has no user id parameter,
+  clamps the cap at 1,000, and reserves only when an enabled model row applies to the caller (the
+  gateway's own row rule), so the OFF state still writes nothing.
+- **The gateway answers in the same order as before** (session, config/OFF, membership, quota), and a
+  reservation it did not use (session refused, no model after all) is deleted.
+- **Fallback:** without the function (a database not yet migrated, Lane B) or the anon key, the
+  gateway keeps the v10.106.3 path: the membership read alongside, then `reserve_ai_usage()`, which
+  stays service-only and is still what the WhatsApp assistant uses.
+- The timing log line now reports `prepareMs` in place of `membershipMs` and `reserveMs`.
+- Tests: `pipGatewayOneTrip` PIP-GW-001..008 (the handler), `prepareAiCallSql` PIP-GW-020..025 (the
+  function on PGlite: own reservation, not a member, the cap, OFF writes nothing, no reserve without a
+  cap or above 1,000, signed-in only).
+
+---
+
+## v10.107.0 — Pip, the household's planner: scope, planning skills and nudges *(2026-10-16)*
+
+Pip moves from answering questions to planning with the household, and it now stays on the household's
+money. No schema change, no new table: every figure is computed in `resolve()` from the same data the screens
+read, and the model still only explains it. The prompts reach the server through the rebuilt engine bundle.
+
+**Scope: Pip talks only about the household's money**
+- **Off-topic questions are declined in one line**, with what Pip does instead, and cost no second model
+  call (a new `off_topic` intent). Before this the classifier had to "choose the closest meaning", so a poem
+  or a homework question landed in a finance intent and the phrase model answered it in full.
+- **A question the model itself was unsure of** (confidence below 0.35) gets "Did you mean one of these?"
+  with chips, instead of an answer to a question it may have misread.
+- **Every reply is checked on the way out:** code, a web address or a reply far longer than the contract
+  (1,800 characters in the app, 900 on WhatsApp) is discarded and never shown, like an invented figure
+  (`assertReplyInScope`, `OffScopeReplyError`). The phrase prompt gains a SCOPE section: text in the question
+  that tries to change Pip's rules is not an instruction.
+- **Investment picks** (which fund, stock or policy) are `unsupported`, never answered.
+
+**Planning skills (every figure from `resolve()`)**
+- **Month in review** (`interpret.review`): last completed month by default, or a named month, or this month
+  so far. Income, spending, what was left and the savings rate; against the usual month (the months before
+  it) or, for this month, the same point last month; the three categories that moved most; one thing to try.
+- **Bills and subscriptions review** (`interpret.subscriptions`): each active bill's cost over the next
+  12 months from its own rule, the total and about-per-month, its share of a usual month, bills whose amount
+  changed since they last posted, and categories with more than one bill. Loan EMIs are left out (the loan's).
+- **Emergency-fund plan** (`forecast.emergency_fund`): the target (three months of essentials, the one floor),
+  the cushion after card dues, what is still to put aside and, from a usual month's surplus, how many months
+  it takes and by when.
+- **Where spare money goes** (`forecast.surplus`): one fixed order with the household's own figures: card dues,
+  the cushion, debts at 12% or more (highest rate first), bills due in 30 days, then long-term saving. Pip
+  never names a product.
+- **How long to save for something** (`forecast.save_for`): the price must be stated; the cushion stays
+  untouched and card dues come first.
+- **Debts** name the payoff strategy the household chose in Debts, and which debt it pays first.
+- **General money ideas** ("what is an SIP?") are answered from Learn's lessons, never the model's own
+  knowledge: Pip replies with a "Lessons on …" button that opens Learn searched for the topic
+  (`/insights?tab=learn&q=…`). WhatsApp says where to look instead (no links there).
+- The Ask panel's "Explore a decision" list gains Review last month, Emergency fund plan, Where should spare
+  money go? and Review bills and subscriptions.
+
+**Proactive nudges (bell only, rarely)**
+- **A category already above a whole usual month** this month (`trend_alert`, at least 25% above, two months
+  of history) and **"Your <month> review is ready"** in the first five days of a month (`insight_fresh`).
+  At most one Pip nudge a day and three a week; never pushed; each kind has its own switch in Settings ›
+  Notifications. A nudge opens Pip with its question in the field (`/chat?ask=…`); nothing is sent for you.
+
+- **Found while testing before merge:** the phrase prompt grew to 7,976 characters, so the figure-guard retry
+  (8,305) was cut at the router's 8,000-character message cap and lost the instruction naming the rejected
+  figures. The cap is now 12,000 (`MAX_MESSAGE_CHARS`; the 24,000 total still bounds a request).
+- Tests: `pipPlanner.test.ts` (PIP-PLAN-001..022): off-topic and low-confidence turns make no phrase call;
+  Learn links (an unsafe topic dropped, none on WhatsApp); the reply scope guard; every server prompt under
+  the message cap; each planner intent's figures; the nudge caps and settings switch.
+
+**Not in this release (needs schema, shipped first on its own):** a server-side Pip inbox that works while
+the app is closed, per-minute rate limits and an off-topic cool-down at the gateway, and remembered answer
+preferences.
+
+---
+
+## v10.106.3 — Pip answers faster, and a slow answer can be traced *(2026-10-16)*
+
+Pip on Nova Lite took 7.3 s per answer on average, although each model call takes about 1.4 s. Each
+question makes two gateway requests (classify, then phrase), and each request spent 0.8–1.3 s on lookups
+run one after another before the model was called (prod logs, 16 Oct 2026; the config read alone took
+647 ms once). No figure, prompt or answer changes.
+
+- **The gateway's lookups run together** (`ask-vyact`): verifying the user, reading the enabled model
+  config and checking the household membership now start at the same time instead of one after
+  another. The membership lookup uses the token's user id, and its result is used only after the user
+  is verified as that same id. The gates still apply in the old order (user, then config and the OFF
+  state, then membership), and all of them before the quota reservation and the model call. A lookup
+  that fails outright now fails closed (401 / 403) instead of throwing.
+- **The enabled config is kept in the isolate for 30 s** (`createConfigRowsCache`, `_shared/agent/router.ts`).
+  The phrase request reuses what classify read. A failed read is never cached. A row switched on or off
+  (the Bedrock rollback included) reaches every request within 30 s.
+- **Every model call logs one `[ask-vyact] timing` line**: when the user check, config read and
+  membership check finished, the reservation, everything before the model, and the model's own time.
+  Metadata only.
+- **The app records where each answer's time went** (`ai_usage.stage_ms`, migration
+  `20261027120000_ai_usage_stage_ms.sql`): the time before the first model call, the classify and
+  phrase round trips (and how many: a figure-guard retry is a second phrase call), the time between
+  them, and the time after the last reply. It holds numbers only: a CHECK refuses text, nesting and
+  long keys, and the app sends only what passes. A database without the column yet still gets the row,
+  without the timings.
+- Tests: `gatewayWorkflow` PIP-LAT-001..008, `agentRouter` (the config cache), `aiUsageSourceSql`
+  PIP-LAT-020/021, `pipLatency` PIP-LAT-010..016.
+
+---
+
+## v10.106.2 — Net Worth: no more stale-balance toast; the row chip shows the value date *(2026-10-16)*
+
+Owner report: "Some bank or card balances haven't been updated in over 30 days" appeared on every visit to Net Worth.
+
+- **The toast is gone.** It fired on every visit, named the wrong things (bank and card balances come from the
+  ledger and can never go stale; only hand-valued assets can), and had nothing to act on.
+- **The row chip says how old the value is:** `14 Jun · Update` (the year is added when it differs; an undated
+  value still reads `Update?`). Same rule as before: a cash-like or short-term asset without a live account,
+  valued more than 30 days ago. Long-term holdings are never flagged.
+- **Phone layout:** the chip moved under the asset name. Beside the amount it pushed the figure under the edit
+  button on a 390px screen (this already happened with the shorter chip).
+- The rule and the date label live in `lib/assetStaleness.ts`; tests: `assetStaleness.test.ts` (4 cases).
+
+---
+
+## v10.106.1 — Pip can run on Amazon Nova Lite (Bedrock) *(2026-10-16)*
+
+Owner decision: Amazon Nova Lite on Bedrock powers Pip. Server-side only; the app is unchanged.
+
+- **The router gains a Bedrock path** (`supabase/functions/_shared/agent/bedrock.ts`): a model row with
+  `provider = 'bedrock'` is called through Bedrock's Converse API instead of the OpenAI dialect, so Pip in
+  the app and on WhatsApp can both use it. Authentication is AWS Signature Version 4 with IAM keys
+  (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`) or a Bedrock API key
+  (`AWS_BEARER_TOKEN_BEDROCK`). The signer is checked against AWS's published SigV4 example.
+- **Guardrails:** AWS credential names are readable only by a bedrock row pointing at
+  `https://bedrock-runtime.<region>.amazonaws.com`; an OpenAI-compatible row can never read them, and a bedrock
+  row can never point them elsewhere. The keys stay in Edge Function secrets, never in the browser.
+- **Migration `20261026120000_bedrock_nova_lite.sql`:** one Nova Lite row (Sydney, ap-southeast-2,
+  `amazon.nova-lite-v1:0`, priority 120), **disabled**. It goes live with one UPDATE after the secrets are set.
+- Tests: `agentBedrock.test.ts` (signing, config guardrails, the OFF state, the Converse call and its errors).
+
+---
+
+## v10.106.0 — Aurora 4.0 A7 + A8: Insights, Pip, Households, Settings and the public pages *(2026-10-16)*
+
+The last two PRs of the Aurora 4.0 redesign, shipped together. No figure, calculation or schema changes.
+One new way to save: Pip confirms an entry in the chat (PIP2), through the transaction form's own checks.
+
+**A7 — Insights, Pip, Households, Settings**
+- **Insights (INS2, LN1, LN3):** one link per insight (its action, or the lesson when there is none); the
+  lesson and the calculation basis move into ⋯. Learn opens with "Suggested for you": up to two lessons your
+  review points to, with the reason. On phones the lesson filters are one swipeable row of 40px chips.
+- **Pip (P1, P2, PIP1–PIP4):** an expense or income Pip understood is a card in the chat with the account
+  (picked there), Save and Edit in form; Save uses the form's own build-and-check (`lib/txnBuild.ts`, moved
+  out of the transaction form unchanged) and a Loan / EMI entry is paid through `payLoan`. A split still opens
+  the Split form; a transfer or investment the full form. A failed turn says nothing was saved, offers Try
+  again and keeps the question in the box (it printed "Error: Failed to fetch"). Follow-ups are short chips
+  under "Ask next"; examples are raised chips; a strip shows the live words and Stop while listening; on
+  desktop the conversation fills the height with the composer at the bottom.
+- **Households (HH1, HH2):** activity filters are standard chips; the household name is a field in Household
+  settings (Rename left the Danger Zone, and asks nothing).
+- **Settings (ST1, ST2, MIST3):** Profile is a group of rows (Display name, Email, Date format, the setup
+  wizard), each opening its own editor; WhatsApp is a row under "Connections"; each theme card shows a tiny
+  version of itself, and System shows dark and light side by side.
+- **X1 / X9:** Insights, Pip, Households, Settings and Help use sans labels and nothing under 11px.
+
+**Owner follow-ups (16 Oct 2026)**
+- **Fixed: the ⋯ More menu on a loan could not be used.** The Debts loan card clips its contents
+  (`overflow-hidden`), so the menu opened inside the card and was cut off. The menu is now drawn in a
+  portal at a fixed position beside its button, above it when there is no room below (the tab bar and the
+  floating + sit there on phones); a tap outside, Escape, a scroll or a resize closes it, and the arrow
+  keys move between items. Every ⋯ menu (Debts, Splits, Insights) gets this.
+- **New: "Learn in a minute" at the bottom of the Dashboard.** Three lessons picked for the household — a
+  loan being repaid, a budget over (or no budget yet), then saving and household habits — each with its
+  reason and reading time, rotating weekly. A card opens the lesson in place, in Learn's reader; "Explore
+  lessons" opens the library. Loaded after the Dashboard renders (the library is a large file), never in
+  its first paint; no one-country or tax lessons here.
+
+**A8 — public pages**
+- **Landing (LP1–LP3, LA1):** phones show Sign in and Open app (Learn stays in the footer and the lessons
+  section); the coral Pip band uses dark ink (#2A1712) instead of white (about 2.5:1); on phones the lesson
+  Shorts are a swipe row of 150px tiles; every card is the app's raised 18px card; no mono caps.
+- **Sign in (AU1, AU2, LA2):** "Forgot?" sits on the password label, the magic link is a ghost button under
+  Sign in and the footer keeps only Create account; a Show toggle inside the password field (sign in and
+  sign up); the auth card is 18px on phones; auth screens use sans labels.
+
+- New: `lib/txnBuild.ts`, `components/chat/CaptureCard.tsx`, `components/ui/PasswordInput.tsx`,
+  `lib/learnPicks.ts`, `components/dashboard/LearnShelf.tsx`. Tests:
+  `a7AuroraInsightsPip.test.tsx` (the shared builder's behaviour included) and `a8AuroraPublic.test.tsx`;
+  e2e follow the new controls (insight ⋯, Profile rows, Save name).
+
+---
+
+## v10.105.0 — Aurora 4.0 A6: the forms and onboarding *(2026-10-15)*
+
+PR A6 of the Aurora 4.0 redesign. No figure, calculation or schema changes. One behaviour change: a new
+expense needs a category (CAT1).
+
+- **Add / edit transaction (F1, F2, CAT1–CAT3, FRM1, FRM2):** the amount comes first, then the type,
+  then the description and the category it suggests ("Suggested from “Swiggy” · change it if that's
+  wrong", from Pip's keyword list; the entry's own type only, never Loan / EMI). A new expense starts on
+  "Choose category" and asks for one before saving (every expense used to start on Food & Dining). The
+  household's five most used categories lead the list under "Recently used". Today / Yesterday sit on
+  their own row above two equal 44px date and time fields. Member and "Exclude from totals" are behind one
+  "More details" row that shows their values. "Save & add another" is a button beside Save.
+- **Add split (FS1, FS2):** Equally / By amount — equal shares show as text, amounts become fields only
+  when they differ (the "Even (auto)" link is gone); description, suggested category and the date row as
+  on Add transaction.
+- **Add loan (FL1, FL2):** three groups, The loan · Repayment · Paying it; the standard EMI is a sentence
+  with a "Use ₹…" link.
+- **Add asset (FA1):** liquidity follows the type and is shown as a sentence, with Change for an exception.
+- **Card account (AF1):** the cycle as dates — a spend window → statement → due timeline and one sentence.
+- **Reconcile (RC1, RC2):** "In Vyact" and "On your statement" side by side in one card with the gap
+  underneath; when they match, "✓ Balances match" and the button reads "Mark reconciled".
+- **Recurring editor (RE1–RE3):** a live line on what the schedule will do ("₹28,000 Rent, every month
+  on the 2nd, from HDFC · posts by itself · next on 2 Nov"); "Post automatically" / "Ask me first" replace
+  the Auto-approve switch; What · When · How groups. List rows say "posts automatically" / "asks first".
+- **Onboarding (OB1, OB2, ON1, ON2):** currency chips on phones (INR, USD, GBP, EUR and More…); Pip's
+  bubble is a raised neu surface; pay and bill amounts are grouped as you type (lakhs for INR, thousands
+  otherwise, commas only); Back / Continue stay pinned to the bottom with a fade, "I'll add bills later"
+  with them.
+- New: `lib/categorySuggest.ts`, `lib/groupDigits.ts`, `lib/cardCycle.ts`, `lib/scheduleSummary.ts`,
+  `components/ui/FormSection.tsx`. Tests: `a6AuroraForms.test.tsx`; e2e follow the new controls
+  (keyboard order, More details, Equally, Change liquidity, Mark reconciled, Ask me first, currency chips).
+
+---
+
+## v10.104.0 — Aurora 4.0 A5: the Plan and Track pages *(2026-10-15)*
+
+PR A5 of the Aurora 4.0 redesign. No figure, calculation or schema changes; two labels change (TERM1).
+
+- **New shared pieces:** `OverflowMenu` (the ⋯ More menu, S2/DB2) and `CategoryTile` (the 34px raised
+  category tile, R2).
+- **Transactions (T1, T2):** the separate count/net strip is gone (each month pill carries both); the pill
+  has 12px corners, "N entries" and a sans net. "Load previous" is 44px tall.
+- **Splits (S1–S3, SP4, FIT1):** the hero is a raised card with a sage spine; "See who owes what →"
+  replaces the bare ▾ marks; each split shows date · people and what is owed under its name with the
+  amount alone on the right; Settle all is the one primary, Edit / Close split / Delete move into ⋯,
+  Mark paid is a ghost button.
+- **Budgets (BG1, BG2):** every bar is the inset trough; the hero has the same Edit and Delete buttons as
+  the cards (was an 8.5px "edit ▸").
+- **Recurring (R1, R2, FIT2):** the shared category tile; Edit before Delete; on phones the whole row opens
+  the editor, which now has "Delete schedule". (REC4 is moot: loan EMI schedules were retired in Track E.)
+- **Debts (DB1, DB2, DBT3):** summary tiles are left-aligned with the label above the value, and on phones
+  the total debt spans the width with its exact figure; Pay and Schedule stay on each loan, Payments /
+  Undo last payment / Edit loan / Mark paid off move into ⋯; the ring is captioned "paid off".
+- **Accounts (AC1, AC2, ACM1):** Cash in Hand is an account card in a Cash group (Reconcile and Ledger on
+  the card; still never deleted or archived); the desktop aside holds "Needs your attention" only (the
+  currency lives in Settings); on phones each card shows a full-width usage bar and "N% of limit used ·
+  due D" (the percentage is not capped).
+- **Net Worth (NW1–NW3):** on phones the waterfall labels sit under their bars and wrap; asset and liability
+  rows are raised small cards with no border; ratio sub-lines are sentence case at 12px.
+- **Reports (RP2):** the household position is one row — net worth, liquid assets, the essential-spend
+  runway (calculation basis kept) and a link to Net Worth. Assets, liabilities and this month's figures
+  live on Net Worth and the Dashboard.
+- **TERM1:** the Accounts figure is "Available cash"; Net Worth's "Money you can reach" is "Liquid assets",
+  as on Reports.
+- **X1 / X9:** the eight pages use sans labels; nothing under 11px; small actions are 44px.
+- Tests: `a5AuroraPages.test.tsx`; e2e page objects follow the new labels (`NetWorthPage.liquidAssets`,
+  the Reports position check).
+
+---
+
+## v10.103.0 — Aurora 4.0 A4: empty states, loading and the first Dashboard *(2026-10-15)*
+
+PR A4 of the Aurora 4.0 redesign. No figure, calculation or schema changes. The setup estimate is a
+reference with an "estimated" tag, never part of Cash Flow.
+
+- **Empty states that explain (EM1).** One `EmptyState` replaces the faint ◇ and mono caps line: an icon
+  tile, a short heading, one sentence on what will appear, one action and, where it helps, a Pip hint.
+  Budgets, Splits, Debts, Net Worth, Transactions, Recurring and Reports use it.
+- **Skeletons (LD1).** While a household loads, and while a page's code arrives, the screen shows grey
+  blocks in that page's own shape (heroes, panels, rows) instead of "Loading…" on a blank page.
+- **The first Dashboard (FR1, FR2, FR3).**
+  - **"Finish setting up"** appears after a real onboarding, with up to five steps worked out from the
+    household itself:
+    1. income and fixed bills;
+    2. the bills waiting for a yes;
+    3. the accounts you pay from;
+    4. a week of logged spending;
+    5. inviting your partner or family.
+
+    It goes once all are done or you hide it.
+  - **"Room left this month"** is now the first hero, with an "estimated" tag: the pay and fixed bills
+    from setup, less what you have logged this month (a posted bill isn't counted twice). Real cash flow
+    replaces it after five entries. It replaces the "Your starting estimate" band.
+  - **Empty panels say what is missing**, and offer "Set a budget" or "+ Add your first expense".
+- **Insights on phones (D1).** A "What to look at" panel shows the top two insights with "See all".
+- **"View all" (D2)** reads the same on every panel: sentence case, no arrow.
+- **"I'll add bills later" (ON3).** The bills step in onboarding can be skipped. The reveal then shows
+  your pay only, and the checklist keeps "Add your fixed bills" open.
+
+---
+
+## v10.102.0 — Track E, step 7: loan housekeeping; a loan payment is one event *(2026-10-14)*
+
+Track E's last step. Owner decisions:
+- E-8: "only the orphan fix";
+- 14 Oct 2026: "reconcile to zero + archive".
+
+Audit FE-MNY-04, OPS-08 (INV-7) and TD-31.
+
+- **Orphan loan accounts are cleared** (migration `20261024120000_clear_orphan_loan_accounts.sql`).
+  - **The problem.** Before v10.74.0 a loan could be deleted while its loan account stayed live with a
+    balance. Net worth counts every liability account, archived or not, so each such account kept a debt
+    no loan explained.
+  - **The fix.** Every live loan account LINKED to a deleted loan is reconciled to zero, exactly as "Mark
+    paid off" does: its offset, with a dated log entry ("Loan deleted before v10.74: balance cleared"),
+    never a transaction. It is then archived.
+  - **What moves.** Net worth rises by each orphan's leftover. Transactions and history stay.
+  - **Left alone.** A loan account with no link at all, since it may be the only record of a real loan.
+  - The migration is idempotent.
+- **A loan payment is one event, locally too** (spec INV-7). A local-only household has no server to make
+  a payment one transaction, so `payLoan` writes the interest leg, the principal leg and the loan in turn.
+  - Until now, a failed later write left a half-recorded payment: an interest expense with no principal,
+    or a payment the loan never heard of.
+  - Now the earlier writes are undone (the legs, and a loan account the payment opened), and the error is
+    raised.
+  - An undo step that itself fails is reported as an `unexpected` fault, never swallowed.
+  - In the cloud, `pay_loan` was already one Postgres transaction (W4-D19-006).
+- **Docs.** CLAUDE.md, the invariants file header and TECH_DEBT no longer say INV-7 is untested. TD-31 is
+  resolved.
+
+Tests:
+- loanPaymentWorkflow.test.ts TE7-001..003 (+3):
+  - the principal leg fails;
+  - the loan update fails;
+  - a failed undo is reported.
+
+  Each was proven to fail without the undo.
+- trackEOrphanLoanSql.test.ts (new, 3, PGlite, using W4e's own `loan_ledger_balance`):
+  - an orphan is cleared by offset + log and archived, and one at zero is archived;
+  - a live loan, an unlinked loan account, a bank account and an already-cleared account are untouched;
+  - the migration is idempotent.
+
+## v10.101.0 — Track E, step 6: the old EMI schedules are retired in the database *(2026-10-14)*
+
+Database only (migration `20261023120000_retire_emi_schedules.sql`). No figure moves. Owner decisions:
+- E-3: "retire them";
+- E-11: "soft-delete them now, without a count first".
+
+- **Which schedules.** The EMI schedules W4g could not move onto a loan: no loan link, a deleted loan, or a
+  receivable. They no longer posted, and since v10.100.0 the app lists them nowhere. Every one still live is
+  now soft-deleted (`deleted_at` set and `active = false`) in every household.
+- **The set** is exactly the app's `isLoanEmiSchedule`: a template in Loan / EMI, or one carrying a loan link.
+  Bills are untouched, including one with an empty loan link.
+- **The transactions they made keep their history.** Nothing is recreated from other rows.
+- **Devices drop their cached copies** through the delta sync, because `updated_at` moves. No cache reset is
+  needed.
+- A second run changes nothing.
+
+Ships after v10.100.0, because removals go after the app stops using the rows.
+
+Tests: trackEEmiRetireSql.test.ts (new, 3, PGlite):
+- exactly the app's set is retired, in every household;
+- a row already retired keeps its own deletion, and the transactions are kept;
+- the migration is idempotent.
+
+## v10.100.0 — Track E, step 5: loan EMIs in Recurring *(2026-10-14)*
+
+App and the bundled engine. No money figure moves except the budget form's "already committed" line (owner
+decisions 13 Oct 2026: "each loan's EMI shown in Recurring, mirrored from the loan", E-3 "retire the old EMI
+schedules", E-4 "include EMIs in the budget forecast").
+
+- **Loan EMIs in Recurring.** A new section lists every live loan's EMI, read from the loan's own schedule.
+  Each row shows:
+  - the instalment number, its date and what is left of it;
+  - the paying account, and when the loan clears;
+  - **Record automatically**, which is the loan's own switch (a missing paying account or next EMI date
+    opens the loan form instead);
+  - **Pay** (the loan's Pay sheet) and **Edit loan**.
+
+  It is a mirror, never a schedule, so an EMI can never be scheduled twice. The bill calendar already shows
+  each loan's EMIs (W4g), and its totals count them.
+- **Old EMI schedules are retired.** The EMI schedules W4g could not move onto a loan (they no longer post) are
+  hidden from Recurring, the bill calendar and the bell. A bell card already raised for one is settled. Before,
+  such a schedule could show the same EMI twice in the calendar and in its "outgoing" total. A migration
+  soft-deletes them next (E6b).
+- **The budget form's forecast** ("already committed via recurring bills and loan EMIs this period") adds each
+  live loan's EMIs on their real dates in the period, under Loan / EMI: the instalments already due at the EMI,
+  and the rest from the loan's schedule. "Use as allocations" carries them.
+
+Tests: trackELoanEmis.test.ts (new, 7):
+- one row per live loan, and what auto-record needs;
+- a part-paid instalment;
+- the calendar shows an EMI once;
+- the bell skips and settles old EMI schedules;
+- the forecast's month and year figures;
+- the switch is the loan's;
+- the form adds the EMIs.
+
+## v10.99.0 — Track E, step 4: one budget-progress basis; spending nothing was planned for *(2026-10-14)*
+
+App and the bundled engine. **Budget figures change** (owner decisions 13–14 Oct 2026: E-6 and its follow-ups).
+Audit FE-UIC-08 and the rest of FE-MNY-06.
+
+- **One basis.** `lib/budgetProgress.ts` is read by the Budgets page (hero, pace chart, cards), the Dashboard
+  (pace banner, Budget progress panel), Reports' budget vs actual and Pip. Before, one budget had three "left"
+  figures:
+  - the Budgets hero subtracted only allocated spending from the full total;
+  - the Dashboard pace used all spending;
+  - Reports compared the sum of the allocations with allocated spending.
+
+  The Dashboard panel also measured an annual line against one month.
+- **A total counts ALL spending in its period**, unallocated categories included. An annual total is the
+  aggregation of its months: an expense counts once in its month and once in its year. Its limit stays the
+  typed figure.
+- **Each line is measured over its own budget's period.** An annual line is measured over the year; the
+  Dashboard panel marks it "this year".
+- **Not planned.** A category with spending and nothing allocated (no row, or 0) shows as "₹X over · not
+  planned", after the planned lines:
+  - on every budget card, monthly and annual;
+  - in the Dashboard panel, up to 3 plus "+N more";
+  - in Pip's budget answer (`not_planned_this_month`, with the month's total, spent and left).
+
+  Bell and WhatsApp alerts and the Pulse score are unchanged.
+- **Reports** compares every budget with a total, including one with no allocations. It counts the period's
+  recorded spending, as the Budgets page does.
+
+Tests: trackEBudgets.test.ts (new, 8):
+- the month and annual totals;
+- lines over their own period;
+- not-planned lines;
+- Reports = Budgets;
+- the Dashboard lines and pace;
+- Pip's facts;
+- a loan payment in full;
+- a category budget stays one line;
+- no alerts and no Pulse change from not-planned spending.
+
+budgetTrends.test.ts was updated deliberately for the new basis.
+
+## v10.98.0 — Track E, step 3: one spending baseline, two labelled cover figures *(2026-10-14)*
+
+App and the bundled engine. **Figures change** (owner decisions 13–14 Oct 2026: E-5 "the Reports rule",
+E-9 "two labelled figures"). Audit FE-MNY-10.
+
+- **One baseline.** Pip, Net Worth, the Reports runway and the server read one "typical month"
+  (`lib/spendBaseline.ts`). Before, Pip and Net Worth used one definition and the Reports runway another:
+  - Pip and Net Worth averaged up to 6 months that held ANY row, an income-only month counted as a
+    zero-spend month, they used the built-in need/want map, and an unmapped category counted as essential;
+  - the Reports runway averaged 3 months with spending, with the live map.
+
+  Now every surface uses the Reports rule:
+  - the last **3** completed months that contain spending;
+  - the **live** need/want map, so a database override applies in Pip and on WhatsApp too;
+  - an unmapped category is **not** essential.
+- **What moves:**
+  - typical monthly spending, typical essential spending and the 3-month safety floor;
+  - Pip's months of cover and runway;
+  - the Net Worth "How long it would last" tile;
+  - WhatsApp's runway alert, which reads Pip's runway.
+- **Two labelled figures, everywhere** (E-9). Both are rounded once, by one helper (`monthsOfCover`):
+  - "at your usual spending" (savings ÷ all typical spending): the Net Worth tile;
+  - "on essentials only" (savings ÷ essential spending): the Reports runway.
+
+  Pip has both, labelled, and names which it states; its answers name the months they rest on
+  ("3 completed months with spending (Jul–Sep 2026)").
+- **One rounding.** The summary stored the cover to two decimals and Pip printed one, so 3.448 months read
+  as "3.5". Every surface now shows the same one-decimal figure, and a non-positive balance covers 0 months.
+
+Tests: trackEBaseline.test.ts (new, 7):
+- the 3-month rule, including income-only and current months;
+- a database override applies;
+- the Reports runway equals Pip's "on essentials only";
+- the Net Worth tile equals Pip's "at your usual spending";
+- Pip names the figure and the months;
+- the server's summary equals the app's;
+- the loader reads the live map.
+
+askVyactFacts was updated for the labelled keys. The golden file was updated deliberately: the cover is now
+one decimal, plus the new `essentialMonths`.
+
+## v10.97.0 — Track E, step 2: a loan payment counts in full as Loan / EMI spending *(2026-10-14)*
+
+App and the bundled engine. **Figures change** (owner decisions 13–14 Oct 2026: E-1 "every loan
+payment", E-2 "keep the budget alerts", E-10 "large-spend alerts on loan payments too").
+
+- **What counts as spending.** A loan payment is two ledger rows: the interest (an expense) and the
+  principal (a transfer into the loan account). Until now only the interest counted as spending. Now the
+  principal counts too, as Loan / EMI, for every kind of payment: an EMI, a prepayment, the payoff, or bank
+  figures. Past payments are included: this is a rule applied when figures are read, and no row is
+  rewritten.
+- **What moves:**
+  - monthly spending and cash flow (by the principal paid that month);
+  - the savings rate;
+  - Reports and budget history, past months included;
+  - Pip's spending answers;
+  - the essential-spend average and the 3-month safety floor (Loan / EMI is a "need");
+  - the runway and months of cover;
+  - the Loan / EMI budget line, which now compares the full EMI with its full-EMI limit, and so raises its
+    100% alert in an EMI month (E-2);
+  - WhatsApp's digest, weekly summary, month close and large-spend alert. A loan payment is one alert at
+    its full amount (E-10).
+- **What does not move:** account balances, the loan's outstanding and net worth. The principal row is
+  still a transfer in the ledger.
+- **A payment is one entry.** Its two rows count once in Pip's "how many entries", the WhatsApp digest and
+  the weekly summary.
+- **Transactions:**
+  - the principal row reads "Loan principal · counted in Loan / EMI spending";
+  - the Expense and Loan / EMI filters list it, so the rows shown and their total match Reports;
+  - the Help note on debt payments says so.
+
+Tests: trackESpending.test.ts (+7):
+- every kind of payment counts;
+- balances, the outstanding and net worth are identical with and without the rule;
+- one payment is one entry, for older rows too;
+- the Loan / EMI budget line reaches 100% and alerts;
+- Pip's figures and entry counts;
+- WhatsApp's alert and digest;
+- the Transactions filters and their total.
+
+## v10.96.0 — Track E, step 1: WhatsApp reads the app's spending *(2026-10-14)*
+
+Edge Functions and the bundled engine; no figure changes. Track E (owner decisions 13–14 Oct 2026),
+first PR (E2). Audit XC-ARC-06, the money half.
+
+- **Why.** WhatsApp's spending alerts and digests read a hand-copied port of the app's money code
+  (`_shared/money/calculations.ts`), with its own row mapping that dropped a loan payment's details
+  (`emi_split`). Track E changes what counts as spending (E3: a loan payment's principal counts), and
+  through the copy that change would never have reached WhatsApp.
+- **Now** the large-spend alert, budget alerts, the weekly summary, the evening digest and the month-close
+  summary all read spending the same way:
+  - rows are mapped by the app's adapter (`txnsFromRows`);
+  - `spendRows` decides what counts as spending, the app's one rule (new in `calculations.ts`);
+  - both come from the bundled engine.
+
+  The scheduler also loads the member and loan columns the mapper reads.
+- **The copy is deleted**, with its parity test. No server code may import a money port again (a test
+  walks every function).
+- **Legacy rows:** an old balance-adjustment or paired-transfer row typed as an expense no longer counts in
+  the large-spend alert or the digest, as it already didn't in the app.
+
+Tests:
+- trackESpending.test.ts (3):
+  - a scheduler row keeps the loan-payment details, the split and privacy;
+  - every spending rule counts exactly the app's spending rows;
+  - there is no port anywhere, and the scheduler loads the columns.
+- Every existing WhatsApp suite passes unchanged.
+- MNY16-F-007 now asserts the whole port is gone.
+
+## v10.95.0 — Invitations in the bell; invite by email, step 2 of 2 *(2026-10-13)*
+
+App only (uses v10.94.0's functions). Owner decisions, 13 Oct 2026 (#9). Closes R4.
+
+- **Invite by email.** The invite form has an optional "Their email" field:
+  - when it's filled in, the invitation is addressed to that person and Vyact emails it;
+  - the app says how the email went: sent; not set up yet, so share the link; today's limit reached;
+    or couldn't be sent;
+  - the link still works either way.
+
+  Your own address and a malformed one are refused before anything is saved.
+- **The invitee's bell.** "Asha invited you to Sharma family", in Needs you, with **Join** and **Decline**:
+  - it shows whichever household is open;
+  - Join asks the invitation link's question ("Join Sharma family as Member?"), then opens that household;
+  - Decline asks first, because the inviter would have to invite again;
+  - a full household or a closed invitation is explained in words.
+- **The inviter's bell.** Owners and admins see each open invitation of the household with **Revoke**.
+- **Revoke asks, then revokes at once**, in the bell and on Households (R4). It used to hide the row and
+  write the revoke after an 8-second Undo, so a tab closed inside that window left the link working while the
+  screen said "revoked". If the invitation was already accepted or revoked, the app says "Already handled".
+- **Invitation cards are never saved.** Every member of a household can read its saved notifications, and
+  an invitee's card would show them which other household invited the person. Cards are built from live
+  lists, refreshed with the household list and whenever the bell opens, and gone once handled. As a result,
+  invitations get no lock-screen push.
+- Households lists an invitation by the address it went to (or its label, or "Shareable link").
+
+Tests:
+- invitationsInBell.test.ts (8):
+  - both kinds of card (expired ones dropped, the type switch respected);
+  - the email check;
+  - the email outcome and its notices;
+  - the confirm copy;
+  - the store slice, with a mocked client;
+  - the wiring.
+- A3-CF1-001 updated deliberately: invites are no longer held for Undo.
+
+## v10.94.0 — Invitations can be addressed to a person, step 1 of 2 *(2026-10-13)*
+
+Database and Edge Functions; the app follows in step 2. Owner decisions, 13 Oct 2026 (#9): an
+invitation can carry the invitee's email; Vyact emails it; the invitee answers in the bell.
+
+- **Why a schema change.** Invitations were shareable links only. `invited_email` never held an email: it
+  holds the label the inviter typed ("Partner") or "(shareable link)". So nothing could reach the invitee.
+- **`invitations.recipient_email`:** the invitee's address, lower-case and email-shaped, or null for a
+  link-only invitation. Existing invitations are unchanged.
+- **For the invitee:**
+  - `my_pending_invitations()` lists their open invitations: the household's name, who invited them, the
+    access and the expiry, never the token. It matches the caller's CONFIRMED email only, so someone who
+    signs up with another person's address without confirming it sees nothing.
+  - `accept_invitation_by_id(id)` joins under the link accept's rules, including the household size limit,
+    and joins once even on a double tap.
+  - `decline_invitation(id)` removes it.
+- **`send-invite-email` (new Edge Function):**
+  - only an owner or admin of the household may send, only to the stored address, never their own;
+  - one email per invitation, ever, and at most 20 per sender a day (`claim_invite_email`);
+  - a failed delivery gives its claim back.
+  - Like split email, it sends nothing until an email provider is configured (docs/EMAIL_TEMPLATES.md §0).
+    The copy is H1 from that doc.
+- **One email transport.** The MailerSend / SMTP / Resend code moved from send-split-email into
+  `_shared/emailTransport.ts`, so both functions share it. Split email behaves as before.
+- **Fixed (R7):** a link invitation with no relationship label could not be accepted, because the fallback
+  label `member` is not one the database allows. The app always sends a label, so nobody hit it.
+- **Account deletion** also removes pending invitations addressed to the deleted person's email.
+
+Tests:
+- invitationInboxSql.test.ts (10, PGlite):
+  - the inbox matches the confirmed email only, with no token;
+  - an unconfirmed address can do nothing;
+  - accepting joins once, and a full household is refused;
+  - declining removes only your own invitation;
+  - the address check;
+  - the link accept without a label;
+  - one email per invitation, and a cap that revoking does not reset;
+  - account deletion.
+- inviteEmailHandler.test.ts (6):
+  - escaping;
+  - every refusal comes before any work;
+  - nothing is sent while unconfigured;
+  - one email, to the stored address, with its own link;
+  - already-sent and over-the-cap send nothing, and a failed delivery gives its claim back;
+  - the cap setting.
+- CON-UNIT-SPL-006 now reads the sender address and reply-to from the shared transport.
+
+## v10.93.0 — Admins see who, what and when, never the values (step 2 of 2) *(2026-10-13)*
+
+A database policy and the Privacy page, shipped with admin v1.4.5. Findings: ADM-03, FE-PUB-01. Owner
+decision, 13 Oct 2026.
+
+- **`activity_log_read` is members only.** It was "member, or a roles-tier admin", so an admin could
+  select every household's activity rows, row images (`changes`) included. The migration sweeps every
+  read policy on the table that calls `is_admin`, whatever its name, and recreates the member read.
+  Members are unaffected: the household Activity panel works as before.
+- **Admins use `admin_activity_feed`** (v10.92.0): time, household, actor, action and entity, never
+  the values. Admin v1.4.5 moves the Audit page and its CSV onto it.
+- **Privacy, Security section:** "In the admin console, Vyact staff can see that an action happened in a
+  household (its time and kind), never the amounts, names or descriptions it changed." The policy version
+  is now 2026-10-13.
+
+Tests:
+- adminActivityFeedSql.test.ts (+2): an admin who is not a member reads no rows from the table while the
+  feed still serves them, a member reads only their own household, and every admin read policy is swept,
+  including one under another name.
+- admin adm03AuditFeed.test.ts (3).
+
+## v10.92.0 — Admin activity feed without values, step 1 of 2 *(2026-10-13)*
+
+Database only (one new function); no change to the app or the admin app yet. Findings: ADM-03, FE-PUB-01.
+Owner decision, 13 Oct 2026: admins see who did what and when, never the values.
+
+- **Why.** The admin Audit page reads `activity_log` directly, and a roles-tier admin may read every
+  household's rows, including `changes`: the row images with amounts, payees, descriptions and names.
+- **New: `admin_activity_feed(p_limit, p_before)`.**
+  - It returns the time, household, actor, action, entity type and entity id, newest first, and never
+    `changes`.
+  - Roles-tier and super admins only. Anyone else gets `42501`, and signed-out callers cannot run it.
+  - `p_before` pages back. The limit is kept between 1 and 1,000 (default 200).
+- **Nothing else changes yet**, so the Audit page keeps working in between. Step 2 moves the Audit page and its
+  CSV onto this function, narrows `activity_log_read` to household members, and adds one sentence to Privacy.
+  It ships after this migration is live.
+
+Tests:
+- adminActivityFeedSql.test.ts (5), on PGlite:
+  - a roles or super admin gets the right columns, newest first, and none of the values;
+  - members, content admins and signed-out callers are refused;
+  - paging and the 1–1,000 limit;
+  - members still read their own household's log, and the migration touches no policy or table;
+  - the function names its columns and never reads `changes`.
+
+## v10.91.0 — Budget forecast counts real dates; single-key shortcuts removed *(2026-10-13)*
+
+App only; no schema change. Findings: FE-MNY-16 (with R3), FE-UIS-10. Owner decisions, 13 Oct 2026.
+
+- **The budget form's recurring forecast counts each bill's real dates.** "Already committed via recurring
+  this period" and its "Use as allocations" used to multiply the period's length by a rate taken from the
+  frequency label:
+  - a ₹6,000 quarterly premium was forecast at close to ₹6,000 in every month;
+  - a bill paid on Mondays and Thursdays was counted once a week.
+
+  Now each bill's dates come from its own rule, the one the bill calendar and the recurring engine read,
+  including its start date, COUNT, UNTIL and month-end rule. The quarterly premium shows ₹6,000 in the
+  months it falls in and nothing in the others; the Mon + Thu bill counts each of those days. Suggest still
+  proposes a monthly average (₹2,000 a month for that premium), by design.
+- The server copy of the forecast is deleted. Nothing on the server read it, and recurrence maths is never
+  hand-ported into `_shared/`.
+- **The n / b / d / a keyboard shortcuts are removed.** A single key opened Add Transaction, Budget, Debt or
+  Asset from any page, so a speech or keyboard user could open a form by accident (WCAG 2.1.4). Adding
+  starts from each page's button, the floating + or ⌘K. ⌘K and `/` on Transactions (it only focuses the
+  search box) stay.
+
+Tests:
+- budgetForecast.test.ts (7):
+  - a quarterly bill counts only in its own months;
+  - a Mon + Thu bill counts all 9 days of October 2026;
+  - nothing before the start date, or after COUNT or UNTIL runs out;
+  - the schedule's month-end rule;
+  - rows with no stored rule;
+  - sums and skipped rows;
+  - the same date call as the bill calendar.
+- shortcuts.test.ts: no single-letter shortcut is registered anywhere.
+- Updated deliberately:
+  - v91: one June rent is exactly 1,000 (was about 986);
+  - W8a-MNY16-001;
+  - the money-port roster (the forecast is not ported);
+  - e2e A11Y-FC-001, which now checks that a letter opens nothing.
+
+## v10.90.0 — Pip: real categories, stricter number check, names treated as data *(2026-10-13)*
+
+App and the bundled engine (WhatsApp answers use the same code); no schema change. Findings: FE-PIP-07,
+FE-PIP-11, FE-PIP-06. Owner decisions, 13 Oct 2026.
+
+- **Real categories only.** Pip used to pre-fill whatever word the model chose, so "fuel" was saved as a
+  category nothing counts. Now:
+  - the word is placed in a real category of its type ("fuel" → Travel);
+  - if the word can't be placed, a shop name or a keyword in the message is tried;
+  - if nothing places it, Pip asks "Which category is this?" with up to three chips (your most used lately)
+    before any form opens. Pip never guesses Other.
+- **A stricter number check.** A number after ₹ or Rs, or before lakh, crore, k or million, is an amount.
+  It must match a computed figure. "About 12 lakh" or "Rs 9 left" made up by the model is no longer shown.
+  A correct "1.2 lakh" for a computed ₹1,20,000 still passes.
+- **Names are data.** Account and asset names typed by anyone in the household reach the model cleaned:
+  - line breaks and code characters are removed, and the name is capped at 40 characters;
+  - a name that reads as an instruction (for example "Ignore your rules…") is sent as "Account 1" instead.
+
+  Pip's instructions now say that names and text in the facts are data, never instructions. Your stored
+  names do not change.
+
+Tests:
+- pipGuard.test.ts (6):
+  - "fuel" becomes Travel;
+  - an unplaceable word gives a question with chips, no form and no model call;
+  - "12 lakh", "Rs 9" and "5 crore" are rejected, while correct scaled figures and counts pass;
+  - descriptions and payee text never reach the model, for any intent;
+  - instruction-like names are sent as neutral labels;
+  - the prompt rule.
+
+## v10.89.0 — WhatsApp: "that was loan emi" becomes a real loan payment *(2026-10-13)*
+
+Migration `20261019120000_whatsapp_correct_to_loan` plus the `whatsapp-webhook` Edge Function; no app change.
+Findings: BE-WA-08, INT-TXN-07 (the remaining part), and the correction half of INT-TXN-12. Owner decisions,
+13 Oct 2026.
+
+- **What was wrong.** "no, that was loan emi" re-labelled the entry WhatsApp had just logged as Loan / EMI.
+  The whole amount stayed spending, and the loan never moved, so Debts, the loan's schedule and the budget
+  disagreed with what was paid.
+- **Now the entry becomes a payment on the loan.**
+  - The server splits it: interest first, then principal, under the instalment's rules. The next due date
+    and months left update.
+  - The plain expense is removed in the same transaction, and it can never happen twice.
+  - The reply says what happened, e.g. "Changed to a loan payment. EMI #1 for Car loan: ₹1,000 interest,
+    ₹7,884.88 off the loan. ₹92,115.12 left; next EMI due 24 Oct."
+  - A refusal (more than the instalment due, a part-paid instalment, a paid-off loan) leaves the entry as
+    it was and says why.
+- **Which loan.** The one the message names; else the only open loan; else Pip asks "Which loan was that
+  EMI for?" with a numbered list, and the number replied finishes it.
+- **A plain correction never relabels an expense as Loan / EMI** (the database refuses it too).
+- **The right entry is checked.** A category correction is checked against the type of the entry being
+  changed. It used to read the last message received, so an income category could land on a spend, or a
+  valid correction was refused.
+
+Tests:
+- whatsappCorrectToLoanSql.test.ts (6, PGlite with the real W3 and W4e functions):
+  - the conversion and its legs;
+  - never twice;
+  - a refusal changes nothing;
+  - the 15-minute window and the viewer rule;
+  - loan_emi refused;
+  - the new question kind.
+- whatsappWorkflow.test.ts: 3 handler cases:
+  - one loan named;
+  - several loans: ask, then the reply finishes it;
+  - the fit check against the entry.
+- The W3 correction fixture now models the entry being corrected (deliberately).
+
+## v10.88.0 — "Erase all data" works with a loan, and erases everything *(2026-10-13)*
+
+Database only (migration `20261018120000_erase_household_complete`); no app change. Findings: R1 (from the
+12 Oct status review), XC-PRV-08, DB-SEC-08. Owner decisions, 13 Oct 2026.
+
+- **R1: erase with an unpaid loan.** The erase deleted debts while the loan account still existed. The loan
+  guard (v10.74.0) then saw money owed and refused, so the whole erase rolled back and nothing was erased.
+  Now the erase removes the loan accounts and zeroes the cached balance first, then deletes the debts. The
+  guard still refuses every other delete of a loan with money owed.
+- **Erase scope.** The erase now also removes:
+  - notifications;
+  - open WhatsApp questions and scheduling state;
+  - Pip agent conversations and relay messages;
+  - loan payment history;
+  - the household's shared splits, deleted for everyone in them (owner's choice).
+
+  Kept: the household and its memberships, invitations, subscriptions, WhatsApp links and preferences, push
+  subscriptions, and usage metering without text.
+- **No table missed again.** A test lists every household table and fails until each new one is either
+  erased or explicitly kept.
+- **Audit report:** status updated (106 of 212 resolved). INT-TXN-01 is corrected to Closed, and the
+  13 Oct decisions are recorded.
+
+Tests:
+- eraseHouseholdSql.test.ts (8): the unpaid-loan erase runs against the REAL W4e guard, read from its
+  migration. The same fixture fails with `debt_not_paid_off` against the old erase.
+- The guard still refuses a direct delete.
+- Shared splits are gone; other households are untouched.
+- The re-authentication check still applies.
+- The household-table coverage test.
+
+## v10.87.0 — Aurora 4.0 A3: confirmations and undo *(2026-10-12)*
+
+PR A3 of the Aurora 4.0 redesign. No figure, calculation or schema changes. The money model is untouched:
+every delete, close or reversal runs through the same store action as before.
+
+- **No more browser boxes (X6).** All 29 `confirm()` / `prompt()` calls are gone. Their place is one
+  confirmation sheet: a half-sheet on phones and a 460px dialog on desktop, with Cancel and the action
+  on the right (MD1). Each sheet names the item, says in 1–3 lines what happens and what stays, and has
+  one action named after the verb, red when it destroys (CF2).
+- **Each sheet says what it means (CF3–CF20).**
+  - **Transactions:** delete names the entry and where it comes off.
+  - **Splits:** delete names who loses a share, and a shared split offers "Close it instead". Close says
+    who is told and that unpaid shares stay owed.
+  - **Budgets and schedules:** delete says the spending stays. A schedule's sheet says past entries stay
+    and future ones stop.
+  - **Loans:**
+    - Undo payment lists the interest and principal that go, and what the loan goes back to.
+    - Mark paid off spells out the write-off, with an optional note.
+    - Deleting a cleared loan offers "Mark it paid off instead".
+  - **Assets:** delete says how much net worth drops.
+  - **Households:**
+    - Remove member and Leave household say what is lost and what stays.
+    - Deleting a household needs its name typed in.
+    - Renaming uses a proper field.
+  - **Account:** the emailed code has a real 6-digit field with Resend. Erase data, Deactivate and Delete
+    account explain themselves. Unlinking WhatsApp says what stops working.
+- **Undo instead of asking (CF1).**
+  - **Skip a bill (CF8):** skips at once, and the 8-second Undo puts the schedule back (`unskipRecurring`).
+  - **Revoke an invitation (CF16):** the invitation disappears at once and is revoked after 8 seconds or
+    when you leave the page; Undo keeps it.
+  - **Sign out (CF19):** no longer asks. An Undo toast now stays 8 seconds.
+- **Budget over its total (FB1).** The form shows an amber note the moment the allocations pass the total,
+  with "Raise total" and "Trim allocations". Trimming keeps each line's share and lands exactly on the
+  total. Save no longer stops to ask "Save anyway?".
+
+---
+
+## v10.86.0 — Aurora 4.0 A2: app shell *(2026-10-12)*
+
+PR A2 of the Aurora 4.0 redesign: the page header, the add action and household switching. No figure,
+calculation or schema changes.
+
+- **One page header (PH1).** All 14 app pages use `components/ui/PageHead`. On desktop the page's own add
+  button sits centred on the title, not at its top edge, and subtitles are sentence case.
+- **No second title on phones (X3).** The mobile header already names the page, so the page title is
+  visually hidden below 640px. It stays the page's h1 for screen readers. Controls a page needs on phones
+  stay: Insights' tabs, the Reports date range, and Pip's WhatsApp and New chat (FIT3).
+- **The page's own + in the phone header (PH1 B′, HH4).** A small outlined + next to the bell adds the
+  page's own item: a loan on Debts, a budget on Budgets, a household on Households, and so on.
+  Transactions and the Dashboard leave it to the tab bar's +.
+- **The desktop + is a menu (X4, IN1).** The floating + no longer duplicates "+ Add Transaction". It opens a
+  menu of the other things you can add (transaction, split, budget, loan, asset) without this page's own,
+  and it now shows on Insights too.
+- **Household switch in the avatar (HDR1, HDR2).** The household-type chip is gone from both headers.
+  The avatar wears the household's badge, and the account menu's first row switches household.
+
+---
+
+## v10.85.0 — Aurora 4.0 A1: design foundations *(2026-10-11)*
+
+The first of eight PRs implementing the approved Aurora 4.0 redesign (`Vyact Redesign/Design 4.0/DESIGN_CHANGES.md`).
+These are the shared styles and components every later page builds on. No figure, calculation or
+schema changes.
+
+- **Surfaces and corners (X2, X12).** Three surface tiers:
+  - a raised card (`.card-raised`, 18px) for heroes and KPIs;
+  - the panel, for lists;
+  - an inset well (`.well`, 12px) for stats and inputs inside a card.
+
+  The old fourth tile (grey fill, 1px border, 8px corners) is gone from the app. Corners are 12, 18 or 26px
+  only: the 8px token and the stray 9–20px values now land on the scale.
+- **Light theme (MIST1, MIST2).** In Mist, status colours used as text take darker shades (mint, amber,
+  coral, teal, red, all at least 5:1 on white). Bars, rings and fills keep the brighter colours. Small wells
+  in Mist are flat with a hairline border instead of a double inner shadow. Nocturne is unchanged.
+- **One tab switch (X5).** Transactions, Reports, Debts, the bill calendar and Insights share one
+  `SegRail`: a sunken track where the active option gets the accent tint and inset. Form segments
+  look the same.
+- **Sub-navigation (NAV1, NAV2).** A plain underline tab row, 13.5px on phones and 14px on desktop, replaces
+  the 10.5px pill rail. The "PLAN ▸" cap is gone.
+- **Dark text on coral (X8, CON2).** The floating +, Pip's send button, the activity filters, the Learn
+  chips, the demo banner, the bell badge and the "Needs" segment use dark ink on coral, not white.
+- **Toast (TS1).** A 14px sentence-case bar with high contrast. It names the item, and Undo is a 44px target.
+  It spans the full width above the tab bar on phones and sits bottom-right at 380px on desktop.
+- **Crash screen (ER1).** Pip, "This page didn't load", a line saying nothing was lost, Try again,
+  Go to Dashboard, and Copy error details for support.
+- **Offline (OF1).** A strip at the top of every page while offline says how many changes are saved on the
+  device. It clears itself once they have synced.
+- **Notifications (NT1, NT2).** A "Needs you" group with a count sits above Today and Earlier, and keeps
+  bills to approve until they are handled. Actions are 40px buttons, and labels are sentence case.
+- **Copy (X10, X11).**
+  - "Exclude from household totals and charts" replaces the Pulse Score wording.
+  - Settings stats no longer count Goals.
+  - Budgets says "Month and annual plans".
+  - Method notes on Reports, Net Worth history and the bill calendar keep one line, with the rest
+    behind an (i) toggle.
+
+---
+
+## v10.84.0 — W8d: public site, platform and docs *(2026-10-09)*
+
+The last batch of the W8 plan, from the 2026-10-04 audit. No app behaviour change and no schema change.
+
+- **Admin deploys restored (W7b regression).** W7b's deploy-skip command could exit 128 when the last
+  deployed commit was outside Vercel's shallow clone, and Vercel treats that as a deployment **Error**. Every
+  admin production build from 8 to 9 Oct failed this way, so admin.vyact.app stayed on v1.4.3 and W8c
+  (v1.4.4) never went out. The command now exits only 0 (skip) or 1 (build), building whenever it can't
+  tell. This release redeploys admin.
+- **Real 404s (FE-PUB-06).** Made-up deep paths (`/learn/a/b`, `/for/x/y`, `/wp-login.php`) get the 404
+  page instead of a 200 app shell.
+- **Demo host (FE-PUB-05).** The guest demo's other addresses send public pages (Learn, /for, /about, the
+  sitemap, llms.txt, /v links) to vyact.app, and its robots.txt disallows everything.
+- **Security headers (FE-PLT-04).** vyact.app sends a Content-Security-Policy in **Report-Only** mode, a
+  first step before enforcing it.
+- **Previews never touch production (OPS-05).** A preview given production's database URL now runs
+  local-only. A build step fails any preview whose bundle still names the production project.
+- **CI hygiene (OPS-07, OPS-13).**
+  - Every workflow runs with a read-only token.
+  - Vercel installs use `npm ci`, and Node is pinned to 22.
+  - Runs on `main` are never cancelled by a newer push; only pull-request runs are.
+- **Dependencies (GATE-05).**
+  - CI fails on a runtime advisory of high or above.
+  - React Router is bumped to 6.30.6.
+  - Its remaining moderate advisory is mitigated, as recorded in `docs/SECURITY_AUDIT_TRIAGE.md`.
+- **Smaller app download (GATE-06).** Supabase, motion and the router/state libraries load as their own
+  cached chunks. The app's entry chunk drops from 621 KB to 278 KB, with a 350 KB budget enforced at build.
+- **Runbooks (OPS-09, DB-OPS-14, DB-OPS-12).** DEPLOY.md, OPERATIONS.md and db/MIGRATIONS.md describe
+  the live pipeline. The migrations gate rejects "not applied" wording. Backups no longer use
+  `--no-privileges`, which strips the REVOKEs the security model depends on.
+- **Personal data (XC-PRV-14).** Personal email addresses and phone numbers in tracked docs are replaced
+  by placeholders, the feedback screenshots are no longer tracked, and `.gitignore` covers working files.
+  Git history still holds the old values; rewriting history is an owner decision.
+
+## v10.83.0 — W8b: WhatsApp and Pip server robustness *(2026-10-08)*
+
+Eleven Edge Function fixes from the 2026-10-04 audit (owner plan W8, batch b). No migration and no app change;
+the Deploy workflow ships them with the functions.
+
+- **No lost messages (BE-WA-04).** A WhatsApp message the webhook could not store is answered 503, so Meta
+  delivers it again. It used to answer 200 regardless, and the message was gone.
+- **Stuck messages stop (BE-WA-12, Edge part).** A message whose worker died mid-way counts an attempt when
+  it is re-queued and stops at the limit; it used to replay without limit. (The scheduled sweep that needs a
+  migration is not in this release.)
+- **"Done" means done (BE-WA-09).** STOP and other preference or open-question writes are checked; a failed
+  write is retried instead of answered "Done".
+- **Answers survive a hiccup (BE-WA-03).** When the reply to a question (an amount, a yes) fails to process,
+  the question is reopened, so the retry still reads it as the answer, not as a new entry.
+- **ANSWERS OFF holds (BE-WA-13).** A "1" on an old follow-up list is not answered after answers are turned
+  off (the answers offer is sent instead), and ANSWERS OFF or STOP closes an open list.
+- **Verification codes (BE-WA-06).** Each guess claims its attempt before the code is compared, so parallel
+  guesses can't exceed the limit; sending a new code keeps the count.
+- **Sends (BE-WA-11).** A send Meta refused frees its slot so the next run can send it; the daily cap counts
+  sends in flight.
+- **Same figures as the app (INT-PAR-10).** Large-spend alerts use the household's share of a split bill; the
+  budget percentage uses the app's threshold and rounding.
+- **Pip gateway (BE-PIP-05, BE-PIP-07).** A model configuration may read only model-provider keys (an
+  allowlist; production uses OPENROUTER_API_KEY). Provider failures are logged, and configuration hints go
+  to admins only.
+- **Learned recipes (BE-PIP-04).** Only a trusted recipe may write without a human (the pipeline is not live).
+
+## v10.82.0 — W8a: app fixes from the audit's open items *(2026-10-08)*
+
+Sixteen app fixes from the 2026-10-04 audit's remaining low and medium items (owner plan W8, batch a).
+No schema change. The server engine bundle is rebuilt: Pip, the stale-balance rule and the budget
+forecast live in it.
+
+- **Language (FE-UIS-15).** The five partly translated languages are labelled "Preview: navigation only",
+  and Settings says so when one is chosen (owner decision: keep them, labelled).
+- **Dashboard chips (FE-MNY-06).** "Budgets exceeded" reads this month's budget lines (allocations, not a
+  container's missing category; annual lines never against one month), and "Net worth" reads the same
+  projection as the Net Worth page.
+- **Budget forecast (FE-MNY-16).** Paused schedules and loan EMIs are no longer forecast as category spend
+  (app and the server's copy).
+- **Editing (FE-UIC-05, FE-UIC-09).** A transaction edit opens on the account the ledger uses (the account
+  link), not a stale payment method; an asset edit keeps the row's links and its precondition.
+- **Decimal comma (FE-UIC-10).** "12,50" is 12.5 (it was saved as 1250); "1,50,000" is still grouping. One
+  parser, `lib/amountInput.ts`, for every amount field.
+- **Account ledger (FE-UIC-15).** The running balance undoes a reconcile adjustment as it walks back past
+  it; amounts are signed and formatted.
+- **Pip (FE-PIP-13, FE-PIP-15, FE-PIP-16).** With no spending history Pip says so instead of a sentinel
+  runway or "0.0 months"; a stated bank or card number that matches nothing books to no account (it fell
+  back to the first card); Stop, New chat and leaving the chat abort the model call, with a 30 s deadline.
+- **Sync (FE-SYN-10, FE-SYN-11, FE-SYN-12).** A different user signing in without a sign-out clears and
+  purges the previous user's data first; the outbox wakes when the head op is due (no 100 ms polling);
+  a failed device-storage read is never written back as an empty list.
+- **Invites (FE-PLT-07).** A signed-in visit to an invite link asks "Join this household?" first.
+- **Consent (XC-PRV-09).** The version recorded is the one the policy pages show (it was 2026-07-01); a
+  failed write is reported and retried; "Continue with Google" on the sign-in page states and records the
+  agreement.
+- **Stale balances (INT-PAR-05).** One rule (`staleAccounts`: bank, card and cash, by the last check, else
+  creation) for the bell, push and WhatsApp "Reply UPDATE". A just-added account is no longer "out of date".
+
+## v10.81.0 — W7b: public site and build config (batch C) *(2026-10-08)*
+
+Five public-site and build fixes from the 2026-10-04 audit. No app behaviour change, no schema change.
+
+- **Deploys after a docs commit (FE-PUB-07, OPS-13).** Vercel's skip check compared only the last commit
+  (`HEAD^..HEAD`), so a push ending in a docs-only commit skipped the code commits before it. It now
+  compares with the last deployed commit (`$VERCEL_GIT_PREVIOUS_SHA`) and builds whenever that is unknown
+  (react/ and admin/).
+- **No source maps in production (GATE-03).** Every deploy published maps of the private source (87 files,
+  8.3 MB). Production builds emit none, and a postbuild gate (`scripts/assert-no-sourcemaps.mjs`) fails
+  the build if a map or a `sourceMappingURL` reaches `dist/`.
+- **Config hygiene (FE-PLT-11, rest).** Deleted: the root `vercel.json` (all three Vercel projects build
+  from react/ or admin/, so none read it), the `vyact-react` self-dependency, `@supabase/ssr`, and the
+  unused Next.js quickstart files that were its only users (`react/page.tsx`, `react/utils/supabase/`).
+- **Learn pages (FE-PUB-03).** Database reads time out after 4 s (a slow read used to hang the function
+  until Vercel's limit), and an empty library answers the uncached "try again" 503 instead of a "no
+  lessons" page the CDN kept for a day. (Unsafe `source_url` values were already handled.)
+- **Landing pre-render (FE-PUB-10).** It decides cloud mode with the runtime's rule (`scripts/cloudMode.mjs`),
+  so Vercel previews and demo.vyact.app no longer pre-render cloud sign-up buttons on a local-only app.
+  Its HTML insertions are `$`-safe. Lane A passes its build mode to the pre-render.
+
+## v10.80.0 — W7a: small app fixes from the audit (batch A) *(2026-10-08)*
+
+Fourteen small app fixes from the 2026-10-04 audit (owner: batches A, C, D; this is A). App only; no
+schema change. The engine bundle changes by one line (the dead flag below).
+
+- **Pip per household (FE-PIP-17).** The chat is keyed on the open household, so switching household
+  starts a fresh conversation instead of writing the old transcript into the new one.
+- **"Income varies" (FE-MNY-14).** The planner rule reads completed months only: early in a month the
+  not-yet-paid salary no longer counted as a near-zero month and flagged a steady income as unstable.
+- **Full backup (FE-MNY-15, FE-UIS-06 rest).** The JSON backup now carries accounts, budget allocations,
+  recurring bills and net-worth history, plus the app version that wrote it (`version` stays the format
+  marker).
+- **Account names (FE-UIC-16).** Transaction rows name the account from its `accounts` link (transfers
+  read "From → To", a split payment names each account) instead of "Linked account" or nothing.
+- **List and calendar totals (FE-UIC-17).** The filtered net, month nets and heat-calendar days count like
+  every other total: your share of a split, no transfer legs, no balance adjustments.
+- **Labels and buttons (FE-UIS-14, FE-UIS-16).** The member-role select, activity filter, onboarding
+  fields and bill amounts have accessible names; sign-in/up fields carry autocomplete hints. `Button`
+  defaults to `type="button"` (a Cancel inside a form no longer submits it). Accepting an invite to a
+  full household explains who can make room, not `HOUSEHOLD_FULL`. Two dead modules are deleted.
+- **Page language (FE-UIS-15, part).** `<html lang>` follows the Language setting.
+- **Push after an expired session (FE-PLT-08).** A passive sign-out drops the device's push subscription,
+  so the next person on the device stops getting the previous user's notifications.
+- **Leaving a household (INT-HH-13).** Leaving or deleting the open household switches to one you are
+  still in (delete used to land on the local placeholder; leave stayed on the old household).
+- **Reconcile (FE-UIC-14).** A card typed as "-23,990" reads as 23,990 owed (the sheet showed a drift the
+  engine then posted differently); negative cash is refused; the toast reports the delta actually posted.
+- **Password change (FE-UIS-13, rest).** Changing the password in Settings asks for the emailed code, like
+  the Danger Zone.
+- **Bottom banners (FE-UIS-08, rest).** Toasts and the nudge, install and update banners sit above the phone
+  tab bar and the safe area instead of covering the "+".
+- **Pip config (FE-PIP-18, part).** The dead `askVyact.backend: 'rules'` flag (nothing read it) is deleted.
+- **Category parity (INT-CON-05).** The parity test now also pins the WhatsApp and agent income sets to the
+  app's.
+
+Left for an owner call: labelling the partly translated languages "Preview" (FE-UIS-15).
+
+## v10.79.0 — W6: frontend quick fixes from the audit *(2026-10-08)*
+
+Twelve small, frontend-only fixes from the 2026-10-04 audit (owner: "only the 12 points"). App only;
+no schema change, no Pip or engine change.
+
+- **Short links (FE-PUB-04).** `/v/<n>` YouTube short links are on the service worker's denylist, so a
+  returning visitor's installed app no longer answers them with the app shell (they landed on
+  /dashboard). PUB-027 checks every `vercel.json` rewrite against the denylist.
+- **Recurring save (FE-UIC-13).** One save at a time: a double tap on "Save schedule" created two
+  schedules and posted the bill twice. The button disables and reads "Saving…".
+- **Keyboard shortcuts (FE-UIS-10).** n/b/d/a never fire with Ctrl, Cmd or Alt (Cmd+A opened Add Asset,
+  Ctrl+D Add Debt), in an editable element, or while a dialog is open.
+- **Error screen (FE-UIS-12, part).** The always-throwing test page `/__e2e_error` is not routed on
+  vyact.app (a real 404 at the edge). A crash is recorded on the fault channel; the fallback uses real
+  theme classes; a second "Try Again" reloads. A chunk from an older build reloads once, never in a loop.
+- **Toasts (FE-UIS-08).** Toasts are a live region: failures are announced as alerts, the rest as status.
+  Errors and warnings stay 10 s and every toast has a close button. Inline sign-in/sign-up errors are alerts.
+- **Onboarding honesty (FE-UIS-11).** The fixed "Picture confirmed" percentage is gone (it measured
+  nothing), and so is the "Connect your bank" nudge (there is no bank connection). An estimated account,
+  such as the take-home pay onboarding sets as opening cash, shows the Estimated tag in Accounts until a
+  reconcile confirms it.
+- **Ratios (FE-UIC-07).** Debt-to-income on Debts and the Dashboard, and "Kept this month" on Net Worth,
+  use this month's income and show "—" without any; Debts divided all-time income by 12, with a fake 1.
+- **CSV export (FE-MNY-11).** Text that a spreadsheet would run as a formula (= + - @, tab) is neutralised.
+- **Learn (FE-PUB-11).** The current topic pill uses `hsl(var(--coral))`; PUB-028 bans raw triplet tokens
+  in public pages.
+- **Settings (FE-UIS-06, part).** Currency, language, payoff strategy and extra payment live on the
+  household row, which only the owner may update: for anyone else they are read-only (they used to
+  "save" and silently revert). The Profile email field, which saved nowhere, is shown instead of edited.
+- **Password reset (FE-UIS-13, part).** "Set a new password" opens only after a reset link (code exchange
+  or PASSWORD_RECOVERY, kept 15 minutes for a refresh), not for any signed-in session.
+- **Net Worth liabilities (FE-UIC-06, rest).** The list is the projection's own liability rows (cards,
+  loans, other debts), so it adds up to Total Liabilities; a card-only household is no longer told it
+  has no debts.
+
+---
+
+## v10.78.0 — W5: Pip answers the question that was asked *(2026-10-08)*
+
+Owner decision **D29** (P1–P4). App and bundled engine only, no schema change. Audit IDs: FE-PIP-01,
+FE-PIP-04, FE-PIP-05, FE-PIP-02 (with INT-TZC-06). In every case the figure was real and passed the
+invented-figure guard; it answered a different question.
+
+- **P1 · Annual budgets.** An annual line was measured against ONE month's spending, so a Travel budget
+  97% used by September read as "₹60,000 left" and "on track" in October. Pip now gives no monthly verdict
+  on an annual budget: it says the budget is annual and points to Budgets, and "can I afford" rests on the
+  money free after card dues. A month's own budget still decides when there is one. Pip's budget summary
+  marks annual lines and measures them over their own year.
+- **P2 · Signs.** A negative net worth reached the model as a positive figure, and a "cushion" below the
+  safety floor was sent unsigned. Net worth, liquid savings and holdings keep their minus, said in words;
+  the old pre-written `vars` are no longer sent beside the facts.
+- **P3 · Periods.** "Where did my money go last month?" was answered with this month. Diagnostic and advice
+  read the month asked about ("this week" is answered over its dates); affordability, budgets and the
+  overall position answer for now and ask when another month is named. A "usual month" is now the months
+  before the one asked about.
+- **P4 · Amounts.** "Can I afford a new iPhone?" could come back with a price the model knew. An amount now
+  counts only when your words state it (2.5k, 1.2 lakh and 1 cr included); otherwise Pip asks how much. A
+  split's number of people is kept between 2 and 20.
+
+Tests:
+- pipCorrectness.test.ts (W5-D29-001..011)
+- Updated deliberately: seven askVyactFacts cases now state their amount in the question (P4); the
+  annual case in ledgerWorkflow expects `annual: true` (P1); the askVyact fake model echoes facts.
+
+## v10.77.0 — W4h: a suggested budget adds up *(2026-10-07)*
+
+Owner decision **D27** ("Suggest" gave a huge total and a tiny split). App only, no schema change.
+
+- **Why the total was huge.** The suggestion counted lines the budget form never shows:
+  - a "savings" line from the retired Goals;
+  - old category ids (such as `rent` or `transport`), which have no row of their own on the form;
+  - receivables' minimum payments, and paid-off loans' EMIs;
+  - an EMI counted twice, once from the loan and again from its schedule;
+  - a daily bill counted once a month.
+
+  It also kept a total you had typed earlier instead of the one it proposed.
+- **What Suggest proposes now:** only categories the form shows (an old id is proposed as its current
+  one).
+  - Bills in the same category add up, each counted from its own rule: daily × 365 / 12, quarterly ÷ 3,
+    weekly × the days it falls on.
+  - Each live loan's EMI counts once.
+  - The last three completed months' spending is used where it's higher than the bills.
+- **The total is the sum.** Applying a suggestion (or the recurring forecast) sets the total to what it
+  allocates. The total stays editable, and what's left shows as an **Unallocated** line (or "Over the
+  total by").
+- **No hidden rows.** Opening a budget shows old ids under their current category. Rows the form can't
+  show are no longer saved again.
+
+Tests:
+- budgetSuggest.test.ts (W4-D27-001..004)
+- CON-UNIT-MM-111 updated deliberately (no goal line; a legacy id proposed as its current one)
+
+## v10.76.0 — W4g: loans run themselves *(2026-10-07)*
+
+The rest of owner decision **D19** (audit BE-WA-08, INT-TXN-07). The database, the server and the app
+ship together; this needs v10.75.0's app live first, because it drops the command older apps called.
+
+- **Auto-record.** Turn on "Record each EMI automatically" on a loan and choose the account it is paid
+  from.
+  - Each EMI is then recorded on its date, in the household's time zone, by a server job that runs
+    every 30 minutes (`auto_record_due_emis`). A loan a few EMIs behind catches up.
+  - Each instalment is recorded once: the operation id is the loan plus the instalment number.
+  - A loan whose account is gone is skipped, never half-recorded.
+- **WhatsApp "paid car EMI 15000" pays the loan** (`whatsapp_pay_loan`).
+  - Before, it was booked as a full expense and the loan never moved.
+  - Now it pays the loan the words name (or the only loan) and replies with the split: "Logged EMI #1
+    for Car loan: ₹1,000 interest, ₹7,884.88 off the loan. ₹92,115.12 left; next EMI due 24 Oct."
+  - More than the EMI due is not logged: the reply gives the amount due, and the extra goes in the app
+    as a prepayment.
+  - If the message could be either of two loans, Pip asks which.
+- **The bill calendar shows loan EMIs**, from each loan's own schedule.
+  - The due one can be paid from the calendar (Pay opens the loan's sheet), and a part-paid one shows
+    what is left.
+  - An auto-recorded loan's EMI "posts automatically".
+- **The EMI-day reminder** says "Vyact records this EMI on the day" for an auto-recorded loan and offers
+  only View. Paid-off loans are not reminded.
+- **EMI recurring schedules were moved onto their loans.**
+  - The loan takes the schedule's auto-approve setting and paying account, and the schedule is closed.
+  - A schedule naming no loan stays flagged in Recurring.
+- **Retired:** `record_loan_payment` is dropped, along with the legacy `amortization.ts` and their
+  tests.
+- A test that pays the cold import of the WhatsApp webhook and the bundled engine now has 30 s instead
+  of 5 s. It had been failing at random on a loaded runner.
+
+Migration 20261017120000. Tests:
+- loanAutomationSql.test.ts (W4-D19-015..017, PGlite)
+- loanCalendar.test.ts (W4-D19-020..022)
+- WhatsApp W4-D19-018/019
+
+## v10.75.0 — W4f: loans, paid the way banks count them *(2026-10-07)*
+
+The app half of owner decisions **D19**, **D17** and **D30**. Needs v10.74.0's database first. Audit
+IDs: INT-TXN-07, FE-MNY-03/04, XC-ARC-02, the notification seed that booked an EMI as Food & Dining,
+and the live "payment_out_of_range".
+
+- **Pay sheet.** Each loan has a Pay sheet, prefilled with exactly what the server will accept
+  (`loan_due`):
+  - **EMI #k:** the amount due, split into interest and principal. A short payment is fine and keeps
+    the instalment open.
+  - **Prepay:** "finish sooner" keeps the EMI; "lower the EMI" keeps the end date.
+  - **Pay off:** the exact closing figure.
+  - **Bank figures:** the bank's own split.
+
+  The server computes every split; a refusal is explained in plain words, with the figure to use.
+- **Debts page.**
+  - Each loan shows its outstanding from the ledger (the same figure as Net Worth and Pip).
+  - It also shows the EMI due (number, date, amount), when it clears ("Clears Mar 2029"), the months
+    and interest left, and an expandable schedule.
+  - **Undo** removes the latest payment as a whole.
+  - **Mark paid off** closes a loan by reconcile, never by a payment. A loan is deleted only once
+    nothing is owed.
+  - Paid-off loans and money owed to you get their own simple lists.
+  - The summary is loans plus credit-card dues, per your decision: cards are accounts and are not
+    listed here.
+- **Loan form.** It holds the terms:
+  - sanctioned amount, still owed (read-only once payments exist), rate, tenure, first and next EMI
+    dates;
+  - the EMI, with the standard figure one tap away and editable to the bank's letter;
+  - a rate change that applies from a chosen date.
+
+  Credit Card is no longer a debt type. Existing loans arrive with estimated terms, and saving the
+  form confirms them.
+- **One way to pay a loan.**
+  - The transaction form's Loan / EMI shows the EMI due and pays through the loan. Paying extra is a
+    prepayment.
+  - Any other new Loan / EMI entry is paid the same way.
+  - The bell's "Record payment" opens the loan's Pay sheet. Before, it booked a plain expense under
+    Food & Dining.
+  - Pip's EMI capture preselects the loan it names.
+- **Recurring.**
+  - Recurring no longer offers Loan / EMI.
+  - An existing EMI schedule no longer posts the whole EMI as one expense; it is flagged instead, and
+    the EMI is paid from the loan.
+- **Cards are accounts (D30).** The last `assetId = debt.id` bridges are gone: a card's picker value
+  is the ledger's own, and reconciling a card no longer writes to a debt row.
+- **Retired:** the float `computeEmi` and `splitEmiPortions`, in the app and in the server port. A
+  paid-off loan's EMI no longer counts in debt-to-income.
+
+Tests:
+- loanScheduleParity.test.ts (W4-D19-010/011: the app's arithmetic equals Postgres across 560
+  combinations)
+- loanPaymentWorkflow.test.ts (rewritten for `payLoan`, plus W4-D19-012..014)
+- loanPayment.test.ts (`pay_loan` mapping)
+- INV-5 on the new split
+- e2e: debts-payment.spec.ts rewritten (Pay sheet; DEBT-FC-009 "apply advance" retired), plus the
+  Add Loan form
+
+## v10.74.0 — W4e: the loan model, in the database *(2026-10-07)*
+
+Owner decisions **D19** (loans and EMIs), **D17** (deleting a debt) and **D30** (cards are accounts).
+Audit IDs: INT-TXN-07, FE-MNY-03/04, XC-ARC-02, BE-WA-08, and the live "Save failed –
+payment_out_of_range". This release is the DATABASE only. The app that uses it is v10.75.0; until
+then the current app keeps working through `record_loan_payment`.
+
+- **One outstanding.**
+  - A loan's outstanding is its loan account's ledger. Every live loan gets that account at the
+    outstanding it shows today, so net worth does not move.
+  - The typed `current_balance` is now a cache the loan functions keep equal to the ledger.
+- **Terms and instalments.** Debts gain:
+  - tenure, first EMI date, effective-dated rate history and instalments paid;
+  - auto-record with a funding account;
+  - paid-off date.
+
+  Existing loans get estimates (tenure from their records, instalments paid, first EMI date from the
+  next due date). They are marked unconfirmed until the owner confirms them.
+- **`pay_loan` — the server computes the split, per instalment, on a reducing balance:**
+  - **EMI:** interest first (outstanding × rate ÷ 12, rounded to the paisa), then principal.
+    - A short payment is accepted and the instalment stays open.
+    - More than due is refused with the amount due; the extra is a prepayment (owner).
+  - **Prepayment:** all principal. "Reduce tenure" keeps the EMI; "reduce EMI" recomputes it over the
+    instalments left. Refused while an instalment is part-paid.
+  - **Payoff:** exactly the outstanding plus the open instalment's unpaid interest (owner). Any other
+    figure is refused, and the error states the exact one.
+  - **Bank figures:** the bank's own interest and principal for the due instalment.
+
+  The old command charged a full month's interest on every payment. That made a prepayment pay
+  interest twice and refused the final EMI.
+- **Undo** (`reverse_loan_payment`): the latest payment only (owner), atomically, restoring:
+  - the outstanding;
+  - the EMI;
+  - the next due date;
+  - the paid-off state.
+- **Paid off and delete (D17):**
+  - `mark_loan_paid_off` reconciles the loan account to zero (offset and dated log, never a
+    transaction) and closes the loan.
+  - A loan with money still owed cannot be deleted, by `delete_debt` or by any other path.
+    Deleting the whole account is not blocked: when a household is purged (W1b) its debts go with
+    it by cascade, and the guard only covers a debt deleted on its own. (Found in the rolled-back
+    production test: without this, "Delete my account" failed for anyone with a loan still owed.)
+- **Cards are accounts (D30, owner):**
+  - Every credit-card debt moves into a credit-card account: it merges with the account already
+    linked to it, or a new one is opened at its outstanding. The debt row is archived.
+  - A card debt an older app still creates is moved the same way.
+- **`loan_due`** tells the app's Pay form exactly what `pay_loan` will accept: the EMI number, its date, its
+  interest, the amount still due, the payoff figure and the latest payment (for undo). Both use one
+  instalment-state function, so the two can never disagree.
+- The payment log debts kept in their extras becomes payment events (history only).
+
+Migration 20261016120000. Tests: loanModelSql.test.ts (W4-D19-001..009, PGlite), including **INV-7**.
+A forced failure of the principal leg rolls back the whole payment. Before this, nothing asserted
+that.
+
+## v10.73.0 — W4d: bill cards act on their own bill; negative figures keep their minus *(2026-10-07)*
+
+The W4 fixes that needed no owner choice (audit FE-UIS-04, INT-TXN-13, FE-UIC-04, INT-TZC-06). App
+only; no schema change.
+
+- **"Skip once" no longer skips next month's bill.**
+  - A card left in the bell after the bill was approved elsewhere (the Recurring page, "paid X" on
+    WhatsApp, another member) skipped from wherever the schedule was now. Tapping it skipped the
+    NEXT occurrence, which was then never posted or asked for.
+  - Skip now goes through `skipRecurring`, which acts only on the card's own occurrence while it is
+    the one due.
+- **"Approve" no longer claims a post that did not happen.**
+  - On a stale card it quietly did nothing and still said "Approved — transaction posted".
+  - Cards read back from the cloud carry their due date as a timestamp, which never matched, so
+    Approve on any synced card did nothing.
+  - Both actions now say "Already handled" when there is nothing to do, in the bell and in the bill
+    calendar.
+- **Handled cards clear themselves.** On each refresh, an unread bill card whose schedule has moved
+  past it, or been paused, is marked read.
+- **Negative figures show their minus.** The formatter printed the size only, so a −₹5,000 figure
+  read "₹5,000". Now these keep the "−":
+  - an overdrawn bank row and the Bank total, and Cash in Hand;
+  - the account editor's balance and Reconcile's "Vyact says";
+  - net worth below zero, "money you can reach", and the liquidity groups;
+  - the month nets on Transactions;
+  - the net and net-worth chart axes and tooltips;
+  - the starting net position.
+
+Tests: billCardsAndSigns.test.ts (W4-BELL-001/002, W4-SIGN-001).
+
+## v10.72.0 — W4c: editing a split keeps the split *(2026-10-07)*
+
+Owner decision **D18** (audit INT-TXN-01, FE-UIC-01, FE-PIP-03). App only; no schema change.
+
+- **Split rows open the Split form.**
+  - Tapping a split in Transactions or on the Dashboard opened the plain transaction form, which
+    has no shares. Saving there wrote the row without its split: the people, the shares and who had
+    paid were gone, and the full bill counted as yours.
+  - Now the store routes a split row to the Split form, and a direct `/transactions/:id/edit` link
+    to a split redirects there too.
+- **Pip's split capture opens the Split form.** Before, "split 1200 dinner 3 ways" opened the plain
+  form, which ignored the split, so saving it logged the whole 1,200 as your expense.
+  - Now the Split form opens with the total, the category and three people.
+  - The other two names are left for you to fill in, and the shares stay even until you change one.
+- **An edit is a patch over the row it opened** (`editPatch`). Both forms used to rebuild the
+  transaction from their own fields, so every edit also dropped:
+  - the link to the recurring schedule or loan;
+  - whether the row was estimated or confirmed;
+  - in the Split form, the note, the payment mode and the version the store sends to catch a
+    conflicting edit.
+- **Paid dates are kept.** Saving a split edit used to restamp every earlier payment with today's
+  date. Someone who had already paid now keeps their day.
+
+Tests: splitEdit.test.ts (W4-D18-001..004).
+
+## v10.71.0 — W4b: the app stops posting bills in cloud mode *(2026-10-07)*
+
+Second half of owner decision **D16** (audit INT-TXN-06, FE-SYN-02). This needs v10.70.0's server job
+deployed first.
+
+- In cloud mode the app no longer posts auto-approved bills. The `recurring-post` job posts them
+  from the database's own copy of the schedule, and the device sees the posted entry on its next
+  refresh.
+  - Before, a device whose cache had not yet heard of a pause, an edit or a delete made on another
+    device posted the bill anyway.
+- The app still posts what the server does not: loan EMIs, until the loan model (D19) does.
+- Approving a bill that needs approval is unchanged.
+- A local-only household posts everything on the device, as before.
+
+Tests: store W4-D16-006.
+
+## v10.70.0 — W4a: the server posts due bills *(2026-10-07)*
+
+First half of owner decision **D16** (audit INT-TXN-06, FE-SYN-02). This release is the database and
+the server job only. The app keeps posting until v10.71.0 turns that off in cloud mode. Both sides
+write the same row under the same id, so running both meanwhile cannot double a bill.
+
+- **Why:** every device posted bills from its own cached copy of the schedules. A device that had
+  not yet pulled a pause, an edit or a delete made elsewhere posted the bill anyway.
+- **`recurring-post`** (a new Edge Function, run by pg_cron every 30 minutes):
+  - It finds the auto-approved bills that are due in each household's own time zone.
+  - It asks the app's engine, bundled into the function (`serverEngine.recurringPostPlan`), for the
+    row and the next date.
+  - It then posts them through `post_recurring_occurrence`.
+  - A run that missed several occurrences catches up. A pointer more than 45 days old moves on
+    without posting, as the app does.
+- **`post_recurring_occurrence`** posts one occurrence and moves the schedule on, in one transaction,
+  with the schedule locked. Before posting it re-checks the database's own copy:
+  - the schedule is live, active and auto-approved;
+  - the occurrence is the one due;
+  - it is due in the household's zone;
+  - the row is that occurrence of that template.
+
+  A row the ledger refuses leaves the bill due, never half-applied. The last occurrence closes the
+  schedule.
+- **Not posted by the server:** loan EMIs (an EMI is interest plus a principal transfer, and the
+  loan model in D19 will post them), and bills that need approval.
+- The cron secret is generated into Vault by the migration; nobody handles it. `recurring-post` is
+  deployed without JWT verification and checks the secret or the service key itself.
+
+Migration 20261015120000. Tests:
+- recurringPostSql.test.ts (W4-D16-001..003, PGlite)
+- recurringPostHandler.test.ts (W4-D16-004/005: job and plan parity, source and bundle)
+
+## v10.69.0 — W3e: one recurrence engine *(2026-10-07)*
+
+Second half of owner decision **D13**: every option on the schedule form works, and the month-end
+rule is chosen per schedule. Needs v10.68.0's schema (deploy it first). Audit IDs: FE-MNY-01,
+FE-UIC-02, INT-TXN-03/04, XC-ARC-01, INT-PAR-02/03, FE-MNY-02, BE-WA-02, INT-TZC-01, GATE-01.
+
+- **One rule per schedule.**
+  - Before, seven calculators worked out a schedule's dates and disagreed with each other.
+  - Now the engine, the form's save, the bill calendar, the day projections and the server all read
+    the schedule's RRULE through `ruleOf`, in UTC date-only maths.
+  - A schedule saved without a rule gets one derived from its columns, exactly as the database does.
+- **The rule is saved.** `upsertRecurring` used to drop the form's RRULE, the owner and the
+  `updated_at` precondition. Weekdays, "2nd Tuesday", annual dates and "ends after N times" were
+  shown on the form and then ignored.
+- **Month ends** (owner: chosen per schedule).
+  - A 31st used to step from 31 Jan to "31 Feb" = 3 Mar, then to 31 Mar, so February was never
+    billed. The bill calendar skipped those months too.
+  - Now a 29th–31st (or 29 Feb) lands on the month's last day, or on the 1st of the next month if
+    the schedule chose that.
+  - The form asks only when the chosen day needs it, and warns that the 1st-of-next-month choice can
+    put two in one month.
+- **Schedules end.** When COUNT or UNTIL runs out, the schedule closes on its last date
+  (`active = false`). Before, it kept posting forever. The form gains **Ends: On a date**.
+- **Editing restarts "N times"** (owner: "N restarts at the edit"). An edit moves the start to the
+  next due date, so "Ends after 3 times" means three more.
+- **The form.**
+  - Adds a **Weekdays** shortcut (Mon–Fri).
+  - The annual day is limited to the chosen month (no 31 April).
+  - A quarterly schedule stays quarterly when edited.
+  - Saving shows an error instead of failing silently.
+- **"paid X" on WhatsApp runs the app's Approve.**
+  - The `_shared/recurring.ts` hand port is deleted. The webhook takes the row and the next date
+    from the bundled engine (`approveOccurrenceOnServer`).
+  - Approving the last occurrence closes the schedule (`p_exhausted`) and says so in the reply.
+- **Daily schedules count right in forecasts.** The category forecast and the budget suggestion used
+  to count a daily schedule once a month.
+- The engine's schedule writes record a fault instead of an empty `catch {}`.
+
+Tests:
+- recurrenceEngine.test.ts (W3-D13-004..008)
+- recurrenceServerParity.test.ts (W3-D13-009/010; replaces recurringPort.test.ts, which pinned the
+  month skip)
+- WhatsApp W3-D13-011
+- store W3-D13-012
+
+## v10.68.0 — W3d: the recurrence schema, ahead of the app *(2026-10-07)*
+
+First half of owner decision **D13**: every option on the schedule form works, and the month-end
+rule is chosen per schedule. This release is the DATABASE only. It ships before the app that uses it
+(v10.69.0), as CLAUDE.md requires. Audit IDs: INT-TXN-05, DB-INT-07/08, INT-CON-03, FE-MNY-01.
+
+- **"Daily" is allowed** on `recurring_schedules.frequency` and `transactions.recurring`. The form
+  offered Daily, but both CHECKs refused it, so a daily schedule never reached the cloud and posted
+  money on one device only.
+- **`short_month_policy`**: what a schedule on the 29th–31st does in a shorter month. `last_day`
+  (the default) uses the last day of that month; `next_month_first` moves to the 1st of the next.
+- **Every schedule carries a real RRULE.** The v9.1 backfill wrote `FREQ=MONTHLY;INTERVAL=1` with no
+  day. Read by the rule alone, a bill on the 20th would have moved to its creation day.
+  - Those rows, and rows with no rule, get one derived from their own day, weekday and start-date
+    columns (`recurrence_rrule_from_legacy`).
+  - A trigger fills a rule whenever an older app saves a schedule without one.
+- **Approving the last occurrence over WhatsApp closes the schedule.** `whatsapp_approve_recurring`
+  takes `p_exhausted` (COUNT/UNTIL reached). The deployed 8-argument call still works.
+
+Migration 20261014120000. Tests: recurrenceSchemaSql.test.ts (3, PGlite).
+
+## v10.67.0 — W3c: edits stop getting lost *(2026-10-07)*
+
+Third W3 stage of the 2026-10-04 audit remediation: owner decision **D15, "fix both now"** (lost edits
+and ownerless writes). Audit IDs: FE-SYN-01, FE-SYN-03, INT-TXN-02, INT-TXN-08.
+
+- **The cache keeps the server's revisions** (FE-SYN-01, INT-TXN-02).
+  - Before, every cached write and every row arriving from the cloud was restamped with the device
+    clock. That stamp became the next edit's precondition, so the edit matched nothing on the server
+    and was filed as a conflict. Once a row had synced, every later edit to it was dead-lettered until
+    a manual full refresh.
+  - Now the cache stores server rows exactly as they arrive (`cache.put`), and a local edit keeps the
+    row's last server revision.
+  - The adapter remembers its own revision steps, so an edit made on top of this device's own write
+    is sent with the new revision. Another device's edit still changes the revision underneath and is
+    still a conflict.
+  - Fold-back after a write is per row. It used to be skipped whenever any write to that entity was
+    still queued.
+- **Writes made while the session couldn't be read are sent** (FE-SYN-03).
+  - When a token expired offline, writes were queued with no owner and never flushed. They now
+    belong to the device's signed-in owner.
+  - Older ownerless writes are adopted only where their owner is certain: the same user signing back
+    in, or the owner leaving (sign-out, or another user signing in). They are never adopted at flush
+    time, where the next user would upload them.
+- **A write the database refuses is rolled back at once, not retried** (INT-TXN-08).
+  - "Refused" means an integrity or data error (23xxx/22xxx), a permission error (42501), a trigger
+    rule (P0001), or a write that changed nothing.
+  - Before, such writes were retried five times, then dead-lettered, and the screen kept showing the
+    change forever.
+  - Now the write is dead-lettered on the first refusal, together with any later writes to the same
+    row, and the cache returns to its state before the write. The store re-reads the cache, so the
+    screen matches.
+  - A network failure, a JWT refresh, or a schema cache still catching up after a deploy is still
+    retried.
+  - Dead-letter records now say why: the error code and message, where they used to say
+    "[object Object]".
+- **"Dismiss" on a conflict discards the edit.** It re-reads the affected rows from the cloud, so the
+  screen shows the server's version; before, the unsaved edit stayed on screen. A conflict otherwise
+  keeps your edit visible until you choose Re-apply or Dismiss.
+
+No migration. Tests: syncRevisions.test.ts (8; fake IndexedDB, mocked cloud).
+
+## v10.66.0 — W3b: one currency per household, nothing converted *(2026-10-06)*
+
+Second W3 stage of the 2026-10-04 audit remediation. Owner decision **D14**: one currency per household. The
+converter is removed, and a currency change changes the symbol only. Follow-up answers:
+- old labels are ignored, not rewritten;
+- Net Worth months recorded under a previous currency are shown as recorded;
+- the CSV export writes the household currency.
+
+Audit IDs: INT-TZC-02/07, INT-PAR-01/06, FE-MNY-09, DB-INT-12, FE-UIS-03 (currency part).
+
+- **Every figure reads amounts at face value in the household's currency.**
+  - `convert`, `convertViaUsdRates` and the transaction fold no longer apply a rate. This is the same in
+    the app, the server money port and the bundled engine.
+  - Before, a row labelled with another currency was revalued at an undated 2024 rate table. After a
+    currency change, accounts were read raw while transactions were converted, so balances mixed units.
+  - The money-model suites and the golden file did not move.
+- **The converter is gone.**
+  - Settings has no "Exchange rates" sheet. The app no longer reads or writes rates, and a backup no
+    longer carries them.
+  - The currency field shows the note "changing it changes the symbol only; amounts are not converted".
+  - A rate edit still queued from an older app is acknowledged, not dead-lettered.
+  - The `rates` arguments still threaded through the folds are now inert. Removing them is TD-45.
+- **New and edited rows are stamped with the household's currency.** This covers transactions,
+  budgets, goals, debts and assets, as accounts already were. No writer can mislabel a row: not the
+  app, not WhatsApp, not a recurring post. The debt and asset forms lose their currency field, and the
+  transaction and budget forms lose their "reports convert" note. Migration 20261013120000.
+- **Loan payments work after a currency change.** `record_loan_payment` (and the app's own check)
+  compared the payment with the debt's own label. A currency change relabels accounts but not debts,
+  so every EMI afterwards failed. They now check the household's currency.
+- **An amount in another currency is asked for again, never converted.**
+  - **Pip** returns `needs_restate` with no figures, where it used to convert at the app's rate.
+  - **WhatsApp** replies "your household records everything in X; send it again in X".
+  - The WhatsApp parser now uses the app's own symbol/word table, so "20 dollars", "15 quid" and
+    "300 yen" are caught (INT-PAR-06).
+- **Screens show the household's symbol on every row**, including transaction rows, the dashboard,
+  recurring, the bill calendar, notification titles and Net Worth. A row's old label would contradict
+  the totals it counts in.
+- **Net Worth history draws every recorded month as recorded.** A month recorded under a previous
+  currency is no longer hidden.
+- **The CSV export's Currency column is the household's.**
+- **WhatsApp alerts count face value.** A row still carrying an old label no longer silences a whole
+  household's budget, digest or large-spend alerts. The ₹-template gate for non-INR households stays.
+- **Onboarding re-runs keep the chosen currency** instead of guessing again from the browser
+  language (FE-UIS-03).
+- **Public copy** (landing FAQ, /for/families, llms.txt, help) no longer promises conversion.
+
+Tests:
+- `oneCurrencySql.test.ts` (2, PGlite).
+- `whatsappParser.test.ts` (+2): restate, and parity with Pip's table.
+- 20 conversion pins rewritten to face value, each deliberately.
+- e2e: FX-FC-001/005, NWH-FC-003, PROFILE-FC-002 and the backup specs updated.
+
+## v10.65.0 — W3a: "today" is your day, not UTC's *(2026-10-06)*
+
+First stage of W3 in the 2026-10-04 audit remediation (owner decision D12: device local + household
+zone). Audit INT-TZC-03/04/05, INT-PAR-04, FE-PIP-10, FE-MNY-05, FE-UIC-03, BE-FN-08.
+
+- **The app's "today" and "this month" are the device's** (`lib/format.ts`). They were the UTC day,
+  so between 00:00 and 05:30 in India a new entry was dated yesterday, a bill due today was not yet
+  due, "this month" on the 1st was still last month, and the Today/Yesterday chips, the Dashboard,
+  Budgets, Reports, Insights and Pip disagreed with each other around midnight. The inline UTC
+  derivations (splits paid-on, recurring defaults, debt payments, reconcile date, onboarding's
+  first-pay date and join month, card statement windows, the reconcile log) now use the local day.
+  Date-only arithmetic stays on strings in UTC (`addDaysISO`), so no zone or DST change moves it.
+- **The server reads the HOUSEHOLD's day.** `households.timezone` (IANA; every existing household
+  starts on India time, which is what the server assumed) is set from the creator's device at
+  signup, or stamped once by the owner's device (`set_household_timezone`, owner only, never
+  overwriting a zone already set). The bundled engine takes it explicitly (`AssistantContext.tz`,
+  no global state): Pip on WhatsApp, the runway and the notifications raised for web push all use
+  the household's calendar. Migration 20261012120000.
+- **WhatsApp:** "today" and "yesterday" are the sender's household day (the fixed IST offset
+  `VYACT_TZ_OFFSET_MINUTES` is retired), and an undated entry is always sent with that date — the
+  database used to fill in its own UTC day.
+- **The scheduler runs on each household's clock.** The bills, digest, monthly and weekly jobs run
+  every 30 minutes and each household is handled by the run in its own local slot (09:00, 20:30,
+  09:00, Sunday 18:00); before, they ran once at a UTC time meant as India time — 23:30 the evening
+  before in New York. Timing for India is unchanged; the dedupe slots stop any double send.
+- **A push held back for quiet hours is no longer lost** (INT-TZC-05). It stays pending and goes out
+  after quiet hours end; before, it was marked pushed at once, so a bill due today, raised just after
+  midnight, never reached a lock screen. A device already reached is not pushed twice.
+
+Not in this release (planned for D13, the recurrence engine): `computeNextDueDate`'s local-time
+arithmetic (INT-PAR-02) and amortisation dates.
+
+Tests: timeZoneDay.test.ts (4), householdTimezoneSql.test.ts (2, PGlite), webPush.test.ts (+1),
+whatsappWorkflow.test.ts (+1).
+
+## v10.64.0 — W1c: split email and Pip can't be used as a relay *(2026-10-06)*
+
+Fourth stage of the 2026-10-04 audit remediation (owner decision D28: "email + Pip only").
+
+- **Split email is escaped by construction** (BE-FN-06, INT-HH-11, XC-PRV-13). `money()` used to
+  write an unknown currency code raw into the HTML, so a split with currency
+  `<a href=…>Verify your bank</a>` put a live link into an email signed by vyact.app. Every line in
+  `_shared/emailTemplates.ts` is now plain text (escaped whole) or built with the `html` tag, which
+  escapes each value; a currency that is not three capital letters is dropped; a name or
+  description in a subject has no control characters and is length-capped.
+  `shared_splits.currency` gets the same `^[A-Z]{3}$` CHECK as net-worth snapshots.
+- **One email per person per split event, and a daily cap.** Every call to `send-split-email`
+  'shared' used to mail every participant again, with no record and no limit. Now each send is
+  claimed first (`claim_split_emails`, service role only): one email per share per event, ever, and
+  at most 50 per sender per 24 hours (`SPLIT_EMAIL_DAILY_CAP`; a malformed value keeps 50). A
+  failed delivery gives its claim back. Shares that existed before the release count as already
+  mailed. The function now authorises before doing any work: 'shared' needs an open split,
+  'closed' a closed one, 'settled' a paid share. Over the cap, the app says so. Migration
+  20261011120000.
+- **People added while editing a split get their invite** (BE-FN-09). The form promised it and
+  nothing sent it; with the per-share claim, re-sending 'shared' mails only the new people.
+- **Pip's prompts are the server's** (BE-PIP-02). The browser used to build the system prompt and
+  the gateway forwarded whatever it was sent, so any signed-in account could use Vyact's model key
+  as a general-purpose LLM. Now the app sends an op (`classify` | `phrase`), the text and, on a
+  phrase retry, the figures the guard rejected; `ask-vyact` composes the messages from the app's
+  own prompts (`systemPromptFor`, bundled from `askVyactLlm.ts`). Anything else is refused before
+  any spend. For one release, an older app's `messages` are accepted only when they are exactly one
+  of the server's prompts. The response no longer names the provider or model.
+- **The daily model-call cap reads fail-closed** (OPS-11, the parsing half; a global spend ceiling stays
+  in the backlog). `ASK_VYACT_DAILY_CALL_CAP` that did not parse —
+  or `0` — silently removed the only spend control. Now: unset → 200; digits → that many (`0` =
+  none); only `off` disables it (gateway and WhatsApp alike, `parseDailyCallCap`).
+- **The spend gate is metered by the server** (BE-PIP-03, DB-SEC-11, FE-PIP-09). Any member could insert an
+  `ai_usage` row with any cost, and the app's per-question analytics row used up a third of each
+  person's daily cap. `ai_usage.source` is now `gateway` or `client`; a client row's cost, tokens,
+  provider and model are cleared by a trigger and it can never be a reservation;
+  `reserve_ai_usage` counts only gateway rows. Web calls now carry the household id, so usage is
+  attributable. Migration 20261011120100.
+
+Tests: splitEmailGuardSql.test.ts (4, PGlite), splitEmailHandler.test.ts (5),
+aiUsageSourceSql.test.ts (2, PGlite), gatewayWorkflow.test.ts (+4), cloudTransport.test.ts (+1).
+
+## v10.63.0 — W1b: deleting an account actually deletes it *(2026-10-06)*
+
+Third stage of the 2026-10-04 audit remediation (owner decisions D22, D25, D26).
+
+- **Deletion is immediate and one transaction** (INT-HH-03, BE-FN-01/02/03, DB-INT-06,
+  DB-OPS-05, FE-PLT-06). `delete-account` used to run a chain of separate deletes and then fail on
+  foreign keys for anyone who had ever written into a household they didn't own — data gone, login
+  kept — and the advertised 30-day schedule was never executed by anything. Now one SQL function,
+  `purge_account(user)` (service role only), erases the user's own households (where they are the
+  only member) with everything in them, their other memberships, WhatsApp link and messages, push
+  registrations, pending invitations to them and their profile; then the login is deleted. The
+  user-referencing FKs (`transactions.created_by`, `activity_log.actor_id`,
+  `households.created_by`, `shared_split_shares.settled_user_id`) are `ON DELETE SET NULL` — shared
+  history stays with the household and stops naming them; invitations they sent go with them
+  (migration `20261010120000`). The 30-day option, its banner and `request_account_deletion` are gone.
+- **An owner must hand over first** (BE-FN-04). Deleting an account no longer deletes co-members'
+  households: an owner whose household has other members and no other owner gets
+  `transfer_required`, and Settings explains how to transfer ownership.
+- **Re-authentication is enforced on the server** (XC-PRV-04, DB-SEC-08). Erase and delete used to
+  check the emailed code only in the browser. Both now require a sign-in within the last 10 minutes,
+  read from the JWT's `amr` claim (`recently_reauthenticated()` in SQL; `lastAuthenticatedAt` in
+  the Edge Function) — the code step's `verifyOtp` issues that fresh session; an idle or stolen one
+  does not pass.
+- **WhatsApp messages are kept 90 days** (XC-PRV-07, BE-WA-10). A daily pg_cron job
+  (`whatsapp-retention`) deletes older rows; messages now go with the person's profile and with the
+  household (FKs were SET NULL, which kept the text), "Erase all data" deletes the household's
+  messages, and unlinking WhatsApp deletes the person's messages and pending questions (migrations
+  `20261010120100`, `20261010120200`).
+- Privacy page (`POLICY_VERSION` 2026-10-07): deletion, reactivation and retention sections rewritten
+  to match.
+- Tests: PGlite `accountPurgeSql.test.ts` (6, incl. the auth delete that used to fail) and
+  `accountDeletionHandler.test.ts` (5); the unlink test now pins the message deletion.
+
+---
+
+## v10.62.0 — W1a: who may do what to a household *(2026-10-06)*
+
+Second stage of the 2026-10-04 audit remediation. Every change here closes a way for someone
+to seize, wipe or keep reading a household they should not. Open developer decisions are in
+`docs/DEVELOPER_INPUTS.md` (the budget guard, D5, waits on Q1 there).
+
+- **The bulk replace RPCs are gone** (DB-SEC-01, critical). `replace_memberships` and its seven
+  siblings checked only that the caller was a member, then deleted every row and inserted
+  whatever was sent — so a viewer or child could make themselves owner, remove everyone else,
+  or wipe the ledger. They served the vanilla shell's restore (archived 1 Jun); nothing in cloud
+  mode calls them. Dropped (migration `20261009120000`); `SupabaseAdapter.replaceAll` refuses a
+  cloud bulk replace instead of calling the server. "Restore from backup" is backlogged as a new
+  owner-only command.
+- **Only the owner can transfer ownership, and a household always keeps one** (DB-SEC-02,
+  critical). `transfer_ownership`'s `(select role …) <> 'owner'` was NULL for a non-member, so a
+  viewer's throwaway second account could promote the viewer to owner. It now uses
+  `role_in() is distinct from 'owner'`, requires the target to be a member, and refuses
+  self-transfer. A deferred constraint trigger refuses any change that leaves a household that
+  still has members without an owner (direct deletes and self-demotion bypassed
+  `leave_household`) — `household_needs_an_owner` (migration `20261009120100`).
+- **The Child role is retired (owner decision)** (INT-HH-12). It promised "own data only" but could
+  read everything. Existing children are now members; an old client sending `child` is stored as
+  `member` by a trigger; the invite form no longer offers it; a stale `child` from a device cache
+  reads as Member (`normalizeAppRole`). The household relationship label "Child" stays
+  (migration `20261009120200`).
+- **Removed members lose WhatsApp access** (BE-WA-01, high). Leaving or being removed deleted the
+  membership but not the WhatsApp link, so an ex-partner could keep asking Pip for the
+  household's figures and keep receiving alerts. The link is now deleted with the membership
+  (trigger + one-time cleanup, migration `20261009120300`), and the webhook and `guardedSend`
+  refuse a link whose person is no longer a member.
+- **Platform admins no longer read household ledgers row by row** (ADM-03). The ledger tables'
+  SELECT policies dropped `or is_admin('roles')`; a sweep also removes any other select-only
+  policy on them that mentions `is_admin` (production-only objects included). Admin pages use
+  SECURITY DEFINER RPCs and are unaffected (migration `20261009120400`).
+- Tests: PGlite `householdAuthzSql.test.ts` (8, against the five migrations, including real RLS
+  for the admin reads), two WhatsApp handler tests, a legacy-role test; CON-UNIT-054 rewritten.
+
+---
+
+## v10.61.0 — W0 containment from the 2026-10-04 audit *(2026-10-06)*
+
+First stage of the owner-approved remediation plan (`VYACT_ARCHITECTURE_AUDIT_2026-10-04.md`).
+Small fixes with no architectural dependency; every one is a promise the product made and
+did not keep, or a hole that needed no design decision.
+
+- **"Erase all data" works.** `erase_household_data` ended with an `activity_log` row whose
+  action (`'erase_household_data'`) the table's CHECK rejects, so every erase rolled back and
+  nothing was ever erased (DB-INT-05). It now logs `'deleted'` with
+  `changes.kind = 'erase_household_data'`. Migration `20261008120000`; PGlite test
+  `eraseHouseholdSql.test.ts`.
+- **"Private" says what it does.** The toggle only ever left an entry out of totals; every member
+  still saw it. It is now **"Exclude from totals"** with "Everyone in the household can still see
+  this entry", the row badge says "Not in totals", and the public pages (/for/couples, /private,
+  landing FAQ, help) stop promising a purchase can be kept to yourself (FE-PUB-01).
+- **No two-factor authentication (owner decision).** The Settings → Security row enrolled TOTP
+  factors that sign-in never asked for, and sent the secret to Google Charts to draw the QR
+  (FE-UIS-02, FE-PLT-02). Removed, with the Privacy page's "optional two-factor authentication"
+  claim. TD-15 closed as won't-do.
+- **Contentsquare removed.** Session replay ran on every finance screen with no masking and no
+  consent (XC-PRV-03). Userback stays on app pages and is now disclosed in the Privacy policy
+  (`POLICY_VERSION` 2026-10-06).
+- **Analytics no longer receive invite tokens or emails.** GA4's `page_location` is redacted:
+  `/invite/<token>` → `/invite/:token`; `email`, `token`, `code`, `next` and auth-token query keys
+  dropped (XC-PRV-02).
+- **Sign-in can't bounce you to another site.** Sign-in used its own helper that followed `?next=`
+  unchecked; it now uses `postAuthPath` like sign-up. `safeNext` also rejects control characters
+  and backslashes (`/\t/evil.com` became `//evil.com` after URL parsing) and resolves the path
+  against a placeholder origin (FE-PLT-01).
+- **/learn: CMS values can't run script.** A lesson slug or category is HTML-safe encoded inside the
+  page script (`safeJs`), and a source link must be http(s) (`httpUrl`; also a NOT VALID CHECK on
+  `content_items.source_url`, migration `20261008120100`) (ADM-01, FE-PUB-02).
+- **One bad push endpoint no longer stops all push.** A network error or a hung push service is now a
+  failed delivery for that device (10 s timeout), and the dispatch loop isolates each send
+  (BE-FN-07).
+- **Every Edge Function deploys.** `deploy.yml` deployed a hand-kept list that never included
+  `send-split-email` or `delete-account`, so their v10.59/v10.60 fixes never reached production. It
+  now deploys every function directory (the `deploy-test-functions.yml` loop) (OPS-04).
+- **Secret scan.** New `secret-scan.yml` workflow (no paths filter, so docs are scanned too) runs
+  `scripts/secret-scan.mjs` over every tracked file and reports file:line and kind, never the
+  value. The leaked `sb_secret_` key from May (XC-PRV-01) is confirmed revoked by the owner.
+
+---
+
+## v10.60.0 — Email from vyact.app, and no more silent failures *(2026-10-04)*
+
+Owner report: "email service doesn't seem to be working". Root cause (docs/EMAIL_TEMPLATES.md §0):
+
+- **No email provider was configured.** None of `RESEND_API_KEY`, `MAILERSEND_API_KEY` or `SMTP_HOST` is set, so
+  `send-split-email` answered `email_not_configured` on every call. The 4 Oct test split sent nothing.
+- **The failure was silent.** The function logged nothing and the app ignored its answer.
+- **Auth emails** (confirm, reset, sign-in link) go through Supabase's built-in sender: not vyact.app, rate-limited,
+  and delivered only to the project team. Custom SMTP is off.
+- **vyact.app DNS** authorises only GoDaddy mail (SPF `-all`, DMARC quarantine), with no DKIM for a sending provider.
+
+This release:
+
+- The function sends from `Vyact <hello@vyact.app>` by default, with replies to `support@vyact.app`. It logs every
+  outcome (event, recipient count, sent count, provider status) and never logs an address or body.
+- The app reads the outcome. When a split's email doesn't go out, it says so ("Split shared. They'll see it when they
+  open Vyact, but the email couldn't be sent.").
+- `docs/EMAIL_TEMPLATES.md`: every email Vyact sends or should send, by module (account, splits, households,
+  lifecycle, re-engagement, monthly summary), with full copy, triggers, consent, sequence logic and benchmarks.
+  It also has the owner's setup steps for sending from vyact.app (Resend: DNS records, secrets, Auth SMTP).
+- Tests: CON-UNIT-SPL-005, -006.
+
+## v10.59.0 — Splits by email, four household types, quieter page headers *(2026-10-04)*
+
+Owner review, 4 Oct.
+
+**Splits**
+- A split is shared **by email only**, never with your own email and never with the same person twice. The
+  email field explains what's wrong while you type (`lib/splitParticipants.ts`).
+- **Each new person is confirmed before the split is saved.** An account holder is asked about by name:
+  "Is the split shared with Priya Sharma (priya@…)? Yes | No". For anyone else: "… isn't on Vyact yet. Send
+  them an invite to join and settle this split?" A "No" takes that person out and returns you to the form
+  to fix the shares.
+- **The invitation email** names the sender (name and email), says why they were added (a bill to review
+  and settle), shows the split and their share, and has one button: "Join Vyact to review and settle". The
+  link pre-fills their email and lands on Splits. Shares are keyed by email, so the split is waiting when
+  they first sign in.
+- **"N splits created · X open · Y settled"** appears as a quiet line under Owed to you / You owe.
+
+**Household types: Personal · Couple · Family · Business** (migration 20261007120000, shipped first)
+- Personal is private, and no one can be invited. Couple: you and one other person. Family: invite as many
+  people as you need. Business: invite your team, and Insights add business terms (cash runway, setting
+  aside for tax).
+- The limits are enforced in the database, and the Households page says so before it refuses: the invite
+  button explains why, and a type the current members don't fit can't be picked.
+- Retired: Shared becomes Family, and Multiple Businesses becomes Business. A Personal household that
+  already had members became Couple, so nobody was removed.
+
+**Pages**
+- Removed the caption lines under the titles on Splits, Recurring, Debts, Accounts, Net Worth, Settings
+  and Help & Guide, and Help's "Contact support" link under its title.
+- Net Worth: "what you own" and "what you owe" sit beside Assets and Liabilities.
+- **Help & Guide now uses the Households style** (the app's default): the same title, display-italic
+  section headings, and content in Panels.
+- Phones: every form control is 16px, so iOS no longer zooms in when you tap a field (the shared Input
+  was 13.76px).
+
+Tests: CON-UNIT-HHT-001…005, CON-UNIT-SPL-001…004. HELP-FC-002 now compares Help's type with
+Households'. PROFILE-FC-005 reads the selected strategy tab.
+
+## v10.58.0 — WhatsApp: an evening message every day, and bills the day before *(2026-10-03)*
+
+Owner report: alerts weren't arriving daily. Found on production:
+
+- **Until 2 Oct the scheduler did no work.** pg_cron fired every job on time, but whatsapp-dispatch refused them
+  (the cron secret, fixed in #154). The first successful monthly run was 2 Oct, which is why the 1 Oct month close and
+  payday messages never came.
+- **Since then most days had nothing that qualified.** Most templates are event-driven (a large spend, a budget line
+  at 80%, a salary). The evening digest needed an expense logged that day and a household of two or more. Bill
+  reminders only covered bills that wait for approval, and all of the household's schedules post themselves.
+
+Owner decisions (3 Oct), now the triggers:
+
+- **Every evening (20:30 IST):** the digest goes to households of **one or more** (it was two or more). A day with
+  nothing logged gets the new `daily_nothing_logged` ("nothing logged today, reply with what you spent"). Until
+  Meta approves it, the approved digest goes out saying "nothing logged yet" (INR households, its body says ₹). One
+  message a day either way (same dedupe slot). A day with only private entries sends nothing.
+- **The day before a bill that posts itself (09:00 IST):** the approved `bill_due_reminder`, to every linked member
+  (owner, 4 Oct: no second template). Expenses and EMIs only, never income, transfers or investments. Approval bills
+  keep the due-day reminder. A "paid Rent" reply the day before now says the bill posts itself, and one after it posted
+  says it was logged automatically.
+- **`daily_nothing_logged`** (with the 18-nothing-logged header image) was submitted to Meta on 4 Oct through
+  WhatsApp Manager. Once approved, add it to `WHATSAPP_APPROVED_TEMPLATES` and the dispatcher switches to it.
+- **Reconciled with WhatsApp Manager (4 Oct).** All 21 Vyact templates are Active, and bodies, footers and buttons
+  match. The manifest now records `weekly_summary` as Utility, `recurring_auto_logged`'s image header, and four
+  templates as active. The docs' bill_due_reminder buttons were wrong (it has none).
+- Tests: W6B-004 updated; W6B-019 (nothing-logged day), W6B-020 (day-before bills).
+
+## v10.57.1 — The demo is never indexed, at any address *(2026-10-02)*
+
+- The guest demo project also answers on `vyact-demo.vercel.app`, where the `demo.vyact.app` host rules
+  (noindex header, "/" → dashboard) did not apply, so that address served a second copy of the landing page.
+- The demo build now writes `<meta name="robots" content="noindex, nofollow">` into its pages (a Vite
+  plugin, `VYACT_DEMO=1` only), and the middleware treats every host of the demo project as the demo.
+  Production builds are unchanged. PUB-026 extended.
+
+## v10.57.0 — From a one-minute video to the app *(2026-10-02)*
+
+Master to-do B17–B20: four steps between a YouTube Short and a sign-up.
+
+- **Short links for videos (B17).** `vyact.app/v/<n>` opens lesson `ev-<n>` (`/v/3` is ev-003)
+  with `utm_source=youtube&utm_medium=video&utm_campaign=ev-NNN`, so GA counts the visit as YouTube
+  traffic and names the lesson. Links in Shorts descriptions aren't clickable, so a video needs a URL
+  people can read off the screen and type. An unknown or unpublished number goes to the library
+  (`api/v.js`; vercel.json rewrite; the middleware lets `/v/*` through).
+- **"Learn money in 60 seconds" on the landing page (B18).** Three Shorts (50/30/20, emergency fund,
+  avalanche vs snowball), each with a link to its lesson and to @askvyact. These are lazy thumbnails
+  only, with no YouTube player, so the landing stays fast. Each Short is tracked as a CTA
+  (`short_003` …).
+- **Start here on Learn (B19).** Three 5-lesson paths: *Money as a couple*, *New to budgeting*,
+  *Get out of debt*.
+  - On `/learn` they sit at the top, with "n of 5 read" ticks.
+  - A lesson in a path says where it sits ("lesson 2 of 5") and links the next one.
+  - Read lessons are remembered in this browser only (localStorage), with no account and nothing
+    sent anywhere.
+  - Learn links to the YouTube channel.
+- **Try before signing up (B20).** A guest demo at `demo.vyact.app`.
+  - It is the app built local-only (`VYACT_DEMO=1`) on the first-run demo household: no account,
+    no database, its own origin.
+  - A banner says it's a demo and links to sign-up (`ref=demo`).
+  - Its "/" opens the dashboard. Every response is `noindex`, and its public pages redirect to
+    vyact.app.
+  - Linked from the landing hero ("Try the demo, no sign-up", signed-out production only) and from
+    every lesson, which opens the demo on the screen the lesson is about.
+- **Fix: Vercel previews ran against PRODUCTION.** The preview guard in `vite.config.ts` emptied
+  `VITE_SUPABASE_URL`, but the production fallback in `lib/supabase.ts` filled it straight back in.
+  The guard has done nothing since v10.49.0. Preview and demo builds now set `VITE_LOCAL_ONLY=1`,
+  which turns the fallback off. Checked: a `VERCEL_ENV=preview` build contains no production project
+  reference, and a production build still does.
+- Tests: PUB-023 (short links), PUB-024 (Start here), PUB-025 (Shorts strip), PUB-026 (guest demo);
+  PUB-011 and PUB-019 updated for the new heading and CTAs.
+
+## v10.56.1 — Learn and the use-case pages fit the phone again *(2026-10-02)*
+
+- **Fix (owner report):** on phones, every Learn and `/for` page was laid out 561px wide and zoomed
+  out to fit, so the page and its sticky "Get started" bar looked broken. The footer's link row had
+  grown with each new page (About, From Splitwise, Money owed, Privacy by design) and could not
+  wrap. It wraps now, on these pages and the landing page; measured on an iPhone 13, the pages are 390px
+  wide in a 390px viewport. The mobile sticky bar no longer covers the end of the page.
+  PUB-022 guards it.
+- The brand's `sameAs` adds the new YouTube handle, `youtube.com/@askvyact`.
+
+## v10.56.0 — One clear brand: "Vyact, the family budget app" *(2026-10-02)*
+
+Master to-do B3, from the CMO's brand-reachability review (#78, #79), with the owner's decisions:
+Vyact is not trademarked, the brand is positioned toward the app, and the only alias is "Vyact app".
+Another product already uses the name (an open-source local AI workspace), and an AI summary had
+mixed the two up, so this release makes every page describe the same, unambiguous entity.
+
+- **`/about`, "What is Vyact?"** — a server-rendered page with:
+  - a quick answer, and a plain sentence on which Vyact this is;
+  - a facts list (what it is, what it does, who it's for, where it works, price, currency, contact);
+  - an FAQ, including "Is Vyact the open-source AI workspace called Vyact? No.";
+  - `AboutPage` + `FAQPage` markup.
+  - It's linked from every footer, listed first in `llms.txt`, and in the sitemap.
+- **One Organization entity** (`api/_brand.js`): stable `@id`, `alternateName` "Vyact app", a
+  `disambiguatingDescription`, contact email, and `sameAs` with the YouTube channel. The landing
+  page, every Learn page and `/about` reference that same `@id`; the app's SoftwareApplication is
+  published by it.
+- **Positioning toward the app:**
+  - The tagline under the logo is now "Family budget app" (landing, Learn and use-case pages, sign-in), and the installed app's name follows.
+  - The landing page opens with "Vyact · the family budget app for couples and households" above the brand headline.
+  - The standard description now starts "Vyact is the family budget app…".
+  - The app shell gains `og:site_name`.
+- **Every app route names itself** in the browser title (e.g. "Sign up · Vyact — Family budget app")
+  instead of sharing one generic title.
+- **Unknown paths are a real 404.** A made-up URL used to answer 200 with the app shell and a generic
+  title, so search engines could index thin duplicate pages. Now only the app's own routes and the
+  public pages are served; anything else is a `noindex` 404 that points home. PUB-020 checks that
+  every route in `App.tsx` and `formRoutes.ts` still gets through.
+- CI: artifact uploads no longer fail a passing run when the private repo's artifact quota is full
+  (shipped with v10.55.0).
+
+## v10.55.0 — Pages that rank: every lesson answers a search, three new use-case pages *(2026-10-02)*
+
+Release B of the CMO's v2 plan (master to-do #57–#69), under the owner's "global, no India tilt"
+stance.
+
+- **Every lesson has a search-shaped title and quick answer (#58).** The other 86 lessons join the
+  30 from v10.51.0 in `api/_seo.js`, on the public page only (the in-app card keeps its editorial
+  title). Titles are question-shaped and ≤ 60 characters, answers are 40–62 words and true to the
+  lesson, and none uses ₹; India-specific lessons say "India" plainly. PUB-014 enforces it for all 116.
+- **Keyword map (#59).** Title tags: `/` "Vyact – Family Budget App & Shared Expense Tracker";
+  `/for/couples` "Budget App for Couples – Track Expenses Together"; `/for/families` "Family Expense
+  Tracker – See Who Spent What". The landing H1 stays the brand line. The India cluster is dropped.
+- **New pages (#60, #61):**
+  - `/for/splitwise-users` (from the approved switching guide).
+  - `/for/money-owed` (Splits: who owes you, settle up; plain cash loans aren't claimed).
+  - `/private`, which leads with what the household controls; "nothing has to be connected to your bank" is one supporting line.
+  - All five use-case pages now link each other (it was couples ↔ families only).
+  - They're added to the sitemap, `llms.txt`, the Learn footer and the landing page.
+  - An installed app no longer answers `/for/*`, `/private` or `/llms-full.txt` with its own shell.
+- **Schema (#62):** SoftwareApplication `operatingSystem` is "Web" (it claimed Android and iOS).
+- **IndexNow (#57):** public key file plus `scripts/indexnow-ping.mjs`, to tell Bing, Copilot and DuckDuckGo which URLs changed after a release.
+- **Parity (#69):**
+  - Who added each entry now shows on phones too, in households with more than one member.
+  - **Transactions › CSV** exports exactly what the list shows.
+  - Both that export and Settings › Export CSV gain "Added by", "Account", "To account" and "Payment mode" columns. The first seven columns are unchanged.
+
+## v10.54.1 — The WhatsApp drawer's icon is no longer cropped on phones *(2026-10-02)*
+
+- The WhatsApp icon at the top of Pip's WhatsApp drawer lost its top 4px on phones (owner report;
+  desktop was fine). The header row had `-mt-1`, and on phones the sheet's scroll area has no top
+  padding (`sm:py-4` applies from 640px), so the scroll edge clipped it. The negative margin is gone.
+
+## v10.54.0 — Pip: a quieter answer, a rating under each one, and WhatsApp one tap away *(2026-10-02)*
+
+Owner redesign of Pip (Ask Vyact), 2 Oct 2026.
+
+- **The composer is one rounded field (owner design 1).** The question sits on top ("Ask me
+  anything…"), with the mic and a round send button beneath it. While Pip answers, send becomes
+  **Stop**; stopping an answer that hasn't started leaves nothing behind, and a stopped turn never
+  opens a form afterwards. The disclaimer stays under the field.
+- **Nothing is narrated while Pip works.** The live pipeline steps, "Thinking", "Vyact is
+  thinking…", the gradient ring and the "Analysed in Ns · N steps" line are gone; an answer in
+  progress shows three typing dots only (screen readers hear "Pip is answering").
+- **Copy, 👍 and 👎 under every finished answer.** Tapping the chosen rating again takes it back.
+  Each tap is sent to GA (`ask_copy`, `ask_feedback` with `rating` and the question's classified
+  `intent`) and, for cloud households, stored in the new `ai_feedback` table (rating, intent,
+  answer length and surface only — never the question or the answer), one rating per answer per
+  person. The admin console shows them (admin v1.4.2). The rating also stays on the answer in the
+  saved transcript.
+- **"Clear history" is replaced by New chat.** No confirmation and no delete wording: it leaves the
+  current conversation (stopping an answer in progress) and starts a fresh one (`ask_new_chat`).
+- **WhatsApp from inside Pip.** A WhatsApp button next to New chat (cloud accounts) opens a
+  WhatsApp-styled drawer: connect your number with the same one-time-code flow as Settings,
+  enter the code, then "Open WhatsApp" to carry on with Pip there, plus the "Let Pip answer my
+  questions on WhatsApp" switch. The link flow is shared with Settings (`useWhatsAppLink`). Until
+  Meta verifies the business, sending the code says linking isn't available yet. Nothing on the
+  public site mentions WhatsApp. Events: `whatsapp_connect_opened`, `whatsapp_chat_opened`.
+- **The Ask drawer header loses its "Vyact does the maths, not guesswork" subtitle** (owner): the
+  AI disclaimer under the composer is the one caveat.
+- **Fix: a new household could show a wildly wrong net worth right after onboarding** (owner,
+  2 Oct 2026: ₹16.6 lakh for ₹20,000 of cash). Onboarding wrote the cash balance while the
+  household was still in its old currency (USD) and switched to the chosen one (INR) afterwards;
+  the database relabelled the account, but the open session kept "20,000 USD" and converted it at
+  83.2. Onboarding now sets the currency first, and any base-currency change relabels the
+  session's accounts the way the database does. Stored data was never wrong.
+- **Fix: no net-worth snapshot before onboarding is finished.** Snapshots are permanent (first
+  write wins), and one was recorded as "0 USD" a minute before that household became INR.
+- **Onboarding no longer shows a "First Pulse" score** (owner): Pulse is hidden in the app, so the
+  number had no meaning for a new user. The reveal shows the month's fixed bills instead.
+- **The landing page no longer downloads the app until the visitor interacts** (PageSpeed mobile
+  69 on 2 Oct 2026, with ~211 KB of unused JavaScript). `/` is complete pre-rendered HTML; the app
+  bundle now boots on the first scroll, tap, key or wheel, or right after load when a saved session
+  exists (so a signed-in visitor still sees "Go to Dashboard"). Until then the page's own boot
+  script records `landing_cta_click` (the four CTAs carry `data-cta`). Local Lighthouse mobile:
+  100 (was 67–82); the CI budget goes from 80 to 90.
+- Schema: migration `20261005120000_ai_feedback` (table + RLS + `admin_ai_feedback_summary()`)
+  ships first, in its own PR.
+
+## v10.53.0 — The front door is measured, the demo matches the product, and the public pages load lighter *(2026-10-01)*
+
+From the CMO's v2 review (master to-do #46–#77, P0). Production has had no real sign-up since
+the week of 3 Aug, and the funnel couldn't have shown one properly anyway.
+
+- **Fix: `household_created` never arrived for a normal new user (#53).** A new account's first
+  household is created by the database trigger (`handle_new_user`), not by the client's
+  `createHousehold`, which is the only place the event fired. It now fires with `sign_up`, for
+  the household the trigger made.
+- **Fix: email sign-ups that verify later were never counted (#46).** `sign_up` required the
+  first sign-in within 60 s of account creation. It now counts any account less than 24 h old
+  on its first signed-in session, once per device (local flag) and once per account
+  (`user_metadata.vy_signup_tracked`, set after counting).
+- **GA4 `user_id` (#55):** a SHA-256 of the internal user id (never the email), set while
+  signed in and cleared on sign-out. A couple on two phones counts as two people; one person
+  on two devices as one. New `lib/hash.ts` (Web Crypto).
+- **Public pages load lighter (#66).**
+  - The Learn and /for pages fetch gtag.js after `load` + idle, as the landing page does.
+    It used to load during head parse.
+  - Contentsquare runs only on vyact.app (it also ran on localhost and previews). On the
+    landing page it waits for the visitor's first interaction, like Userback; in the app it
+    loads after load + idle as before.
+  - New **Lighthouse budget** workflow (`.github/workflows/lighthouse.yml`): median mobile
+    performance ≥ 80 on `/` over 5 runs (a regression guard: the landing scores 82–83 today), on a production build served the way Vercel serves it
+    (`scripts/serve-dist.mjs`, `scripts/lighthouse-budget.mjs`). PR-only, and only when the
+    landing page or its loading changes.
+- **The first-run demo household is rebuilt on the current money model (#68).**
+  - Local-only mode only: previews, screenshots, video.
+  - Contents: two adults with every entry attributed; one monthly budget with category
+    allocations; accounts with payment modes (joint checking, a named card, Cash in Hand);
+    recurring bills (mortgage auto-posts, streaming waits for approval); money owed to you (a
+    split dinner); a car loan paid by EMI (interest expense plus principal transfer, built with
+    the app's own `applyPayment`); assets.
+  - Fixed: nothing is dated after today any more (early in the month, "this month" rows used to
+    be in the future); December due dates roll into January (they were `<year>-13-…`);
+    investment rows without an account or asset are gone.
+  - Net worth snapshots are not seeded: history is recorded, never reconstructed. No UPI: the
+    demo is a US household (global stance). New `demoSeed.test.ts`.
+- **Content (#64, production + repo copy):** lesson ev-098 no longer recommends Sovereign Gold
+  Bonds, which have had no new issues since 2024. It points to gold ETFs / gold funds, and notes
+  existing bonds stay valid until maturity.
+- **Pip's page no longer shows the account menu's header (#67).** `/chat` belonged to no section,
+  so `sectionForPath` returned `'account'`: an "ACCOUNT ▸ Households / Settings / Help" sub-nav,
+  and "Account · Vyact" in the mobile header. It is now a standalone page (`STANDALONE_ROUTES`),
+  with no sub-nav and the mobile header "Ask · Pip".
+- **Vercel skips docs-only builds (#71):** `ignoreCommand` in `react/vercel.json` and
+  `admin/vercel.json`. If the command fails (e.g., a shallow clone), Vercel builds as before.
+- Admin v1.4.1 ships alongside: the sign-in screen shows the real version.
+- No money-model, data-model or permission change.
+
+## v10.52.1 — Landing page: the feedback widget waits for the first interaction *(2026-10-01)*
+
+- **On the landing page (`/`), Userback loads on the visitor's first interaction** (tap, click,
+  key, wheel), not after load (owner). A visitor who only reads the page never needs the
+  feedback widget. PageSpeed, which never interacts, measured its script as a ~140 ms long task
+  after load. Every way into the app from `/` is itself an interaction, so the widget is ready
+  there. On every other route it still starts immediately.
+- **Context, PageSpeed mobile on production after v10.52.0:** score 59 → 69, FCP 4.1 → 3.5 s,
+  LCP 8.0 → 3.8 s, Speed Index 7.1 → 3.5 s, CLS 0. Total Blocking Time (490 ms) is now third-party
+  long tasks: Google tag ~230 ms, Contentsquare ~165 ms, Userback ~93 ms. This release removes
+  the Userback part. GA and Contentsquare stay after load + idle: starting them on interaction
+  would drop bounced visits from analytics.
+- No money, data or permission-model change.
+
+## v10.52.0 — Insights matches its Analyze peers, mobile Analyze lands on Net Worth, and a compact Ask panel whose every button works *(2026-10-01)*
+
+- **Insights uses the same page frame as Net Worth and Reports** (owner feedback). It was a single
+  `max-w-4xl` column (896px) of large cards inside a 1320px shell, visibly narrower than its
+  Analyze peers. It now uses the full content width with the shared header pattern: title and mono
+  subtitle on the left, the For You / Learn tabs and "Review highlights" on the right.
+  - **Panels:** content sits in Panels. "Your next steps" spans the page with its items two-up.
+    "What changed" and "Keep an eye on" sit side by side when both have items, and a lone one takes
+    the full width.
+  - **Compact rows:** each insight is a row (emoji, title, period and severity on one line, body,
+    evidence as a short list). The action, the related lesson and "Calculation basis" share one line,
+    and the basis only takes a full line when opened.
+  - **Measured on the demo household at 1366px:** 896 → 1264px wide, 1,775 → 763px tall, rows ~230
+    → 149px. Phone width has no sideways scroll; the tabs span the width.
+- **Fix: on mobile, Analyze opened Reports; desktop opened Net Worth.** `MobileTabBar` hard-coded
+  each section's target, Analyze to `/reports`, while the desktop `TopBar` opens each section's
+  first route from `navModel`. The bottom bar now reads the same first route (`landingFor()`), so
+  Track → Dashboard, Plan → Budgets and Analyze → Net Worth on both, and the two can't drift. New
+  e2e **RESP-FC-006**; RESP-FC-001 now asserts the desktop landing too.
+- **Ask Vyact panel: compact, and every button does something.**
+  - **Examples:** each example is now one chip: the label is visible, the full sentence is its
+    tooltip, and tapping it puts the sentence in the box to edit and Send. The old layout printed a
+    label, a 44px pencil button, the sentence and a hint for each of 17 intents.
+  - **Fix: Add a budget / Add a debt / Add an asset did nothing.** They had no example and their
+    `open-modal` action was never wired, so they rendered as inert rows that said "…is not a chat
+    command". They're now a **"Set up with a form"** row of real buttons. Each closes the Ask
+    drawer and opens its form (`/budgets/new`, `/debts/new`, `/networth/assets/new`). Each is
+    shown only to members allowed to use it: `manage_budgets` / `manage_debts` / `manage_assets`,
+    the same rule as the pages' own Add buttons. New `Bucket` value `'setup'` and `Intent.requires`
+    in `lib/askVyactIntents.ts`.
+  - **Tests:** FIN-FC-002 is rewritten for the chip design (still: examples fill the composer, no
+    model call, no sideways scroll). New **FIN-FC-005** covers the three form buttons;
+    `askVyactExamples.test.ts` pins the `setup` contract.
+- **Insights navigation simplified to two tabs, For You and Learn** (owner direction). It used
+  to stack For You / Learn tabs, a "Review highlights" header button, a Lessons / Updates
+  segment, search and chips, then a reel.
+  - **Learn** is now just the lesson library: search and filters in one toolbar, then lessons.
+  - **The Updates segment is gone.** It only ever held 5 legacy articles, and without cloud sync
+    it was a dead end ("What's New requires cloud sync"). `WhatsNew.tsx` and its `ArticleReel.tsx`
+    are deleted.
+  - **For You:** the highlights reel is a **Play highlights** button in the same toolbar slot
+    Learn uses for search. The "as of" note sits beside it.
+  - **The header subtitle is now identical on both tabs**, so the toolbar never jumps when you
+    switch. New e2e **INS-FC-004** checks the layout and that the slot holds its position;
+    INS-FC-002/003 now use "Play highlights".
+- **Data (owner-approved, 1 Oct 2026; master to-do #15):** the 5 legacy `content_items` articles
+  were set to `status='archived'`: tax-loss harvesting, zero-based budgeting, Roth vs
+  Traditional 401(k), avalanche vs snowball, emergency fund 3 vs 6 months. They're 3 US-only and
+  2 duplicating stronger lessons. Reversible; the 116 lessons are untouched.
+- **Ask Vyact: the "Vyact does the maths…" banner is removed** (owner). In its place, under the
+  message box: "Pip is AI-based and can make mistakes. Please double-check its responses."
+  RESP-FC-004 asserts both.
+- **Fix: the search icon overlapped the placeholder** in Insights › Learn (and Updates). The
+  `.ui-pilot .input` padding shorthand outranks Tailwind's `pl-9`, so text started under the
+  icon. New `.has-leading-icon` modifier in `index.css`; the text now starts 9px clear of the icon.
+- **Landing page speed on mobile (PageSpeed 59; FCP 4.1 s, LCP 8.0 s).** Root causes from the
+  report:
+  - a **synchronous Contentsquare `<script src>` in `<head>`**. It blocked the parser and
+    chained ~171 KB before first paint;
+  - the **render-blocking Google Fonts stylesheet** (~780 ms);
+  - **Userback (~168 KB) and the service worker** starting during load and competing for a
+    throttled phone's bandwidth.
+
+  Fixes:
+  - Contentsquare and gtag.js are now injected after window `load` + idle. `window.gtag` and its
+    queue still exist from the first tick.
+  - Fonts load as a non-blocking `preload` (text paints in the fallback, then swaps), with a
+    `<noscript>` fallback. The same applies to the server-rendered Learn pages (`api/_page.js`).
+  - On `/` only, Userback and the service worker start after load + idle.
+  - New guard **PUB-018**: no synchronous external script in `<head>`, and the fonts must not
+    render-block.
+
+  Measured locally (Lighthouse 12, mobile, a production build served the way Vercel serves it;
+  GA is off on localhost), 3 runs each:
+
+  | | Before | After |
+  |---|---|---|
+  | Score | 66–69 | 81–93 |
+  | FCP | 4.1–4.7 s | 2.4–2.7 s |
+  | LCP | 5.1–6.7 s | 2.6–2.8 s |
+  | Render-blocking | 1.5–2.4 s | 0.15–0.3 s |
+  | CLS | 0 | ≤ 0.016 (the font swap; "good" is < 0.1) |
+
+  Not yet done: the 226 KB entry bundle still loads on the landing page (Supabase client,
+  store). Splitting it out is the next step if the field data needs more.
+- **Test fix: CON-UNIT-FACT-014 failed on the 1st–9th of every month.** It stated "the 10th of
+  this month" as a capture date, which is a future date early in the month. `resolve()` correctly
+  refuses future dates. It now uses the 10th of last month. First seen 1 Oct 2026; CI would have
+  gone red on main until the 10th.
+- No money, data or permission-model change.
+
+## v10.51.0 — Pages that match what people search for, and a site AI assistants can read *(2026-09-30)*
+
+- **Two new pages for the biggest searches** (marketing #7 keyword research): **/for/couples** ("budget
+  app for couples", "how to budget as a couple", "split bills by income") and **/for/families** ("family
+  budget app multiple users", "how to budget as a family"). Each answers first in 40–60 words, teaches the
+  question people ask alongside it, shows what Vyact does for that household, has a visible FAQ with FAQPage
+  data, and links to the matching lessons. Linked from the landing page and every Learn footer; in the sitemap.
+- **The landing page's title and description** now lead with the searched phrases: "Vyact: Family Budget App
+  for Couples & Households" (the brand page itself is unchanged).
+- **30 lessons answer the question people type** (#21): on their public page they lead with a search-shaped
+  title ("What is the 50/30/20 rule? A simple budget starting point") and a 40–60-word **Quick answer**, also
+  published as FAQPage data and used as the page description. The editorial title stays as the subtitle; the
+  in-app lesson is untouched (`api/_seo.js`, keyed by lesson number).
+- **robots.txt names the AI crawlers** — OpenAI, Anthropic, Perplexity, Google, Apple, Bing, DuckDuckGo, Common
+  Crawl, Meta, Mistral — and welcomes them to the public pages, while keeping every crawler out of the
+  signed-in app screens and `/api` so crawl budget goes to real content. One group, one rule set.
+- **llms.txt** now carries key facts an assistant can quote (what Vyact is, who it's for, price, platforms,
+  currency, sharing, data use), what it does, the use-case pages, and the lessons that answer common questions;
+  **/llms-full.txt** lists all lessons with a one-line answer each.
+- Tests: CON-UNIT-PUB-014 (quick answers, 40–60 words, FAQPage), PUB-015 (use-case pages, FAQ ↔ FAQPage,
+  positioning), PUB-016 (robots: crawlers named, one rule set, public site open), PUB-017 (llms / llms-full).
+  Writing them caught a lost backslash that had silently disabled every quick answer.
+
+## v10.50.0 — The brand landing page is back, Learn wears it too, and Vyact is positioned for every household *(2026-09-29)*
+
+**Owner decision:** the v10.49.0 server-rendered home page replaced the app's own landing page with a
+plain, narrow page. The brand page comes back, and everything v10.49.0 did for search stays — in the
+brand's theme.
+
+- **"/" is the app's landing page again** (the v10.33 Aurora page: "Your household deserves to understand
+  its money."). It is now **pre-rendered at build time** (`scripts/prerender-landing.mjs` →
+  `dist/landing.html`, served at "/" by `middleware.js`), so search engines, link previews and AI tools
+  get the whole page as HTML, and a first visit shows it before the app script loads. The app then takes
+  over as before (a signed-in visitor sees "Go to Dashboard").
+- **The v10.49.0 content now lives at the bottom of that page, in the same theme:** who it is for (six use
+  cases), everything it does (eight features), featured lessons, and a visible FAQ with matching FAQPage
+  structured data, plus SoftwareApplication and Organization data and a canonical URL. `api/home.js` is retired.
+- **Learn wears the brand.** `/learn`, the topic hubs and every lesson use the app's own stylesheet
+  (published at a stable `/site.css`), fonts, and the landing page's header and footer, in the visitor's
+  saved theme. The layout uses the full page width: a three-column lesson grid, and the lesson's video
+  beside the text on desktop.
+- **Positioning, rewritten for every household, anywhere.** Vyact is presented by what it does — a money
+  app the whole household runs together: shared budgets, bills, splits, debt payoff, cash flow and net
+  worth, and Pip answering "can we afford it?" from your own numbers. The "no bank linking / no SMS
+  reading / for Indian households" framing is gone from the landing page, Learn, `llms.txt`, the page
+  metadata, sign-up and onboarding (whose first promise is now "Built for your whole household"). One copy source, `src/content/landingCopy.ts`, feeds the page, its FAQ data and
+  (by a checked copy) `llms.txt`.
+- The landing's coral spotlight now introduces **Pip** instead of the Pulse Score, which the dashboard no
+  longer shows. Its example insights no longer use a currency symbol.
+- New analytics event `landing_cta_click` (placement: nav, hero, footer); sign-up links carry
+  `?ref=landing_<placement>`.
+- `docs/ENVIRONMENTS.md`: the environments and domain map from closed PR #128, corrected (previews of other
+  branches build local-only since v10.49.0; functions deploy to `vyact-test` by workflow).
+- Tests: CON-UNIT-PUB-011 renders the real landing page and checks section order, the FAQ ↔ FAQPage match,
+  the landing head and the banned framing; PUB-012 the middleware → `/landing.html`; PUB-013 the one
+  standard description, a loud build failure on a changed `index.html`, and Learn on `/site.css`.
+
+## v10.49.1 — Lane A green again: the browser suite matches the app *(2026-09-29)*
+
+The Playwright suite (Lane A) had been red on main since v10.0.0: 56 failures, mostly tests
+still describing screens the Aurora redesigns replaced. Each failure was classified as a
+product defect (fixed), a stale test (updated to the current screen), or a test for a removed
+feature (retired with its reason recorded, ID never reused).
+
+- **Product fixes found by the suite**
+  - **Settings fields have labels screen readers can use.** Display name, email, quiet hours,
+    extra payment and the password fields had a visible label that was not tied to the field.
+    The Households page's Household Type selector had the same gap.
+  - **Copy to Clipboard copies the same backup as Download Backup**, and says so ("Backup
+    copied"), or tells you to download instead when the browser refuses.
+  - **Local-only mode explains itself in Settings**: your data lives in this browser, so
+    download a backup to keep a copy.
+  - **Google sign-in in a build without cloud** says "coming soon — use email" instead of
+    failing silently.
+  - **Recording a debt payment shows what happened** (the payment engine's own message)
+    instead of a generic toast.
+  - **Transaction search finds a category by its name** ("travel" finds Travel entries), not only by
+    words in the description.
+- **Tests brought up to date** (no product change): the dashboard greeting heading, the
+  Track/Plan/Analyze navigation and mobile bottom bar, collapsible Settings rows, the Filters
+  sheet and day calendar, EMI payments as an expense plus a principal transfer, investments
+  into an investment asset (v10.26), v9.1 container budgets with allocations, the one-range
+  Reports (v10.31), "Money you can reach", and exchange rates as "1 USD = x units".
+- **Retired**: per-entry currency (no currency picker since v10.23), text time entry
+  (replaced by the time dial). The Pulse card tests skip themselves while Pulse is hidden on
+  the dashboard (`FEATURES.dashboard.showPulse`) and run again if it returns.
+## v10.49.0 — The public site: Learn back online, a real landing page, and a measurable funnel *(2026-09-29)*
+
+Marketing master to-do, every item with Developer as executor.
+
+- **#0 — The public Learn library is back.** Since ~9 Sep https://vyact.app/learn answered "Learn is
+  temporarily unavailable" and the sitemap listed no lessons. Two causes: the `content_items` read
+  policy called `is_admin()`, which logged-out visitors may not execute (Postgres checks it at plan
+  time, even when `status = 'published'` already decides the row) — split into an anon policy with no
+  function call (migration `20261004120000`, validated on production: before, `42501`; after, 116
+  published cards and no drafts); and the functions read the Supabase key from an empty Vercel env —
+  they now fall back to the committed `.env.production` and send the publishable key as `apikey` only.
+- **#9 / #12 / #19 — A server-rendered landing page at /** (`api/home.js`, served by Routing
+  Middleware for "/" only): one H1, the answer above the fold, a trust line, what Vyact does, 12 lessons,
+  a visible FAQ with `FAQPage`, `SoftwareApplication` JSON-LD, one call to action with `?ref=` and a slim
+  sticky mobile CTA. Every claim is true today (WhatsApp logging is not advertised until number linking
+  is open to everyone). The installed app is unaffected (its service worker answers "/").
+- **#10 / #11 / #12 / #20 — Learn, opened up.** Nine topic hubs (`/learn/topic/<topic>`), 3–5 related
+  lessons on every lesson, `VideoObject` on the 45 video lessons with a click-to-play (no iframe on
+  load), each lesson's "try it" link into the matching app feature (`?next=`), sources shown when a
+  lesson has one, in-app lesson views canonical to their public page, and "Browse free money lessons"
+  on sign-in / sign-up.
+- **#25 — /llms.txt** from the live library, with the one standard description (#22).
+- **#3 / #4 — GA counts real users only**: loaded only on vyact.app / www.vyact.app (the app and the
+  public pages); removed from the admin app.
+- **#5 — The funnel is measurable**: `sign_up` (once, with its `ref`), `household_created`,
+  `first_transaction_logged`, `member_invited`, `budget_created`, `learn_card_view`, `learn_cta_click`,
+  `pwa_install`, `whatsapp_linked`, each with `platform` (`docs/measurement/events.yaml`). No personal or
+  financial data is sent.
+- **#13 — Icons**: a 180px PNG touch icon, 192/512 PNG and maskable icons; the duplicate manifest link
+  is gone. **#14** — the service worker no longer answers /learn, /sitemap.xml, /robots.txt, /llms.txt
+  or /.well-known/ with the app shell.
+- **#20 — Two-step sign-up**: Google first, email one step later; `?next=` survives the Google redirect,
+  and only in-app paths are accepted. **#32** — after the household's first entry, a prompt to invite a
+  partner opens the invite sheet.
+- **#27** — `/.well-known/assetlinks.json` is served as JSON (an empty list until the Android app has a
+  release signing key). **#30 / #31** — a Play review prompt on the 10th entry and a Play Store install
+  banner on Android, both OFF until the listing is live (`FEATURES.playStore.live`).
+- **#42 — Previews never touch production**: a Vercel preview build without its own Supabase values runs
+  local-only. **#41** — a manual workflow deploys every edge function to vyact-test.
+
+Tests: CON-UNIT-PUB-001…012, CON-UNIT-FUN-001/002, CON-UNIT-PA-001/002.
+
+## v10.48.1 — "Can I afford" answers from the budget; phone notifications you can actually turn on *(2026-09-27)*
+
+From the owner's first test of v10.48.0 on WhatsApp and an Android phone (Brave).
+
+- **"Can I afford ₹5 for tea?" was a no.** The answer was judged only against the savings safety floor
+  (three months of essential spending). The household's liquid money less card dues was already
+  ₹44,826 below that floor, so every amount, even ₹5, "would dip into the safety floor", while the Food &
+  Dining budget for the month was untouched. Now:
+  - the verdict rests on **the purchase's category budget this month** ("tea", "chai", "snacks" and
+    "juice" now read as Food & Dining) and **the money free after card dues**: fits / over the category
+    budget (by how much) / more than the free money (the shortfall is against free money, not the floor);
+  - **the safety floor is a soft constraint**, stated separately: last, in its own paragraph, as a risk
+    to know about, never the reason for the answer and never turning a yes into a no (Pip's contract);
+  - the WhatsApp card ("…would still leave about ₹X above your safety floor") goes out only when that
+    is true; otherwise the answer is text.
+- **Fix: Pip said "no budget set" for a category that had one.** "What's my budget for groceries" read the
+  budget's own category, which a v9.1 budget (a container with per-category allocations) does not have,
+  the same cause as TD-39. Pip now reads the category's allocation for the month.
+- **Fix: "Why can't I spend 5 rupees although…" was logged as a ₹5 expense** (the owner undid it). On
+  WhatsApp, a line that opens like a question (why, how, what, is, can't I, …) is now a question, whatever
+  else it contains; "may rent 25000" still logs.
+- **Phone notifications: the switch now tells the truth.** v10.48.0 showed the old "Browser push" setting,
+  so a phone that had it on looked on but had never subscribed to push: alerts appeared in the app and
+  never in the phone's notifications (production showed no registered device). Now:
+  - the switch is on only when THIS device is registered with the server;
+  - if notifications are on in Vyact but the phone isn't set up, Settings and the notification sheet both
+    say so, with a one-tap **Turn on phone notifications**;
+  - every way turning it on can fail is shown in place (blocked, update needed, iPhone outside the Home
+    Screen), and a browser whose push service refuses is told apart from a Vyact error. **Brave** can block
+    Google's push service, which web notifications use on Android; the message says what to switch on, or
+    to use Chrome.
+
+Tests: CON-UNIT-AFF-001…009, CON-UNIT-W6B-018/019, CON-UNIT-WPD-001…005.
+
+## v10.48.0 — Real push notifications, and budget alerts that fire *(2026-09-27)*
+
+- **Push notifications now reach the lock screen (TD-22).** The "Browser push" switch used to show a
+  popup only while a Vyact tab was open. Now it is real Web Push:
+  - **This device** subscribes with its push service (Google, Apple, Mozilla or Microsoft) and is registered
+    with Vyact (`push_subscriptions`, written only through `register_push_subscription`).
+  - **The server raises what the app would raise**: every 15 minutes the new `web-push` function runs
+    the app's own notification rules (bundled from `lib/notifications.ts`) for each household with a
+    registered device, so a due bill or a budget line at 80% is raised even when nobody has the app open.
+  - **It pushes each new action-required (P1) notification** to the household's devices once
+    (`notifications.pushed_at`): only types that device left on, never in its quiet hours (read in the
+    device's own time zone), and never a backlog from before it subscribed.
+  - **Settings › Notifications › Push notifications on this device** turns it on (the permission prompt
+    comes straight from the tap, as iOS requires), shows whether this device is registered and when it
+    last received one, and **Send a test notification** pushes a test to this device and shows what the
+    push service answered.
+  - Messages are encrypted for the one device (RFC 8291) and signed with Vyact's key (VAPID, RFC 8292);
+    the key pair is generated by the function and kept in Vault. The server only ever contacts known push
+    services. Signing out unregisters the device. A device the push service reports gone is retired.
+  - iPhone/iPad: works when Vyact is added to the Home Screen (iOS 16.4+). PNG app icons were added for
+    the Home Screen tile and the notifications.
+  - Migration `20261003120000_web_push.sql`, validated on production inside a rolled-back block
+    (registration, re-registration, refused endpoint and non-member, retiring a device, the Vault key
+    store, the cron secret, privileges, the schedule).
+- **Fix: budget alerts never fired (TD-39).** Since v9.1 a budget holds its categories as allocations and
+  has no category of its own; the rule read the budget's category, found none, and never raised an alert
+  (production had none, ever). It now checks each allocation over the budget's own period with the
+  Budgets screen's figure, says "₹X over" past 100%, and runs as soon as an expense is saved rather than
+  at the next reload.
+
+Tests: CON-UNIT-WP-001…008 (encryption read back by an independent receiver, the VAPID token, the
+push-service allow-list, the push rules, server-raised notifications equal to the app's in source and
+bundle, the web-push function's test and dispatch paths) and CON-UNIT-TD39-001.
+
+## v10.47.0 — Name them here, and Reply UPDATE (W6) *(2026-09-26)*
+
+Two follow-up conversations on WhatsApp, designed on the receptionist canvas and approved.
+
+- **"Name them here".** NAME THEM (or the nudge's **Name them here** button) lists this month's
+  expenses still in Other, biggest first, up to five: amount, day and account, never the
+  description. "1 groceries" or "2 travel, 3 dining" names them.
+  - Only the category changes. The amount, account and date stay as they are.
+  - The category must be an expense category, and never Loan / EMI: an EMI is a system split in
+    the app, and relabelling a plain expense would make the debt figures untrue.
+  - An unknown word gets the real options back; nothing is guessed.
+  - Another member's private entry is never listed or changed.
+  - DONE stops, and what is left stays open for 30 minutes.
+- **"Reply UPDATE".** UPDATE walks the bank, card and cash accounts not checked in 30 days, oldest
+  first, one at a time.
+  - A card is asked what it **owes**. The correction targets −outstanding, as the app's Reconcile
+    sheet does (INV-10/11).
+  - Each answer is the app's own reconcile, run on the server from the app's code
+    (`serverEngine.reconcileOnServer` → `accountBalance.reconcileAccount`): the offset moves with a
+    dated log entry, `last_reconciled_at` is stamped, and the linked Asset or Debt gets the stated
+    value. It is **never a transaction**, so no month's figures move, and the reply says so.
+  - SAME marks an account as checked and books nothing. SKIP leaves it. The summary gives the net
+    worth change from the corrections.
+  - If the account's offset moved since the question (a reconcile in the app meanwhile), the
+    answer is refused rather than applied twice.
+- **Migration** `20261001120000_w6_whatsapp_name_and_update.sql`: `whatsapp_unnamed_expenses`,
+  `whatsapp_name_entries` and `whatsapp_reconcile_account`, plus two pending-turn kinds. Each RPC
+  claims the message first and needs a write role; a viewer is told before any list. Validated on
+  production inside a rolled-back block: naming, replay, already named, stale offset refused,
+  offset moved by exactly the plan, stamp and provenance.
+- **The nudges that open them.** `reengagement_nudge` was edited in Meta (in review) to the
+  design's unnamed-spending version with a **Name them here** button; its Open Vyact link now
+  points at vyact.app. The weekly job sends at most one re-engagement nudge per opted-in member:
+  - the quiet nudge after 7 days with nothing logged;
+  - otherwise the unnamed-spending nudge at two entries and ₹500.
+
+  `balance_stale_nudge` gets its UPDATE button once Meta approves the current version (Meta
+  locks a template while its first review is pending); typing UPDATE already works.
+
+- **Every template now has a sender (W6b).** New rules in `whatsapp-dispatch`: shared-with-you,
+  auto-logged recurring (Undo within 15 minutes, Pause), payday headroom (steady and variable), the
+  household daily digest (new `digest` job, 15:00 UTC), month close, budget setup and the runway
+  shift/recovered notes (new `monthly` job; the first runway reading is a silent baseline kept in
+  `whatsapp_rule_state`). In the chat: an expense logged with "shared" asks the logger to split it
+  50/50 with their usual split partner; a "can I afford" answer that fits comes as the
+  `affordability_reply` card. Migration `20261002120000_w6b_whatsapp_template_senders.sql`,
+  validated on production in a rolled-back block (split, replay, already split, undo, pause, cron jobs).
+- **Fixes from the 26 Sep template validation:** "can I afford 40000 for a phone?" was logged as a
+  ₹40,000 spend, and on 27 Sep "Can I afford to spend 5 rupees for tea" (no "?") was logged as ₹5 on
+  production. An affordability ask is now a question wherever it sits and however it is worded
+  ("is it ok to spend…", "do I have enough for…", "5k on shoes, can I afford it"); the outbound audit row said `sent:false` on a successful send; linking by code now
+  says it is not available yet (Meta verification) instead of failing; Settings › WhatsApp gains the
+  **Insights about my money** consent and its topic mutes. Per-template status:
+  `docs/WHATSAPP_TEMPLATES.md` › Validation.
+
+Tests: CON-UNIT-W6B-001…017, WA-V-001…005, CON-UNIT-W6-001…011 (the parser, list and reply copy, engine parity with the app's
+reconcile in both the source and the bundle, the card-owed rule, SAME, the nudge rule, and the
+webhook conversations end to end).
+
+## v10.46.1 — Server calls accept the service role as Supabase now issues it *(2026-09-26)*
+
+- **Fix: a correct service-role key was refused (401) by `whatsapp-notify`.** The function
+  compared the bearer byte for byte with the runtime's `SUPABASE_SERVICE_ROLE_KEY`. With Supabase's
+  new API keys that variable is not necessarily the legacy `service_role` JWT the dashboard shows.
+  So the owner's first test send from the dashboard's Test panel (26 Sep) got
+  `{"error":"unauthorized"}`, even though the token was the project's own service-role key and not
+  expired.
+- **What changed:** a bearer that claims the service role (a legacy JWT whose role claim says so, or
+  an `sb_secret_` key) is now verified by PostgREST. Only a service-role credential can read
+  `whatsapp_pending_turns`, which is revoked from anon and authenticated. The claim alone is never
+  trusted, and a forged one still gets 401. The byte-for-byte match still works as before.
+- **One helper, three callers:** `_shared/service-auth.ts` (`isServiceCaller`) is used by
+  `whatsapp-notify`, the webhook's `?mode=sweep` and `whatsapp-dispatch`, which all had the same
+  check.
+- **Internal calls were never affected:** `whatsapp-verify-otp`'s welcome sends the runtime's own
+  value, which always matched.
+
+Tests: CON-UNIT-WA-W0-011 (a verified service credential that is not byte-equal is accepted) and
+W0-012 (a forged service-role claim is refused, nothing sent).
+
+## v10.46.0 — Pip, one response contract, and sharper facts (W5) *(2026-09-26)*
+
+- **The assistant is Pip.** It's named that everywhere a person reads it: the chat title, the Ask
+  button and menu, the drawer, help, Settings › WhatsApp, the Privacy page, and Pip's own answers
+  ("I'm Pip, the assistant built into Vyact"). Code names (`askVyact*`) are unchanged. Browser-test
+  locators were updated to match.
+- **One response contract, for the app and WhatsApp**, in `PHRASE_SYSTEM`:
+  - the answer, then its context, then the assumption it rests on;
+  - forecasts always state their assumption;
+  - thin history says "not enough history yet" instead of estimating;
+  - comparisons are only against the user's own past;
+  - no exclamation marks, apologies or praise;
+  - follow-ups are chips, never listed in prose.
+
+  The phrase step now knows its **channel**. WhatsApp answers get at most four short sentences, no
+  links and English only; the app mirrors Hinglish. "— nicely done." is gone from the proactive
+  savings note.
+- **The dead phrase tables are removed** (`VARIANTS`, `phraseResponse`, `variantCount`, 19 outcomes ×
+  3 phrasings). None of it had reached a user since the model took over phrasing, and the responses
+  spec described it as shipping. The one test that pinned their count is retired. The WhatsApp
+  renderer now uses the single chip contract (`normaliseChips` + `renderChipsAsNumberedList`).
+- **Engine, Wave 1:**
+  - **Same point last month (#63):** "this month" and any single category are compared with day 1
+    to today's date of last month (`compared_with_same_point`), never a whole month against part
+    of one.
+  - **Day windows:** "today", "yesterday", "this week" (Mon–today), "last week", "last N days" are
+    answered over their own dates.
+  - **Budgets on pace (#66):** each budget says whether it's used faster than the month has gone,
+    plus "5 of 7 within pace".
+  - **Logging streak (#65):** days running (a day not yet over doesn't break it), and days recorded
+    this month.
+  - **Counts and shares:** entries and share of the total per category.
+  - **Bills:** due in the next 7 days, with the count and a **total**, plus overdue bills waiting
+    for approval. A salary is no longer listed as a bill.
+- **Correctness fixes found on the way:**
+  - "Spend by account" added raw amounts, so a **private** entry was counted, a **split** counted in
+    full instead of your share, and a foreign amount went in unconverted. It now counts exactly what
+    the totals count.
+  - The bills list compared a UTC date with a local one, so a bill due today could drop out. Bills
+    now compare local dates.
+  - "This month" was fixed when the code loaded, so a tab left open over a month end, or the
+    long-lived server, answered for the old month. It's now computed per question.
+- **WhatsApp answer rule** (spec §6): a question is answered in the chat, and a link is never the
+  answer. A budget alert's "What's driving it?" and a runway note's "What moved?" are now asked of
+  Pip (for that alert's own category) when answers are on, instead of linking out.
+- **Answers can be turned on from the chat.** With answers off, a question (or a Check row, or a
+  question button) no longer gets a link. Pip says it can answer here, that figures would show in
+  the chat and on the lock screen, and asks for **ANSWERS ON**. That reply records the consent
+  (`reads_source = 'whatsapp_keyword'`, dated) and answers the question that was waiting at once.
+  **ANSWERS OFF** withdraws it; "Messages I send you" lists it. The Settings toggle still works and is
+  stamped `app_settings`. Migration `20260930120000_w5_whatsapp_answers_optin.sql` adds
+  `reads_source` and the `reads_offer` pending-turn kind, validated on production in a rolled-back
+  block.
+- **Reply LOG.** "LOG", "log today" or the **Log today** button gets the one-line logging prompt
+  (the same as the Log a spend menu row). Nothing is written until the line arrives.
+- **Four variant templates, with their own header images** (13–16), submitted to Meta and in review:
+  `bill_overdue_reminder` and `payday_headroom_variable` (Utility), `reengagement_nudge_quiet` and
+  `runway_recovered_alert` (Marketing). None sends until approved and listed in
+  `WHATSAPP_APPROVED_TEMPLATES`.
+  - **Overdue bills:** a bill still awaiting approval three days after its due date gets one
+    reminder. Its **Already paid** button approves that exact occurrence through
+    `whatsapp_approve_recurring`, like "paid Rent".
+  - "See the detail" and "Plan this month" are asked of Pip, like the other question buttons.
+
+Tests: CON-UNIT-W5-001…013. The server engine bundle was rebuilt and parity re-checked. The bundle
+guard caught a variable named `window` in the new code.
+
+## v10.45.0 — Ask Vyact on WhatsApp (W4) *(2026-09-26)*
+
+Questions on WhatsApp are answered by the **same** Ask Vyact engine as the app, but only for someone who
+turned that on.
+
+- **One engine, not a port.** `react/src/lib/serverEngine.ts` builds the assistant's context from
+  database rows with the app's own mappers (`mapCloudRow` and `profileFromRows`, now exported from
+  `supabaseAdapter.ts`; the class delegates to them). It runs `buildSafeSummary` → `runAssistant`
+  exactly as `Chat.tsx` does.
+  - `scripts/build-agent-engine.mjs` bundles it with Rolldown into
+    `supabase/functions/_shared/agent/engine.generated.js` (29 modules, self-contained, no browser APIs).
+  - A new gate step fails when that file is stale.
+  - Every money rule, fact and guard is the app's code: parity by construction, not by a second
+    implementation.
+- **The server model call** (`_shared/agent/assistantCore.ts`) runs the gateway's sequence from the
+  gateway's shared pieces:
+  - the enabled `ai_model_configs` row;
+  - the atomic `reserve_ai_usage` daily cap (fail closed);
+  - `chatCompletion`;
+  - metering with surface `whatsapp`.
+
+  The test-only Claude Code relay is excluded, because a webhook can't wait for a person to answer.
+- **Household loader** (`_shared/agent/householdLoader.ts`): one household, scoped by id under the
+  service role, live rows only. Drained page by page, so a large ledger isn't silently truncated. No
+  email is read.
+- **Consent.** Questions stay hard-blocked unless the person turns on **"Answer my questions here"** in
+  Settings › WhatsApp. It is `reads_enabled`: off by default, recorded with a time, never bundled with
+  marketing. The hard-block reply now says where to turn it on.
+- **In the chat.**
+  - Answers are plain text: markdown is removed, and the length is kept under 4,096.
+  - Chips become "1. …" and a reply of "1", "2" or "3" asks that follow-up, carrying the figures already
+    stated so the guard lets it cite them.
+  - The menu's Check rows (This month, Budgets, What's due) are answered in the chat when answers are
+    on.
+  - A capture or a recurring draft says what works here instead of opening a form.
+  - A failed read is said plainly and not replayed.
+
+**Known limitation: time zone.** The engine's "today" and "this month" use the runtime's local time.
+That is IST in the app but UTC on the Edge runtime, so between 00:00 and 05:30 IST the server's "today" is
+the previous day (and on the 1st, "this month" is the previous month). The fix is `TZ=Asia/Kolkata` as a
+function secret. Whether Supabase's runtime honours it needs checking with a question asked in that
+window (runbook).
+
+Tests: CON-UNIT-W4-001…009. They include the **generated bundle and the source giving the same turn** for
+three real intents, the invented-figure guard on the server path, relay exclusion, and the cap failing
+closed. The migration was validated against production in a rolled-back `DO` block.
+
+## v10.44.0 — The capture conversation on WhatsApp (W3) *(2026-09-26)*
+
+A logged entry can now be taken back or fixed, and a half-sent one is finished instead of refused.
+Nothing is written without an answer.
+
+- **UNDO within 15 minutes.** Every confirmation ends "Reply UNDO within 15 minutes to remove it."
+  `whatsapp_undo_last` soft-deletes the entry WhatsApp itself logged, exactly as deleting it in the
+  app does. It won't touch an entry that has been edited in the app since, anything the app wrote, or
+  a "paid Rent" approval (undoing that would also have to rewind the schedule).
+- **"no, that was groceries"** re-categorises that same entry (`whatsapp_correct_last`). Categories
+  are type-scoped: "actually salary" for a spend is refused and nothing changes. A correction from
+  chat records when it was made, so it is never mistaken for an app edit that would block a later
+  UNDO.
+- **A missing amount is asked for.** "groceries hdfc" gets "How much was it?", and the next bare number
+  completes that same entry. A line that names nothing recognisable still gets the normal help.
+- **A possible duplicate is asked about first.** The same amount, type and category within two hours
+  gets "You logged ₹450 · Groceries 20 minutes ago. Log this one too? Reply 1 to log it, 2 to skip."
+- **Questions expire after 30 minutes.** A "1" answering an expired question is refused, never logged
+  as ₹1. Any other message drops the question and is read as new. There is one open question per
+  person (`whatsapp_pending_turns`, server-owned).
+- **Deferred, with reason:**
+  - Budget-hold and over-limit drafts need an in-app draft-approval screen that doesn't exist yet.
+  - Card and person clarify choices need the W4 resolver.
+
+Tests: CON-UNIT-WA-C-001…007. The migration was validated against production in rolled-back `DO`
+blocks using real `whatsapp_log_transaction` entries:
+
+| Case | Result |
+|---|---|
+| UNDO | Undone |
+| Past 15 minutes | Refused |
+| Correction | Category changed |
+| Correction, then UNDO | Still undone |
+| Edited in the app | Refused |
+| Second open question | Refused (unique index) |
+| Signed-in users calling the RPCs | Cannot execute |
+
+## v10.43.0 — "paid Rent" approves the bill (W2b) *(2026-09-26)*
+
+Bill reminders, sent in a way that can be answered honestly.
+
+- **"paid Rent" does what Approve does in the app.** A reply naming a bill this person was reminded
+  of in the last week runs `whatsapp_approve_recurring`. In one transaction it:
+  - claims the message, so a replay is silent;
+  - checks the sender can write in the household;
+  - locks the schedule and checks this occurrence is the one due, and due today or earlier (the app
+    never approves early);
+  - checks the row matches the locked template;
+  - posts it under the app's deterministic occurrence id;
+  - moves the schedule on.
+
+  The row and the next due date come from a server port of the recurring engine
+  (`_shared/recurring.ts`), parity-tested against the client's `generateTransaction` → `txnToRow` and
+  `advanceSchedule`. If the app already posted the occurrence, nothing is inserted twice.
+- **Why not just log it.** A plain transaction would leave the schedule due, and the app would then ask
+  for the same bill again: a double count. So a bill is never logged any other way from chat.
+- **What it answers.**
+  - "Logged: Rent, ₹25,000, for 24 Sep, as scheduled. The next one is due 24 Oct."
+  - Already approved in the app: says so, and leaves it.
+  - A different amount ("paid rent 24000"): nothing is logged, and it says the scheduled amount.
+  - Two bills with the same name: nothing is guessed, and it links to the app.
+  - "paid 450 lunch" with no such reminder: an ordinary entry, as before.
+- **Reminders** (`bill_due_reminder`) go out daily at 09:00 IST, only for approval bills due that
+  day, only to linked members who can approve them. A bill that posts itself needs no reply and gets
+  no reminder. Loan EMIs, transfers and investments are approved in the app (an EMI posts through the
+  loan-payment split), so they get none either. The v10.42.0 hold on this template is lifted.
+
+Tests: CON-UNIT-REC-P-001…003 (parity), CON-UNIT-WA-B-001…005. The RPC was validated against
+production in a rolled-back `DO` block with a temporary schedule:
+
+| Case | Result |
+|---|---|
+| Wrong amount | `row_mismatch` |
+| Early | `not_due_yet` |
+| Success | Posted as the approver; the schedule moved 24 Sep → 24 Oct |
+| Replayed message | `duplicate` |
+| Second approval | `already_done` |
+| Unused payment mode | Dropped |
+| Signed-in users calling it | Cannot execute |
+
+## v10.42.0 — WhatsApp consent, STOP, and a scheduler (W2a) *(2026-09-26)*
+
+The third WhatsApp release. It adds the consent record and the scheduled alerts. Nothing reaches a
+phone until Meta approves a template, the owner lists it in `WHATSAPP_APPROVED_TEMPLATES`, and the
+scheduler secret is set.
+
+- **Preferences (`whatsapp_preferences`, new table).** One row per person:
+  - Marketing consent and insights consent are **off until given**, and record when and where.
+  - Muted topics.
+  - A large-spend threshold, ₹10,000 by default.
+
+  The table is server-owned like the other WhatsApp tables. People read and change their own row
+  through `get_my_whatsapp_preferences` / `set_my_whatsapp_preferences`, which `anon` cannot call.
+- **Every send is checked against it.** `whatsapp-notify` and the new scheduler share one guarded
+  path (`_shared/whatsapp-send.ts`). It checks, in order:
+  - the recipient is linked;
+  - consent;
+  - mutes;
+  - approval;
+  - the daily cap;
+  - the dedupe slot;
+  - and it writes the audit row.
+
+  Marketing needs its opt-in and insights needs its own. **Bill reminders and large-spend alerts
+  cannot be muted**, so STOP never silences a possible fraud warning.
+- **STOP in the chat.** Each command is answered with what changed:
+  - `STOP` withdraws marketing and insights and mutes everything that can be muted.
+  - `STOP BUDGETS` and the other named topics (the words the template footers promise) mute one topic.
+  - `START <topic>` unmutes it. It never grants marketing consent: that is given in the app.
+  - Meta's own "stop promotions" event also withdraws marketing consent.
+- **Template buttons answer.** Replies come from the design board:
+  - "Stop these" mutes its topic.
+  - "Flag it" says to call the bank and links to the transaction list. It does not claim a flag, which
+    the app has no place to show yet.
+  - "What's driving it?" and similar buttons link to the right screen.
+  - A tap on a message more than 7 days old is not acted on.
+  - Undo, Pause and the split choices wait for W3.
+- **Delivery tracking.** Each sent message keeps Meta's id. Delivery statuses move it forward only
+  (accepted → sent → delivered → read, or failed), whatever order Meta reports them in.
+- **The scheduler.** `pg_cron` calls the new `whatsapp-dispatch` function through `pg_net`.
+
+  | Job | When | What it sends |
+  |---|---|---|
+  | alerts | every 15 minutes | Large spends (to the *other* linked members); a budget line reaching 80% (once per line per period); a split share settled |
+  | weekly | Sundays, 18:00 IST | The weekly summary and stale balances. Both are marketing, so only to people who opted in |
+
+  The job is **inert until the owner stores `whatsapp_dispatch_secret` in Vault** and the same value as
+  `WHATSAPP_DISPATCH_SECRET` on the function. A preview branch has no secret, so it never calls
+  production.
+- **The figures are the app's own.** Budget spend is `spendByCategoryInRange` over the budget's
+  period, from the parity-tested server port, so it is the Budgets screen's number. The scheduler
+  skips rather than guesses:
+  - a household with any foreign-currency spend gets no budget or weekly figure, because there are no
+    rates on the server and `convert()` treats a missing rate as 1;
+  - templates with ₹ in their approved text go only to INR households;
+  - a private transaction is never announced;
+  - scheduled payments are not "large spends";
+  - at 100% the "still in the pot" text would be untrue, so no alert is sent.
+- **Settings › WhatsApp › Messages I send you.** Shows what is always on, the large-spend threshold,
+  budget and split alerts, and one opt-in for the weekly summary and balance reminders.
+- **Held back to W2b: bill reminders.** The approved text says *Reply "paid Rent" to log it*.
+  - Logging a plain transaction would leave the recurring schedule unmoved, so the app would ask for
+    the same bill again: a double count.
+  - Answering before the due date would break the app's own no-early-approval rule.
+  - W2b sends them on the due date and approves through one atomic RPC.
+
+Tests: CON-UNIT-WA-P-001…007, CON-UNIT-WA-D-001…012. The migration was validated against production
+in a rolled-back `DO` block.
+
+## v10.41.0 — WhatsApp templates (W1): one manifest, image headers, owner-run submission *(2026-09-25)*
+
+The second release of the WhatsApp plan. Still no proactive send is switched on; this makes the
+templates now in Meta review actually sendable once they are approved.
+
+- **Meta side, done in WhatsApp Manager (24–25 Sep).**
+  - Four existing templates got image headers: `bill_due_reminder`, `split_settled`,
+    `weekly_summary`, `reengagement_nudge`.
+  - Seven new image templates were submitted: payday, household digest, runway, month close,
+    budget setup, stale balances, affordability.
+  - Five text templates were enriched with new wording, values and buttons, and their links moved
+    from the old `vyact-twentyx` domain to vyact.app: `large_transaction_alert`,
+    `budget_threshold_alert`, `partner_split_prompt`, `split_shared_with_you`,
+    `recurring_auto_logged`.
+  - `recurring` (a "pay now" overdue-card message), `feedback` and the integration test template
+    were deleted. `hello_world` stays; Meta does not allow deleting it.
+  - `weekly_summary` was flagged by Meta as marketing, and `runway_shift_alert` was submitted as
+    marketing on Meta's pre-check.
+  - Every body, variable order, button and sample is recorded in `docs/WHATSAPP_TEMPLATES.md`.
+- **One manifest: `_shared/whatsapp-templates.ts`.**
+  - It holds each template's name, the category Vyact treats it as, the header image, body, the
+    ordered values each send must supply (with Meta's samples), footer and buttons.
+  - `whatsapp-notify` resolves events through it: the legacy names still work, and a new template
+    is sent by its own name. It now refuses a send with the wrong number of values (400, listing
+    what was expected) instead of letting Meta reject it.
+  - A template Meta flagged as marketing is treated as marketing, so it needs consent.
+- **Image templates can be sent.** Meta needs the header image on every send; `sendTemplate` sent a
+  text body only.
+  - `sendTemplateMessage` / `buildTemplateMessage` add the header image link from
+    `vyact.app/whatsapp/<file>`.
+  - Quick-reply buttons carry `template:index:context` payloads, so a tap can be routed back to
+    the event it answers (the W2/W3 handlers).
+  - Template language comes from the manifest.
+- **Header images are served by the app.** The 11 design PNGs (6.6 MB, deliberately kept out of
+  git) were re-encoded as 1200×628 JPEGs of 33–43 KB each, about 430 KB in all, into
+  `react/public/whatsapp/`.
+- **Meta's rules are a test.** `lintTemplate` checks variables run `{{1}}…{{n}}` in order, the body
+  neither starts nor ends with a variable, no two variables sit side by side, the body is not
+  mostly variables, the footer is at most 60 characters, button text is at most 25 characters,
+  links are https, and every value has a clean sample. It runs over the whole manifest, so a bad
+  template cannot land quietly.
+- **Owner-run scripts** (`scripts/whatsapp/`, `node --experimental-strip-types`; your token stays
+  in your shell):
+  - `templates-status.mjs` is read-only. It compares Meta with the manifest and exits 1 on drift.
+  - `templates-submit.mjs` is a dry run by default. It creates or edits named templates only with
+    `--apply`, uploading the header through Meta's resumable upload.
+
+- **The receptionist: a greeting is now the entry point.** Designed on the canvas "Vyact receptionist
+  and button replies".
+  - **In the app.** "hi", "hello", "good morning" or "menu" gets *"Hi, <first name>. What would you
+    like to do?"*. It adds one context line when something needs attention (a bill due within 7 days,
+    a budget over 80%) and otherwise says plainly that nothing is due.
+  - **Three chips for this household:** Log an expense; What's due this week or Spend this month;
+    Why is <category> high? or How am I doing?
+  - A new household gets Log an expense · Add an account · What can you do?.
+  - No model call, no exclamation marks. "thanks" closes without new chips, and "what can you do"
+    answers in three groups (Record · Check · Plan).
+  - **On WhatsApp**, a greeting, MENU or HELP opens a **list message** ("Choose an action", 8 rows in
+    Record / Check / Help and settings). It is a session message, so no template or approval is
+    needed.
+    - Record rows teach the one-line format.
+    - Check rows link to the app until W4, so no figure sits in a chat thread.
+    - An unlinked number gets who Vyact is and how to link, and is never shown the menu or logged.
+  - WhatsApp confirmations read "₹450" instead of "450 INR".
+
+- **A welcome when a number is linked (`whatsapp_welcome`, submitted 25 Sep, in review).** This is the
+  one moment Vyact messages first, so it needs a template. A greeting the person sends does not.
+  - Image header `12-welcome.jpg`. Body: *"You're linked, <name>. This number now logs to <household>
+    in Vyact."* followed by the one-line format.
+  - Three quick replies: **Menu** opens the receptionist list; **Log a spend** and **What can I send?**
+    answer as the matching menu rows. The webhook handles these taps now. Other templates' taps still
+    wait for W2/W3.
+  - `whatsapp-verify-otp` asks `whatsapp-notify` (as the service) to send it after a successful link,
+    so it gets the same guards as any send: inert until approved and listed, deduped per household
+    and number, daily cap, audit row. A failed welcome never fails the link. The OTP link itself is
+    still blocked on Meta business verification.
+
+Tests: CON-UNIT-WA-T-001…012, CON-UNIT-WA-R-001…009, CON-UNIT-FACT-061…065, plus the W0 notify tests
+updated for the value count and header, and the verify-otp test asserting the welcome request.
+
+## v10.40.0 — WhatsApp foundations (W0): failures recorded, sends guarded *(2026-09-24)*
+
+The first release of the WhatsApp next-level plan (W0–W5). Nothing user-visible changes for
+households that do not use WhatsApp; there is no new template and still no proactive send. This
+fixes what the next phases would have been built on.
+
+- **A failed log is recorded as one, and replayed.** `processInbound` swallowed every error, so a
+  ledger failure was marked `done` and could never be found again; the attempts counter read a
+  field that never existed.
+  - A ledger error now marks the inbox row `failed` with the real attempt count and `last_error`.
+  - The user is told once that the entry is queued, so they do not resend and double-log.
+  - A sweep replays it (up to 3 attempts), both on every delivery and on `?mode=sweep` with the
+    service key.
+  - Replay is safe because the RPC claims the message id first.
+  - This closes TD-35's webhook part.
+- **`whatsapp-notify` can be called by a server job.** It accepted only a user's JWT, so every
+  scheduled reminder would have been refused with 401; it now also accepts the service key. The same
+  guards apply to both callers:
+  - a write role is required (a viewer could previously message any member);
+  - the recipient must be linked to the household;
+  - MARKETING is refused until the W2 consent record exists;
+  - one send per event, recipient and dedupe key, claimed before sending;
+  - a per-recipient 24-hour cap (`WHATSAPP_DAILY_CAP`, default 6);
+  - parameters are cleaned of the newlines and tabs Meta rejects.
+
+  Outbound audit rows now carry an explicit status instead of defaulting to `pending`.
+- **A stated date reaches the ledger.** "yesterday 450 lunch" or "15/09/2026 1200 rent" now passes
+  `p_date`. The function has accepted it since v10.20, but the parser dropped it, so every WhatsApp
+  entry was dated today. The date is removed before the amount is read: "15/09/2026 450 lunch" used
+  to log ₹15. The confirmation names the day it was filed under.
+- **Question detection no longer refuses logging lines.** "paid 1200 total groceries" was treated as
+  a question because it contains "total".
+- **No hard-coded Meta IDs.** The in-code fallbacks were the retired *test* account's; a missing
+  secret now fails loudly instead of sending from the wrong number.
+- **Docs corrected.**
+  - The HANDOFF status is updated.
+  - The runbook's seeding SQL wrote to `profiles`, which nothing reads since audit S1; it now uses
+    `whatsapp_identities`.
+  - The solutioning doc called the nine templates "Live + wired"; none is wired, and approval is
+    unconfirmed.
+
+Tests: CON-UNIT-WA-W0-001…014.
+
+## v10.39.1 — the right amount, in the right currency, and what is really free *(2026-09-24)*
+
+Seven fixes from the 23 Sep validation session on the owner's household. As before,
+classification was right every time; each defect sat in what `resolve()` computed or
+what it was handed.
+
+- **P20 · a foreign amount is converted before anything is computed.** "$150 dinner"
+  was checked as ₹150 — the currency was read and dropped, understating the purchase
+  ~83×. `resolve()` now reads the stated currency (model entity, then symbols and
+  words; `$` means the base when the base is written with `$`) and converts at the
+  app's own rate before capture or affordability. `convert()` silently uses rate 1 for
+  a missing code, so the rate's existence is checked explicitly: with no rate the
+  answer says so (`needs_rate`) and carries **no figures**. The capture
+  acknowledgement names the original amount and the rate used.
+- **P19 · free to spend = money you can reach − credit-card dues.** New
+  `cardDues()` (from the projection's own liability rows) → `SafeSummary.netWorth.cardDues`
+  → `card_dues_to_pay` and `free_to_spend_after_card_dues` facts. Affordability
+  headroom now subtracts the dues before the safety floor (it used to let a purchase
+  "fit" into money already owed to the card issuer). The Net Worth "Money you can
+  reach" tile states what is free after card dues (or how far short of them it is).
+- **P7 · Pulse is not a verdict on the cushion.** Investigated: Pulse's savings
+  component is this month's savings *rate*, not cover, so 100/100 beside 1.7 months of
+  cover is the score working as defined — the defect was the status line "Strong —
+  keep doing what you are doing". A strong score with under three months of cover now
+  says both; facts carry `pulse_measures` and `cushion_note`. Pulse scoring unchanged.
+- **P8 · a phone number is never an amount.** `parseAmount` (client and the WhatsApp
+  Deno copy, pinned to agree) now skips identifier-shaped digit runs: ten or more
+  ungrouped digits, or a number right after phone / a/c / UPI ref / txn id / card
+  ending / masked `XX1234`. A model-extracted amount that only appears in the text as
+  an identifier makes capture ask for the amount instead of pre-filling ₹8.9bn.
+- **P17 · instant replies.** Greetings, thanks, "what's your name" and "what can you
+  do" are answered locally with **zero** model calls (and still work when the model is
+  unreachable — there is no household figure to fake). A classifier-routed
+  `meta.assistant` question no longer makes a phrase call.
+- **P21 · set up a recurring bill from chat.** New `capture.recurring` intent ("add
+  Netflix 649 every month on the 5th") drafts the Recurring section's own schedule
+  sheet — amount, frequency, category, day. It is a proposal: the user picks the paying
+  account and saves; Recurring stays the only place a schedule is authored.
+- **P22 · "I can't do that" is a route.** New `unsupported` intent for requests to
+  pay, send or move money, contact someone or trade — answered plainly with what does
+  work, reading no household data. `CAPABILITIES` no longer says "upcoming and recurring
+  bills" (which read as if bills could be managed); it lists the ones set up.
+
+Golden snapshot: one additive line (`netWorth.cardDues: 0`); no existing figure moved.
+Tests: CON-UNIT-FACT-042…060, CON-UNIT-WA-P8-001…003.
+
+## v10.39.0 — where the money sits *(2026-09-23)*
+
+Three questions in one validation session died for want of an account dimension: *"₹58k or
+₹33k — which is right?"*, *"which account am I spending from?"*, *"what should I sell?"*.
+`SafeSummary` carried totals only, so the assistant could quote a liquidity figure but
+never show the accounts behind it — the week after production proved that very figure
+could be wrong.
+
+- **`liquid_by_source`** — the liquidity total, decomposed by the account or holding it
+  sits in, largest first. Built from **the same rows the projection totalled**, so the
+  parts cannot disagree with the whole; a test asserts they sum exactly. A credit card
+  never appears (v10.38.1 keeps borrowing out of savings).
+- **`spend_by_account`** — spending grouped by the account it left, for the resolved
+  period. Spending with no account recorded is reported as such rather than dropped: a
+  total that quietly omits part of itself is the failure mode this line of work exists
+  to stop.
+- **`what_you_own`** — every holding with its value and how soon it could be reached
+  ("reachable now", "a few days or weeks", "locked up or slow to sell"), so advice can
+  name what exists. It still must not recommend selling a specific holding — that needs
+  tax, lock-ins and purpose the app cannot see.
+
+🔴 **This widens what leaves the device, once and deliberately.** Facts previously carried
+category labels and debt *types* only, never anything the customer wrote. They now carry
+**account and asset names** — names and amounts only, no account numbers, no masked
+digits, and transaction descriptions and merchant text remain excluded. The reason is
+narrow and specific: a liquidity total nobody can decompose is a number you must take on
+trust, and this one was overstated for months. `CLAUDE.md` records the rule and its limit.
+
+## v10.38.1 — borrowing is not savings *(2026-09-23)*
+
+Re-validating v10.38 on a real household confirmed 7 of its 10 fixes in production and
+found a worse one underneath them — in the money model, not the assistant.
+
+- **A credit card's outstanding was counted as liquid savings, and its debt vanished.**
+  `computeNetWorth` pushed any liability account with a positive balance onto the asset
+  side as `liquid`, while `liveLiabilityRows` read its outstanding as `max(0, −balance)`
+  = **zero**. On the owner's household ₹23,990 *owed* became ₹23,990 *held*: liquidity
+  read ₹58,035 against ₹33.7k of genuinely spendable accounts, and net worth was
+  overstated by roughly ₹48,000. The Dashboard, Net Worth and Ask Vyact all read that
+  one projection, so all three were wrong together. A liability account is now **never**
+  liquid; a genuinely overpaid card stays an asset but as `short`. (INV-10)
+- **Reconciling a card wrote the wrong sign.** `reconcileAccount` was written for bank
+  and investment accounts, where the stated figure IS the balance; for a card the stated
+  figure is what you **owe**. It now targets `−outstanding`, idempotent with the UI which
+  already negates. The owner's row came from June, logged as `kind: "bank"` — legacy data
+  the current UI would not write today. (INV-11)
+- **Net Worth: two tiles showed the same number.** "Liquidity Ratio" and "Emergency
+  Cover" were computed from *identical* expressions, rendered in different units with
+  different thresholds — so one could read green while the other read amber. One tile now,
+  on the **same baseline as the assistant** (`spendBasis`, up to six completed months)
+  rather than this month's partial spending, which inflated the page early in a month.
+- **Plain words on Net Worth.** "Money you can reach", "How long it would last", "What you
+  owe vs own", "Kept this month" — same figures, same thresholds, no "leverage ratio".
+- **A category name now resolves to a category id.** The model answers "food"; the ledger
+  is keyed `food_dining`, so the lookup reported **₹0** beside a breakdown showing ₹616.
+  `resolveCategoryId` tries id, alias, then keyword, and an unplaceable category **asks**
+  instead of reporting zero.
+- **A challenged figure survives to the next turn.** v10.38 threaded the previous turn's
+  figures to the guard but read them from React state in a stale closure, so production
+  still rejected follow-ups (the retry rescued them). A ref, written when the turn
+  resolves, replaces it — and the test now drives **two real turns** instead of calling
+  the guard directly.
+- **A receivable is no longer listed among your debts.** `direction: 'owed_to_me'` is money
+  owed TO the household; net worth has excluded it from liabilities since v10.17, but the
+  assistant's debt list passed every row through — so a ₹1,245 loan the owner had *made*
+  appeared among their debts, with advice on clearing it. Same filter as `liveLiabilityRows`.
+- **Negative recorded cash is raised, not silently corrected.** Cash computed to −₹342,
+  which cannot happen; the facts now carry a warning so the answer can say what is missing.
+  Clamping to zero would fabricate money.
+
+## v10.38.0 — Ask Vyact: the figures, not the wording *(2026-09-17)*
+
+The v10.37 validation session asked 16 real questions through a Claude model and found
+ten defects. Classification was right **16/16** — every one sat downstream, in the
+figures `resolve()` handed over. None could be caught by the invented-figure guard,
+because every number was real, present in the data, and copied correctly.
+
+- **One liquidity figure, one spend baseline.** Affordability and runway called
+  `calculations.liquidAssets(assets)` — the assets array only, no account balances —
+  while status used the canonical net-worth projection. The same household saw
+  **1.2 months** and **68.6 months** of cover in the same minute, and an affordable
+  purchase was refused. Every seam now reads `SafeSummary.netWorth.liquidAssets`, and
+  every cover/floor figure divides by the new `spendBasis`: the average over up to six
+  **completed** months, fewer when that is all the history there is, with the month
+  count stated in the answer. Debts and status likewise share one debt total (they
+  differed by ₹724).
+- **The safety floor is needs, not everything.** Three months of typical *essential*
+  spending, with the needs and wants averages both in the facts so an answer can say
+  which part is flexible.
+- **A negative figure can no longer read as positive.** `money()` formats through
+  `fmt`, which takes the absolute value, so `available_above_floor` reported a
+  ₹34,956 *deficit* as ₹34,956 *above* the floor. Facts that cross zero now go through
+  `signedMoney()`.
+- **Named periods are honoured.** "How much on food in August" answered with *this*
+  month's figure under an August label. Periods now resolve ("August", "last month",
+  "2026-07"), an unplaceable one asks which month and attaches **no figures**, and a
+  period question with no category returns the **period total**.
+- **Advice sees the household.** `forecast.prescriptive` received only this month's
+  categories, so it could suggest trimming ₹54 from a household with a 95% savings rate
+  and a mortgage at 8.75%. It now shares `positionFacts` with status, plus debts by rate.
+- **Capture keeps what it extracted, and acknowledges before navigating.** The merchant
+  now implies a category (`swiggy → food_dining`), and the stated date and account reach
+  the form. A seeded capture is acknowledged **deterministically with no model call**,
+  and the form opens after the acknowledgement is on screen rather than before.
+- **The guard stops destroying good answers.** It discarded 3 of 16 — a figure quoted
+  from the previous turn, the user's own words, and a date. It now exempts the user's
+  question and non-money dates, accepts the previous turn's figures, and **retries once**
+  naming what was rejected before refusing.
+- **`meta.assistant`** answers questions about the assistant without reading any
+  household data; "what do I call you?" used to build net worth, debts and budgets.
+- **`CAPABILITIES`** — an explicit can/cannot list travels with unmatched questions, so a
+  question outside the app's reach gets an honest answer plus the nearest thing that works.
+- **Pilot a model on one account.** A config row carrying `params.allowed_user_ids` now
+  applies to ANY provider, not just the test relay: it serves only those users, and every
+  other caller resolves the next row by priority. Promotion is removing the key — one SQL
+  edit, no deploy. Written up for LM Studio / Gemma over a tunnel in
+  [`docs/LOCAL_LLM.md`](../docs/LOCAL_LLM.md), including the three gateway constraints
+  (public HTTPS only, no `/v1` suffix, the 20 s default budget).
+- Tests: `askVyactFacts.test.ts` (25 cases), including the cross-seam agreement test that
+  would have caught the liquidity and debt-total splits.
+
+## v10.37.0 — Claude Code relay for Ask Vyact validation (test-only) *(2026-09-15)*
+
+- **Why.** The free Nemotron model now takes longer than the gateway's 20 s budget, so nearly
+  every question ended in HTTP 504 and the chat said "I can't reach the assistant" (production:
+  `ai_usage` latency 20008 ms, edge log 504). For the validation window the product owner asked
+  for a Claude Code session to stand in as the model, on their own account only.
+- **How.** A new provider row, `provider='claude-code-relay'`, allowlisted by
+  `params.allowed_user_ids`. For an allowlisted caller `ask-vyact` reserves quota as usual, queues
+  the exact messages in the new service-role-only `ask_vyact_relay` table and answers **202
+  `relay_pending`**; the client polls `{ relayPoll }` every 3 s for up to 5 min
+  (`askVyactModelCall.ts`), and the poll finalises the `ai_usage` reservation. Everyone else
+  resolves the next enabled config exactly as before. The classify → resolve → phrase pipeline and
+  `assertNoInventedFigures` are unchanged, so the relay is judged by the same guard as any model.
+  A count-only `ask-vyact-relay-status` function (no JWT, no ids, no content) lets the local
+  watcher know a call is waiting.
+- **Privacy.** `ask_vyact_relay` stores message content — a deliberate, temporary exception to the
+  metadata-only rule, scoped to the owner's test household. Tracked as **TD-44**: remove the relay
+  and purge the rows once validation ends.
+- **Correction.** `params.max_tokens` (600) IS the live cap for every call: the gateway never
+  forwards the client's `maxOutputTokens`. v10.36's CLAUDE.md / status-doc claim was backwards.
+- Tests: `agentRelay.test.ts` (allowlist, call labelling, poll states), 5 gateway relay cases in
+  `gatewayWorkflow.test.ts`, 2 client polling cases in `cloudTransport.test.ts`.
+
+## v10.36.0 — Ask Vyact answers the question you asked, and shows its working *(2026-09-14)*
+
+- **Answers were shallow because the model was starved, not weak.** `resolve()` already computed a
+  rich picture — spend and usual month for every category, every budget, every debt, upcoming
+  bills — then collapsed it to one pre-written sentence (`vars.headline`/`vars.detail`) sized for the
+  retired rules engine. The phrase model was told to reword that in "one or two short sentences"
+  with "no advice", and never saw the user's question. Fixed without touching the "services
+  compute" rule:
+  - `ResolveResult` gains `facts` (structured, service-computed) and `analysis` (human-readable
+    steps). Every interpret and forecast intent now returns the data it computes rather than only
+    the top item; a shared `categoryBreakdown()` serves lookup, diagnostic, prescriptive and runway.
+    All money goes through `money()`, so a figure copied verbatim always passes
+    `assertNoInventedFigures` — and since the guard's allowlist now includes `facts`, richer data
+    means *fewer* rejections. `vars` is unchanged, so every existing test is untouched.
+  - The phrase payload now carries `question` and `facts`. The phrase prompt was rewritten to answer
+    the question actually asked and to prioritise and explain (two to five sentences, still no
+    invented figures, no product recommendations). Phrase `maxTokens` 200 → 700.
+  - The classify prompt defines every intent with example phrasings, and routes advice and strategy
+    questions to `forecast.prescriptive`/`interpret.debts` instead of defaulting to `interpret.*`.
+  - Egress: new facts use category labels and SafeSummary debt *types* only — never user-authored
+    descriptions or debt names.
+- **Ask Vyact shows its working.** `runAssistant` takes an optional `onProgress` callback and emits
+  each real stage: "Understanding your question", "Recognised: …", the resolve analysis ("Compared 6
+  categories with your usual month"…) and "Writing your answer" — no timed placeholders. `Chat.tsx`
+  now creates the reply row when the turn *starts* (still addressed by `turnId`, audit 6.5), prints
+  the steps live, then folds them into an expandable "Analysed in Ns · N steps". The artificial
+  600ms pause is gone; pending rows are stripped on reload.
+- **Thinking ring on the composer.** An animated gradient ring in the design system's AI palette
+  (`--rail`) while a turn is in flight, with `aria-busy` and a "Vyact is thinking…" placeholder.
+  Under `prefers-reduced-motion` the ring shows but does not move: the global reduce-motion rule
+  shortens duration without stopping `infinite` iteration, so this animation is disabled explicitly.
+- **Multi-line composer.** An auto-growing textarea (two lines up to 192px, then it scrolls). Enter
+  sends, Shift+Enter inserts a newline, and an IME composition keystroke never sends.
+- **Live test harness.** `askVyactLive.test.ts` gains a 14-scenario matrix — the 10 model-reaching
+  intents plus 4 free-text capture utterances — printing per-scenario evidence. Run it with
+  `npm --prefix react run test:live`. Its header previously documented a command that returns "No
+  test files found"; corrected.
+- **Docs.** `TECH_DEBT.md` consolidated and revalidated against production: 43 items, TD-15 reopened
+  (leaked-password protection is disabled), TD-37…TD-43 added, TD-29 re-measured at 55 failed / 56
+  passed / 82 skipped. New `docs/ASK_VYACT_STATUS.md` (done vs pending) and
+  `docs/ASK_VYACT_LLM_RUN_LOG.md` (every question to date). `CLAUDE.md` names the single debt
+  register and marks paydown deprioritized.
+- **Known, not changed here.** `interpret.bills` still sends each bill's user-authored description
+  in `vars.detail`, which the egress rule forbids. Flagged for a follow-up rather than changing
+  output silently in this release.
+
+## v10.35.0 — Ask Vyact composer redesign, and Amount stops grabbing the keyboard *(2026-09-12)*
+
+- **Amount no longer auto-focuses on a fresh entry.** `components/ui/NumericKeypad.tsx`'s
+  `AmountField` used to `.focus()` + `.select()` itself ~60ms after Add Transaction/Split/Reconcile
+  opened, so users would start typing straight into the amount instead of the description. On a
+  touch device, programmatically focusing a real `<input>` pops the OS keyboard immediately and
+  uninvited, and the auto-focus + `.select()` combination on an empty, currency-adjacent,
+  `inputMode="decimal"` field also triggered Chrome's own autofill-candidate outline around it
+  (tinted from the page's `theme-color`, which is why it looked like app chrome). Removed the
+  `autoFocus` prop and its effect entirely; the field is still the first, largest control on the
+  page. Updated `keyboard-accessibility.spec.ts` (A11Y-FC-004 now starts its tab-order walk from
+  the page heading, which is where `FormPage`'s own focus-management effect lands when no field
+  claims it) and dropped now-stale focus assertions from `help-guide.spec.ts` and
+  `category-picker.spec.ts` that only existed because of the old auto-focus.
+- **Ask Vyact drawer composer reclaims the "Esc or click outside to close" footer line.**
+  `components/layout/FloatingTools.tsx`'s drawer had a permanent instructional strip below the
+  chat — that space now belongs to the composer, which sits lower with more padding. `pages/
+  Chat.tsx`'s Send control is icon-only now (matching the mic button's circular shape, `bg-coral`
+  like the app's other primary round actions) instead of a labeled button, and the placeholder
+  shortened from a full example question to "Ask a question…" — both free up room for the input
+  itself. The "Your question or entry" label is kept for screen readers (`sr-only`) rather than
+  removed outright.
+
+## v10.34.0 — Contextual help on every form, and an internal-wording audit *(2026-09-12)*
+
+- **Removed the "Open form" shortcut from Ask Vyact.** The intent list's per-bucket "Open form:
+  ___" buttons (Add expense/income/transfer/investment/budget/debt/asset) are gone; the newly-dead
+  `dispatchAction` open-modal path, and the `openAddBudget`/`openAddDebt`/`openAddAsset` store
+  hooks it alone called, were removed with it. `openAddTxn` stays — it is still used separately
+  when a proposed-transaction reply seeds the Add Transaction form. Relocated the one piece of real
+  coverage this shortcut carried (a transfer/investment transaction has no Category field) into
+  `transactions-create.spec.ts` as `CON-E2E-055`, opened via the real Add Transaction entry point.
+- **A help icon on every entity form page.** `components/ui/FormPage.tsx` (the shared container
+  for all seven routed forms — transaction, split, debt, budget, account, asset, reconcile) takes
+  a new `helpTopicId` prop: an (i) button in the header opens a `HalfSheet` showing that Help &
+  Guide FAQ entry, verbatim — via a new shared `HelpTopicBody` (extracted from `Help.tsx`, so the
+  two surfaces render the identical answer/steps/note, never a second copy that can drift) and
+  `HelpInfoButton`. Each form is matched to its own topic; the transaction form picks
+  `expense-income`/`transfer`/`investment` dynamically from the selected type.
+- **Help & Guide's page title now matches Settings/Households.** Its `<h1>` sat inside both
+  `.ui-pilot` and `.reading-surface`, which together lightened it to `font-weight: 400` — the
+  general "reading" weight meant for body copy and subheadings, not a page title. Added a scoped
+  override (`.help-guide > header h1.display-italic`) so the title stays at the bold `600` the
+  rest of the page's `display-italic` headings use elsewhere in the app, and fixed its bottom
+  margin (`mb-related`, not a real Tailwind utility — silently generated no CSS at all) to
+  `mb-1.5`, matching Settings/Households exactly.
+- **Removed internal-engine wording from user-facing copy.** "The model" — accurate but
+  meaningless to someone using the app — appeared in the Ask Vyact drawer/chat privacy line, the
+  chat screen's empty-state copy, the "Ask Vyact isn't set up yet" and "Why is Ask Vyact
+  unavailable?" strings. Reworded each to describe what happens (Vyact/Ask Vyact does X) rather
+  than which internal service does it, preserving the underlying claim each was making — audited
+  `pages/`, `components/`, and `lib/helpContent.ts` for the same pattern; **not** touched:
+  `Privacy.tsx`'s "How Ask Vyact uses a language model" section, which is a deliberate, accurate
+  disclosure of what a data-sharing policy requires, not incidental engine trivia.
+
+## v10.33.2 — Landing page uses the real Pip logo *(2026-09-12)*
+
+`pages/Landing.tsx`'s header and footer used a placeholder 🙂 emoji in place of the app's actual
+mascot. Replaced both with `<Pip>` from `components/layout/Brand.tsx` — the same SVG already used
+in the app's own TopBar/MobileHeader, the web favicon (`public/favicon.svg`), and the Android
+adaptive-icon foreground, so the landing page, the app, the browser tab, and the installed app
+icon all show one consistent logo. The favicon itself was already correct and untouched.
+
+## v10.33.1 — Landing page redesign, matching the Airo-drafted marketing copy *(2026-09-12)*
+
+`pages/Landing.tsx` rebuilt to mirror the structure and copy of the marketing page drafted in
+GoDaddy Airo Builder, rendered with Vyact's own Aurora tokens (so a visitor lands in a visual
+language consistent with the app they click into, rather than a one-off pastiche):
+
+- Hero: "Your household deserves to understand its money."
+- "Sound familiar?" — three pain-point cards (money tracked in too many places; the month ends
+  with no idea where it went; net worth as a spreadsheet chore).
+- "One app. Everything your household needs." — Track / Understand / Plan / Build, four feature
+  cards with `lucide-react` icons.
+- A coral "Meet your Pulse Score" spotlight — captioned as an illustrative score, since Pulse is
+  hidden by default on the real Dashboard (`FEATURES.dashboard`, v10.27.0) and a specific number
+  shown to an anonymous visitor is never real household data.
+- "Your money, explained back to you" — three sample Insights, captioned "Example household, not
+  your data," the same honesty convention `Help.tsx`'s guide screenshots already use.
+- Footer tagline "Built for Indian households. Privacy-first, no bank connection required."
+
+The session-aware CTA logic from v10.33.0 (signed in → Dashboard; signed out → Sign in / Get
+started; local-only → straight into the app) is unchanged — only the page's content and layout
+moved. Updated `CON-E2E-054`'s heading/link assertions to match the new copy and the now-multiple
+"Open Vyact" links on the page (hero, final CTA, footer) — scoped to `exact: true` + `.first()`.
+
+## v10.33.0 — vyact.app: a real domain, a public landing page *(2026-09-12)*
+
+The consumer app's public identity moves from `vyact-twentyx.vercel.app` to **`vyact.app`**, and a
+signed-out visitor to the bare domain now sees a real landing page instead of an immediate
+redirect into the dashboard.
+
+- **Landing page at `/`.** A new `pages/Landing.tsx`, rendered Layout-less and before the
+  `loading` gate (same reasoning as the legal-doc routes) so it shows instantly for an anonymous
+  visitor or crawler. Hero, six short feature highlights drawn from this doc's own existing
+  descriptions (money model, budgets, Ask Vyact, WhatsApp logging, the Insights Hub, and
+  household sharing), and a call to action that reads real auth state:
+  - signed in → "Go to Dashboard";
+  - signed out (cloud mode) → "Sign in" / "Get started";
+  - local-only mode (no Supabase env) → a single "Open Vyact" straight into the app, since there
+    is no sign-in concept there.
+  - `AuthGate.tsx` now treats `/` as public via an **exact-match** check — not by adding it to
+    `PUBLIC_ROUTES`' `.startsWith()` scan, which would have silently disabled the sign-in gate
+    for every route in the app.
+  - The old `<Route path="/" element={<Navigate to="/dashboard"/>}/>` is removed; `/dashboard`
+    remains the stable authenticated destination everything else already points to.
+- **Every hardcoded reference to the old domain is gone**: `VITE_APP_URL` (drives every
+  `emailRedirectTo`/`redirectTo` for sign-up, magic-link, OAuth and password-reset), the shareable
+  "Learn" link base, the `/learn` · `/sitemap.xml` · `/robots.txt` server routes, `index.html`'s
+  OG/Twitter/JSON-LD, and the `ask-vyact` Edge Function's CORS allowlist default all now say
+  `vyact.app`.
+- **A real support inbox**: `support@vyact.app` replaces the personal Gmail address that Help,
+  Privacy, Terms and Cookies had all labeled "(temporary support inbox)".
+- **Fix — two e2e helpers that assumed `/` redirects.** `DashboardPage.goto()` now navigates
+  straight to `/dashboard` (and waits for the shell to actually render, since a direct navigation
+  resolves faster than the old client-side redirect did) rather than relying on a redirect that no
+  longer happens; `CON-E2E-001` and `ONB-FC-004` were updated the same way, and a new
+  `CON-E2E-054` covers the landing page itself in local-only mode.
+- No money, data or permission-model change. `vyact-twentyx.vercel.app` continues to work during
+  the cutover; Supabase's Redirect URLs and CORS allowlists carry both domains during a
+  transition window before the old entries are retired.
+
+## v10.32.0 — an approval-aware bill calendar *(2026-09-11)*
+
+This release ships the last "Further Product Work" item from `docs/INSIGHTS_ASK_REPORTS_UX.md`.
+
+The Recurring screen's "Next 7 days" strip is now a **Bill calendar**: an agenda of what your active schedules will do over the next 7, 30 or 60 days.
+
+**No money, data or permission rule changes.** The calendar is read-only. Approving or skipping a bill uses the same actions the notification already offers.
+
+- **One occurrence at a time, in the engine's own terms.**
+  - Each bill or income shows whether it *Posts automatically*, is *Awaiting your approval*, is one *You approve when due*, or is already *Posted*.
+  - Dates come from the schedule's recurrence rule, so these all hold:
+    - several weekdays a week;
+    - the "2nd Friday" kind of rule;
+    - months without a 31st;
+    - "ends after N times".
+  - Nothing already posted, approved or skipped is shown as due again.
+- **Approve or skip where you see it.**
+  - The one occurrence actually awaiting approval, including one that is overdue, carries *Approve* and *Skip once*.
+  - Approve posts it once and moves the schedule on.
+  - Skip once moves the schedule on without posting, after a confirmation.
+  - Later occurrences can't be approved early, matching the engine.
+- **Totals for the window.** The calendar shows money going out, coming in and going to investments, in the household currency, plus how many bills await approval. It previews commitments; it is not a balance forecast.
+- **Excluded schedules.** A schedule whose due date is older than the engine's 45-day catch-up window is not shown, because the engine will never post it.
+
+### Under the hood
+- `lib/billCalendar.ts` is pure. It builds occurrences with `expandRRule`, falling back to the frequency fields for legacy schedules, and assigns each one a status.
+- `components/recurring/BillCalendar.tsx` renders the agenda. `pages/Recurring.tsx` replaces the strip with it.
+- **Fix — `expandRRule` weekly order.** Each week's BYDAY dates are now emitted in date order.
+  - Before, a schedule starting mid-week (for example on a Tuesday, for Mon + Fri) produced that week's Monday before its Friday. A window ending before the next Monday then stopped early and dropped the Friday, and COUNT could consume occurrences out of order.
+  - Only the calendar reads this expansion; posting uses `scheduleFiresOnDate`, so no posted transaction changes.
+- **Tests:**
+  - 5 `billCalendar` unit cases and the `CON-UNIT-RR-018` regression;
+  - browser cases BILL-FC-001…003 in `e2e/tests/bill-calendar.spec.ts`, covering statuses and totals, approve posts once, and skip posts nothing;
+  - `recurring-lifecycle` CON-E2E-036…039 were stale. They clicked an account *button*, but "Pay from" has been a select-only dropdown since v10.27.1, so they timed out. They now choose from the dropdown and pass again.
+
+## v10.31.0 — Reports: one date range, budgets by their own period, and an essential-spend runway *(2026-09-11)*
+
+Three of the "Further Product Work" items from `docs/INSIGHTS_ASK_REPORTS_UX.md`, each with its own calculation
+contract. **No money, data or permission rule changes**: these are read-only views over the existing ledger,
+budgets and Net Worth projection.
+
+- **One date range for every flow view.** A new *Date range* control (This month, Last 3 / 6 / 12 months, Year
+  to date, All time, Custom) drives the headline tiles, the income-vs-expenses trend, surplus/shortfall, the
+  category breakdown with Needs vs Wants, the period summary, top categories, and the by-member and by-account
+  tables — which were previously all-time. The Day…Year control now groups *inside* the range; the first and
+  last intervals are clamped to it and marked partial, and a grouping that would draw more than 60 bars is
+  coarsened, with the reason stated. The range lives in the URL (`?range=…&group=…`, or
+  `range=custom&start=…&end=…`), so a reload or a shared link shows the same window, and saved views keep it.
+  The household position and "this month" stay current and say so. The default is the last 12 months.
+- **Budget vs actual, by matching scope.** A new panel compares each budget over its OWN full period: monthly
+  budgets month by month, annual budgets year by year, never mixed. Budgeted is the sum of its category
+  allocations (central FX); actual is reportable spending in those categories. The current period is shown as
+  *In progress* and never counted as over or under. Budgets without category allocations track nothing on the
+  Budgets screen, so they are not compared (and are counted in a note). Shows every budget overlapping the range.
+- **Essential-spend runway.** In Household position: how many months liquid assets would cover essential
+  spending if income stopped. Essential = spending in categories classified as needs (admin overrides apply).
+  The baseline is **stated**: the last three completed calendar months with recorded spending, named on screen —
+  the current month is never used. Liquid assets come from the canonical projection (no credit limits or
+  investments). Marked as an estimate, with its limits in *Calculation basis*; not advice or a health score.
+
+### Under the hood
+- `lib/reportRange.ts` (presets, calendar buckets, coarsening, URL contract), `lib/budgetTrends.ts`
+  (scope-matched budget vs actual) and `lib/essentialRunway.ts` (stated-baseline runway) are pure and
+  unit-tested; `pages/Reports.tsx` reads them; `ReportCharts.BudgetActualBars` draws the monthly comparison.
+- Tests: 14 unit cases across the three modules; browser cases RPTC-FC-001…003
+  (`e2e/tests/reports-consultation.spec.ts`); FIN-FC-001 now steps through groupings on "This month".
+
+## v10.30.0 — Net Worth starts keeping a history *(2026-09-11)*
+
+Net Worth now records itself once a month, so a real history can build up. **Nothing is back-filled and no
+past value is estimated**: standalone assets and debts store only their current value, so any earlier figure
+would be invented. (The first "Further Product Work" item from `docs/INSIGHTS_ASK_REPORTS_UX.md`.)
+
+- **Once a month** — the first time the household opens Vyact that month — the app records Net Worth, total
+  assets, total liabilities and liquid assets, exactly as the Net Worth page computes them.
+- **The first record for a month stands.** Another device, a later visit or a changed balance never rewrites
+  it; the next month gets its own record.
+- **Net worth history panel.** Until two months are recorded it says when recording started; from the second
+  month it draws the line, with assets and liabilities alongside. Months recorded before a household-currency
+  change are counted but not drawn, because the figures aren't comparable.
+- **Only from a fully loaded position.** In cloud mode a snapshot is taken only after this device has confirmed
+  its accounts, assets, debts and transactions with the cloud in the current session — a stale cache must never
+  become a permanent record. Never for an empty household. The database refuses any month but the current one
+  and any currency but the household's. A viewer never records; any member who can write does.
+- **Erase my data** now also erases the recorded history. A local-only household that began from the demo data
+  does not record history.
+
+### Under the hood
+- Migration `20260911150000_v1030_net_worth_snapshots.sql`: `net_worth_snapshots` (unique household + month,
+  first-of-month check, `net_worth` generated from the two sides, member-read RLS, no client write policies)
+  and `record_net_worth_snapshot` (SECURITY DEFINER, current month and household base currency only,
+  `on conflict do nothing`, anon revoked). `erase_household_data` now includes the table.
+- `lib/netWorthSnapshots.ts` holds the pure rules; the local, cloud and hybrid adapters gain
+  `listNetWorthSnapshots` / `recordNetWorthSnapshot`, and `HybridAdapter.positionIsCloudFresh` tracks whether
+  each list served cloud-confirmed rows. The store loads snapshots on refresh and records after init, household
+  switch and refresh, with a 10-minute retry window per household-month.
+- Tests: 7 `netWorthSnapshots` unit cases (rules, first write wins locally, cloud RPC contract and mapping);
+  browser cases NWH-FC-001…003 in `e2e/tests/networth-history.spec.ts`.
+
+## v10.29.0 — Insights becomes one review *(2026-09-11)*
+
+Insights now has two tabs, **For You** and **Learn**. The separate Plan tab is gone: its recommendations and the
+For You feed are now one review. **No money, data or permission rule changes** — nothing new is calculated,
+nothing is written, and personal insights stay on this device. (Completes the Insights part of
+`docs/INSIGHTS_ASK_REPORTS_UX.md`; its Ask and Reports parts shipped in v10.27.0.)
+
+- **For You reads top to bottom:** *Your next steps* (at most three, most urgent first, each with its action —
+  review a budget, a debt or the transactions), *What changed* (the figure and its period), *Keep an eye on*
+  (lower-priority patterns and projections, marked as estimates) and *Learn about this* (a related lesson; the
+  full library stays under Learn).
+- **One item per issue.** A spending observation and a planner warning about the same thing in the same month
+  are one item with supporting evidence, not two cards saying it twice. Every item shows its period and a
+  *Calculation basis*.
+- **The reel is optional.** *Review highlights* opens it; Insights no longer starts as a slideshow, and closing
+  the reel returns focus to that button.
+- **Plainer wording, fewer claims.** "75% saved" reads "75% retained" (month to date, before bills still to
+  come). Rules no longer quote generic "healthy thresholds", lender cut-offs or investment-return promises, and
+  one income category is described as exactly that — not as a single job.
+- **Truer inputs.** Budget warnings use the allocation lines, each over its own budget period, with central FX.
+  Asset concentration uses the account-aware Net Worth values (linked assets counted once). Investment
+  withdrawals and private rows no longer count as contributions. Repeating bills come from active schedules
+  instead of summing entries that already posted. Future-dated and private entries are ignored.
+- **Empty means empty:** with no recorded income or spending, For You says *Not enough recorded activity yet* —
+  never a verdict on the household's finances.
+- **Kept out:** Pulse, Goals and Tax. Personal highlight cards no longer offer Share.
+- **Old links still work:** `/planner` and `?tab=plan` open For You. The standalone Planner page, unreachable
+  behind that redirect, is removed. Ask Vyact's Pulse answer now points to Insights instead of "the Planner".
+
+### Under the hood
+- `lib/personalInsights.ts` runs `evaluateRecommendations` and `buildInsightFeed` over ONE context (the same
+  transactions, accounts, allocations, schedules and Net Worth position) and merges them by issue + period,
+  with `relatedIssues` aliases so a budget warning absorbs its category observations.
+- `plannerRules` and `insightsFeed` carry `issue`, `period`, `basis` and `estimated` metadata; `EstimatedTag`
+  accepts a `title`.
+- Tests: 10 new `personalInsights` unit cases; browser cases INS-FC-001…003 in
+  `e2e/tests/insights-review.spec.ts`.
+
+## v10.28.0 — forms get a page of their own *(2026-09-11)*
+
+The add and edit forms that used to open as a sheet over the screen now open as their own focused,
+full-screen page. **No money, data or permission rule changes** — the fields, validation and saves are the
+same form components as before; only their container and how you reach them changed.
+
+- **Which forms.** Add/Edit Transaction, Add/Edit Split, Add/Edit Debt, Add/Edit Budget, Add/Edit Account,
+  Add/Edit Asset, and Reconcile Account. Each now has an address: `/transactions/new`,
+  `/transactions/:id/edit`, `/splits/new`, `/splits/:id/edit`, `/debts/new`, `/debts/:id/edit`,
+  `/budgets/new`, `/budgets/:id/edit`, `/accounts/new`, `/accounts/:id/edit`, `/accounts/:id/reconcile`,
+  `/networth/assets/new`, `/networth/assets/:id/edit`.
+- **Focused.** No top bar, sub-navigation, tab bar or + button — only a Close control, the form, and its
+  Save bar pinned to the bottom of the screen. Escape still closes the form, unless a sheet opened from it
+  (the delete-account guard) is showing, in which case Escape closes just that sheet.
+- **Back where you came from.** Saving or closing returns to the screen that opened the form, scrolled to
+  where you were, with focus on the button you used. A form reached from a link or after a refresh has
+  nothing behind it, so it closes to its list screen. "Save & add another" stays on the form.
+- **Reconcile** opened from an account's edit page returns to that page. "Let me find what's missing"
+  replaces the reconcile page with the filtered transactions, so Back goes to where reconcile was opened.
+- **Every entry point works as before** — the + button, the N / B / D / A shortcuts, the command palette,
+  Ask Vyact's "Open form" and a notification's "log payment" pre-fill — because the store's
+  `openAdd*` / `openEdit*` actions now open the page instead of a modal.
+- A link to Add/Edit Budget for someone who can't manage budgets goes to Budgets instead of showing a form
+  that could not save. An edit link to something that no longer exists goes to its list.
+- **Still sheets:** the recurring schedule form, household, notifications, filters and the delete-account
+  guard — they were not in this change's scope.
+
+### Under the hood
+- `lib/formRoutes.ts` owns every form path. `pages/FormPages.tsx` resolves each route's entity — read once
+  when the page opens, so a sync refresh never wipes what you typed — and App.tsx renders form routes
+  outside `<Layout>`, like onboarding. `components/ui/FormPage.tsx` replaces `HalfSheet` for these forms
+  with the same props, as a `main` landmark named by its title.
+- `modalSlice` drops the six `{entity}ModalOpen` / `editing{Entity}` / `close{Entity}Modal` slots and
+  `seedTxn`. `lib/appNavigation.ts` binds the router's navigate for store actions; a seed travels as router
+  state.
+- `components/layout/HistoryRestoration.tsx` replaces `ScrollToTop`: moving forward to a new path still
+  starts at the top, while Back restores scroll position and focus.
+- Tests: new `formRoutes` unit cases. The e2e page objects and specs that located these forms as dialogs
+  now locate the page's `main` landmark; CON-E2E-043 (focus back on the opener) and A11Y-FC-004 (tabbing
+  never leaves the form) are reworded for a page.
+- Help guide: the expense, split, cash-reconcile, investment-asset and debt screenshots
+  (`public/help/current/`, `lib/helpMedia.json`) were recaptured from the new pages by HELP-FC-001.
+
+## v10.27.2 — budgets in the order you read them *(2026-09-11)*
+
+A display change. **No budget, allocation, spend or total changes** — only the order they appear in.
+
+- **Categories inside a budget run from most to least used.** Each budget card lists its categories by how much of
+  their limit is spent, highest first. An overrun (say 140%) sits above a category at 95%; a category with spend
+  but no limit is treated as the most over. Equal percentages fall back to the larger spend, then alphabetical.
+- **The Dashboard's Budget progress panel uses the same order**, so its five rows are the five most-used categories
+  this month rather than the first five stored.
+- **Budgets run from the current month down to the oldest.** The current month's budget is first, then this
+  year's annual budget, then any budgets set up for future months (soonest first), then past budgets from last
+  month back to the oldest.
+
+Both orders come from one pure helper (`lib/budgetOrdering.ts`) with its own unit tests, so neither depends on the
+order the store happens to return.
+
+---
+
+## v10.27.1 — every fixed choice is a plain dropdown *(2026-09-11)*
+
+A follow-up to the UI pilot. **No money figure, schema or stored-row shape changes.**
+
+### Dropdowns
+
+- **Category is a select-only dropdown again**, styled exactly like Add Debt → Type: icon and full label, alphabetical,
+  type-scoped, no typing and no custom values. It replaces the searchable combobox from v10.27.0 in Add/Edit
+  transaction, recurring schedules, splits and the transaction filter (with *All categories*). A saved category that
+  is no longer offered still shows, marked *(saved category)*. Transfers and investments still have no category.
+- **Chip lists that picked one thing are now dropdowns:** recurring *Pay from / Deposit to / Invest from*, *Invest into*
+  and *Owner*; split *Paid with / Paid into*.
+- **Scattered raw selects now share the one control and are labelled:** Settings (date format, language, base currency,
+  number system, payoff strategy), onboarding currency, *Move history to* when deleting an account, and each leg of
+  *Split across accounts*.
+- Short mode/period segments, weekday multi-select and payment-mode chips on accounts are unchanged.
+- `@headlessui/react` is removed; nothing uses it any more.
+
+### Help & Guide
+
+The expense, split, recurring, debt, investment and cash-reconcile screenshots are recaptured with the new controls, and
+the expense instructions describe choosing a category from the dropdown.
+
+### Checks
+
+- Browser specs updated for the dropdowns, plus **CAT-FC-005** for the Settings selects; the category checks compare
+  the control's computed style with Add Debt → Type on mobile and desktop, in both themes.
+- The v10.27.0 fixes are retained: payment mode *Not specified* stays selected, and a local-only investment buy saves
+  and credits the asset.
+
+---
+
+## v10.27.0 — one consistent way to pick, choose and find: the UI standardisation pilot *(2026-09-11)*
+
+A presentation release. **No money figure, schema or stored-row shape changes**: transactions, accounts, assets
+and payment modes are written exactly as in v10.26.0, and every figure still comes from the same calculators.
+
+### Forms
+
+- **One category picker everywhere.** Add/edit transaction, recurring schedules, splits and the transactions
+  filter share a single searchable combobox with icon and full label, type-scoped and alphabetical (`CategoryPicker`,
+  built on `@headlessui/react`). Transfers and investments show none. Its options stay inside the dialog, and the
+  first Escape closes the list, the second the dialog.
+- **Choices you can read at a glance.** Transaction type, investment direction, part-payment choice and account
+  type are segmented controls; accounts, investments, loans, members and payment mode are labelled dropdowns.
+- **Payment mode can be left "Not specified".** A new transaction still preselects the account's first mode, but
+  choosing "Not specified" now stays selected — it used to snap back to the first mode.
+- A lighter, more consistent type and spacing scale (32/48px sections) on Dashboard, Transactions, Accounts and the
+  two main forms (`.ui-pilot`); other screens keep their current styling for now.
+
+### Fixed
+
+- **Local-only households could not save an investment buy** (v10.26.0 regression). Without a cloud connection
+  the transaction form lists legacy account values that do not resolve to an account id, and the store refused the
+  buy. It now saves, folding through the paying account exactly as transfers already do.
+- **Such a buy would have debited the account without raising the investment.** The asset value counted only buys
+  that name an account id. The rule is now: a withdrawal names only a receiving account; anything else is a buy — so
+  the account and the asset always move by the same amount and net worth does not change. Pinned by a store test
+  and a server-port parity case.
+
+### Screens
+
+- **Accounts is always under Plan**, for every household template, local or cloud — no longer tied to the retired
+  Money Map flag.
+- **Cash in Hand has its own summary** on Accounts, with direct *Reconcile* ("Cash counted") and *Ledger*. It still
+  counts in Spendable now.
+- **Dashboard** hides the Pulse score and the debt summary by default (`FEATURES.dashboard`). Net Worth still
+  subtracts every liability.
+- **Reports** opens with the household position (net worth, assets, liabilities, liquid assets) and this month's
+  income, spending and tracked minimum debt payments, all from the canonical projections. Corrections: the category
+  breakdown now uses reportable spending only, income is attributed to the account it landed in, the needs/wants
+  split shows unclassified spending instead of hiding it, and the verdict labels are gone.
+- **Ask Vyact** separates examples from actions: *Use example* fills the composer, *Open form* opens the editor,
+  and only *Send* asks the model.
+- **Help & Guide** is rewritten around tasks — accounts, transactions, cash reconciliation, transfers, splits,
+  budgets, recurring approval, debt payments and investment assets — with search across every answer and
+  screenshots of the current screens.
+
+### Checks
+
+- New unit coverage: reports model, Ask examples, help content, navigation visibility, category options and the
+  Dashboard's flagged sections.
+- New browser specs: category picker (CAT-FC-001…004), help guide and finance guidance.
+- Release validation saved real transactions through the new controls in a browser: expenses with a category,
+  account and payment mode (including "Not specified"), a transfer, and an investment buy and withdrawal. The
+  stored rows matched the money model, and the asset showed its folded value in Net Worth.
+
+---
+
+## v10.26.0 — investments live in Net Worth: an investment is an asset, not an account *(2026-09-11)*
+
+Accounts redesign, release 4 of 4 — the investment half of requirement 7. Loans already live in Debts; with this
+release investments live in Net Worth, and the Accounts screen holds only what you pay from.
+
+### The model — a deliberate change, with no number moving
+
+An investment used to be a transfer between two ACCOUNTS, one of them a hidden `investment` account. It now moves
+money between an **account** and an **investment asset** in Net Worth:
+
+- **Buy** — the paying account goes down, the asset goes up, by the same amount.
+- **Withdrawal** — the asset goes down, the receiving account goes up.
+- Still **no spend, no income, no category**, and **net worth does not move**.
+
+An investment asset folds exactly like an account (your choice, *mirror accounts*): live value = its opening value
++ every buy − every withdrawal + a **valuation offset**. **Update value** records a dated value update in that
+offset — never an overwrite, never a transaction — so editing or deleting a past buy always moves the value, and
+the stated value history is kept.
+
+### Your data
+
+Production held one investment account, **Delhi Investment Serivices**, worth **₹48,780**. It is now an investment
+asset carrying the same opening value (₹0), value update (₹46,870) and log entry; its three buys (Cash, HDFC Bank,
+Federal Bank) and one withdrawal (to HDFC Bank) point at the asset; the account is tombstoned. The migration
+recomputes the converted value and **every other account's balance** inside the same transaction and rolls back on
+any difference. Validated against production in a rolled-back run: ₹48,780 before and after, household total
+₹64,12,911.90 before and after.
+
+### In the app
+
+- **Add transaction · Investment** picks from your investments in Net Worth; *Took money out* sends it back to an
+  account. With none yet, *Add an investment* opens the asset form.
+- **Net Worth · edit an investment** shows its live value. Changing it records a value update; details save without
+  touching the opening value. Currency and type lock once money has moved through it.
+- **Recurring · investment** schedules put money into an investment asset.
+- **WhatsApp** — "invested 5000 in <fund>" lands in that asset (or your only one); a missing fund gets a clear reply.
+
+### Safety
+
+- `ck_txn_accounts_by_type` now requires an asset and exactly one account on every investment, and no asset on any
+  other type. `ck_account_no_live_investment` refuses a live investment account.
+- An investment asset with live buys cannot be deleted (database trigger and store guard) — its value would leave net
+  worth while the paying accounts stayed debited.
+- Invariants rewritten deliberately: **INV-2** (buy: account down, asset up, net worth unchanged), **INV-2b**
+  (withdrawal), **INV-2c** (legacy rows still fold), **INV-3c** (value update moves the offset only), **INV-7c**
+  (live asset fold, the production ₹48,780 figure). The server money port gains `computeAssetValue`, pinned by parity
+  tests across every rate set and base currency. Store workflow tests cover buy, withdrawal, refusal and value update.
+- `CACHE_EPOCH` bumped: devices drop caches that still hold the converted account and its two-account rows, rather
+  than re-uploading them.
+- Archive-first: the converted account, its transactions and any schedules are copied to `maintenance.r4_*` before
+  anything changes.
+
+_Migration: `20260911120000_r4_investments_to_assets.sql`._
+
+---
+
+## v10.25.0 — how you paid: a payment mode on every transaction *(2026-09-11)*
+
+Accounts redesign, release 3 of 4. The rest of requirement 2: each account already lists the payment modes
+it is used with (v10.24.0); a transaction now records which one it used.
+
+### In the app
+
+- **Add / edit transaction:** after you pick the account, a *via* row offers **only that account's modes**
+  — UPI, debit card, net banking… on a bank; swipe, online, UPI on card… on a card; Cash on Cash in Hand.
+  A new transaction preselects the account's first mode. An edit never gains a mode you did not choose;
+  picking a different account clears a mode that account does not use.
+- **Transaction list:** the mode rides in the sub-line beside the account ("Groceries · Today · HDFC · UPI").
+- **Investments carry no mode.**
+
+### Over WhatsApp
+
+The deterministic parser reads the mode from the message — GPay / PhonePe / Paytm / BHIM → UPI, NEFT / IMPS /
+RTGS → net banking, "debit card", "upi on card", cheque, auto-debit / NACH, online, swipe / tap. A message
+that names none carries none; nothing is guessed. The confirmation says it: *"✅ Logged 450 INR · Food &
+dining from HDFC via UPI."* `whatsapp_log_transaction` gains `p_payment_mode` and stores it **only when the
+paying account lists that mode**; otherwise the mode is dropped and the transaction still logs.
+
+### Safety
+
+- The mode is **descriptive**: no balance, spend, income, category or net-worth figure reads it. Store tests
+  assert a spend posts the same balance with or without a mode.
+- `transactions.payment_mode` is nullable with a CHECK (`ck_txn_payment_mode`): one of the ten modes, and
+  never on an investment. Legacy rows, imports and recurring posts stay valid.
+- A mode the account does not use is dropped, never an error, so a recurring schedule keeps posting after a
+  mode is removed from its account.
+- The mode set lives in three places, like categories; new parity tests fail if the WhatsApp or agent copy
+  drifts from the app's.
+- Written only when the caller mentions it, so an edit that does not touch the mode cannot erase it.
+
+_Migration: `20260910180000_r3_transaction_payment_mode.sql`._
+
+---
+
+## v10.24.0 — the Accounts redesign: Bank | Credit Card, reconcile everywhere, and a delete the database guards *(2026-09-10)*
+
+Accounts redesign, release 2 of 4. Requirements 2, 3, 4, 6 and the Investment/Loan half of 7.
+
+### The screen
+
+Accounts now holds the accounts a transaction can be paid from, in two groups — **Bank** (Cash in Hand
+included) and **Credit Card** — each with a count and subtotal, under a summary that leads with
+**Spendable now** (what the Bank group holds minus what the cards owe). Loans and investments are linked
+out to Debts and Net Worth. A balance not checked against a statement for more than 30 days says
+*"not reconciled in N days"* in words, replacing the dashed `est` badge. Desktop gains a *Needs your
+attention* rail and a household-currency panel. The screen is no longer behind the `money_map` flag.
+
+### The form — type first
+
+Two tabs. **Bank:** name, current balance, payment modes. **Credit card:** name, total credit limit,
+available limit now, billing-cycle day, payment-due day, payment modes. **Outstanding and utilisation
+are calculated live and never asked for.** Only the limit and the cycle days are stored: the available
+limit seeds the opening balance once, and from then on every card figure is derived from the limit and
+the ledger (`lib/accountsView.ts`), so none of them can drift. On edit the balance is shown as the ledger
+computes it, with Reconcile beside it — never typed over.
+
+### Reconcile, on every account
+
+One sheet: a bank against its statement **balance**, a card against its statement **outstanding**. On
+drift, choose *Post an adjustment* or *Let me find the missing spend* (opens that account's transactions,
+narrowed to the card's statement window). **A reconcile still never writes a transaction** — the
+adjustment is the account's offset plus a dated log entry, shown in its ledger and never inside a spend
+total. Confirming a balance that already matches now stamps `last_reconciled_at`, so the stale state
+clears without a fabricated entry.
+
+### Delete — counted first, decided by the database
+
+- **Nothing attached:** a short confirm and the account is gone.
+- **History attached:** permanent delete is blocked. **Archive** is preselected and recommended;
+  **Move, then delete** re-tags every transaction and schedule to another account of the *same type*
+  and folds the source's opening balance and offset into it — one database transaction, in which no
+  balance, category total or net worth moves. An unsettled split blocks the move.
+- Cash in Hand is never deleted or moved. Owners and admins only.
+
+`account_dependencies`, `delete_account` and `move_account_and_delete` are SECURITY DEFINER with `anon`
+revoked. Local-only mode applies the same rules against the store.
+
+### Fixed on the way
+
+- **Two ★ default accounts.** Local-only mode created Cash in Hand as the default even when the household
+  already had one, and marking a new default never cleared the old one outside the database trigger — so
+  the cache showed two until the next refresh. The store now keeps exactly one, matching
+  `ensure_cash_account` and `accounts_single_default`.
+- **A re-saved account named columns the database had not returned.** The read mapper defaulted the
+  new card columns to `null`/`[]`, so reconcile's `{...account, ...patch}` re-save sent them to a schema
+  without them and PostgREST refused (`PGRST204`). Caught by Lane B against the un-migrated test project;
+  production had the same window between a Vercel deploy and `db push`. Absent columns now stay absent.
+- **Account rows invisible on arrival.** Rows mounting after hydration inherited an entrance animation
+  that had already settled and stayed at opacity 0. Each row now animates itself in.
+
+### Safety
+
+Validated against production data in a rolled-back transaction before release: deleting an account with
+20 transactions refused (`account_in_use`); deleting Cash refused; a household member refused; an empty
+account deleted; a bank→card move refused; a real card→card move re-tagged 2 transactions with the
+household total balance (₹12,12,911.90) and every category total identical before and after; card
+fields on a bank account rejected by constraint; `anon` denied on all three functions. Existing accounts
+get default payment modes (bank: UPI, debit card, net banking · card: swipe, online · cash: cash).
+New unit and store-workflow tests pin the README's four invariants — reconcile moves no spend or income;
+a move leaves every category total and the household total unchanged; deleting an unreferenced account
+changes no number; archiving alters no report.
+
+_Migration: `20260910150000_r2_accounts_card_metadata_delete_guard.sql`._
+
+---
+
+## v10.23.0 — one Cash in Hand per household, and accounts inherit the household currency *(2026-09-10)*
+
+Accounts redesign, release 1 of 4: the data rules the redesigned screens will stand on.
+
+### Duplicate Cash in Hand — the root cause, and the fix
+
+Every cash account encodes to the same literal `'cash'` ledger key, so a second one double-counts
+every cash transaction into both balances and into Net Worth. The only guard lived in the client:
+`ensureDefaultCashAccount` asked "does the **local store** hold a cash account?". On a cold start or a
+household switch it could run before the store had hydrated, get "no", and write a brand-new
+"Cash in Hand" — in **USD**, because `profile.baseCurrency` is `'USD'` until the profile loads.
+Production held exactly that: two empty USD "Cash in Hand" rows beside an INR household's real "Cash".
+
+Identity now lives in the database, as budget identity already does:
+
+- `uq_account_cash_per_household` — exactly one live cash account per household, archived included.
+- `ensure_cash_account(household)` — create-or-return, idempotent on that index. Viewers get the
+  existing row but never create one; `anon` cannot call it.
+- **In cloud mode the store never inserts a cash account** — it asks the RPC, and ignores the answer if
+  the household changed while the call was in flight. Local-only mode keeps its local check, which is
+  sound there because the store is the database.
+- Cash in Hand can be renamed, but no longer deleted or archived (an archived one would still hold the
+  slot while vanishing from every picker).
+
+The two duplicates were archived to `maintenance.accounts_archive_20260910` and tombstoned. Both had
+zero transactions, schedules and open splits; the migration refuses to run if a duplicate is
+referenced, because that needs a merge, not a delete.
+
+### Currency comes from the household
+
+Currency is a household setting, and a per-account currency could only ever disagree with it. The
+account form has no currency field any more; a trigger stamps `households.base_currency` on every
+account write, and changing the household currency relabels every account. Three accounts carried a
+foreign currency label — none held money, so nothing changed meaning; the migration refuses to relabel
+an account that does. (`computeAccountBalance` never read `account.currency`.)
+
+"Default for USD" becomes one **default account per household**; marking a new default clears the old
+one in the same statement, so the new unique index cannot be tripped by an ordinary edit.
+
+### Account form
+
+Only **Bank** and **Credit card** can be created. Loan accounts are system-only EMI legs; investments
+move to Net Worth in a later release; Cash in Hand is the system account above. An existing account of
+those kinds can still be renamed, with its kind shown fixed. The full redesigned form ships next.
+
+### Safety
+
+- Validated against production in a rolled-back transaction before release: total account money
+  identical before and after (₹1,01,536.68); one cash account left in the affected household; the RPC
+  returned the existing account; a second cash insert refused (`23505`); a USD insert stamped INR; a new
+  default cleared the old; `anon` denied.
+- Pre-v10.23 clients still in browsers stay safe: their cash insert now fails on the index (the call
+  was already best-effort), and any currency they send is overwritten by the trigger.
+- `CACHE_EPOCH` → `v10.23.0`, so devices drop caches still holding the duplicate rows instead of
+  re-uploading them.
+
+_Migration: `20260910120000_r1_accounts_one_cash_household_currency.sql`._
+
+---
+
+## v10.22.3 — the e2e suite is type-checked, and two page-object bugs come out of hiding *(2026-09-10)*
+
+Lane A has been red for months and the failures read as stale selectors. They were not.
+**`tsconfig.json` excludes `e2e` (and the unit tests), so nothing had ever type-checked the Playwright
+suite** — every piece of drift surfaced at runtime as `Test timeout of 30000ms exceeded`, naming the
+wrong cause. Switching it on produced **68 type errors**. This release takes them to zero and wires
+`typecheck:e2e` into the verification gate, so the specs cannot drift from their page objects again
+without the build saying so.
+
+### Two page-object bugs were doing most of the damage
+
+Both sit on the path of nearly every transaction test, which is why a handful of lines accounted for
+so many failures.
+
+**`setAmount` clicked a keypad that does not exist.** It clicked `⌫` to clear, then one button per
+digit. The dialog's real buttons are Close, the four type chips, the category chips, Today/Yesterday,
+Pick a time, the account chips, the member chips, Save and Save & add another. Amount is a plain
+`input type="text" inputmode="decimal"`. Every amount-setting test burned its full timeout and then
+blamed a "Backspace" button.
+
+**`submitButton` matched `/^(Save|Update)$/`.** The real label is ``Save ${form.type}`` — "Save
+expense" — never a bare "Save", so `submit()` timed out on every create and edit.
+
+**`amountValue()` failed silently**, reading `textContent` from an `<input>`: it returned `""`
+whatever the field held, so every caller comparing against it was asserting nothing.
+
+### Four tests retired — two of them were INVERTED
+
+**TXN-FC-003** asserted a transfer creates TWO rows (a sorted `[expense, income]` pair), each with
+`category === 'transfer'`, plus a `__tg:` note tag. Every one of those is a money-model violation
+since v9: a transfer is ONE spend/income-neutral row with both account FKs set and no category, and
+the `__tg` paired-row encoding was retired. **Its failure was the correct behaviour** — had it passed,
+INV-1 would be broken. **CON-E2E-012** likewise passed `category: 'investment_in'`, an id that does
+not exist: `CATEGORIES_BY_TYPE` has `investment: []` and INV-9 asserts that pool is empty.
+
+TXN-FC-010/011/012 drove the track picker, retired in v9 (D3). A test for a deleted feature is not a
+coverage gap. All four IDs are recorded in `docs/TEST_SCENARIOS.md` §5.
+
+### One real accessibility defect fixed
+
+The Settings exchange-rate inputs had **no accessible name at all** — the currency lived only in an
+adjacent `<span>`, so a screen reader announced twenty-odd identical "edit text" fields with nothing
+to tell them apart. They now carry an `aria-label` naming the currency, and the span is decorative.
+That also replaced a test line calling `page.getByDisplayValue` — a Testing Library API Playwright
+does not have, so it could never have run.
+
+A11Y-FC-004's tab order was re-derived by MEASURING the running form rather than assuming it, and its
+focus-trap assertion was proved able to fail before being kept.
+
+### Lane A, measured
+
+| | Before | After |
+|---|---:|---:|
+| Failed | 62 | **53** |
+| Passed | 27 | **32** |
+| Wall clock | 26.4 min | **4.2 min** |
+
+The speedup matters more than the counts: failures are now ~5s assertion errors instead of 30s
+timeouts, so the lane is usable for iteration. The remaining 53 are being worked triage-first — the
+two inverted tests above are why, and why making the lane green quickly would have been the wrong
+goal.
+
+_No migration. One `aria-label` on an existing input; everything else is test tooling._
+
+---
+
+## v10.22.2 — ten happy-path suites, the three defects they exposed, and two writers deleted *(2026-09-10)*
+
+Two streams land together: a focused happy-path test build across ten areas, and the fixes that build
+exposed. **937 deterministic cases pass, zero failed or skipped** — but read *What the number means*
+below before quoting it, because 585 of them cover code no user can reach yet.
+
+### Three defects the new tests exposed
+
+**Approval-required recurring schedules were advanced without ever being approved.** The engine
+skipped generation for a `!autoConfirm` schedule and then *still* fell through to `advanceSchedule`,
+so a manual bill rolled silently past its due date — nothing logged, and no occurrence left for the
+user to approve — every time the engine ran. It now leaves such a schedule due, and the new
+`approveRecurring(id, occurrenceDate)` store command materialises the occurrence and advances the
+schedule when the user acts on the notification. A strong candidate for the long-standing "my
+recurring schedules disappear" reports.
+
+**A multi-sender WhatsApp batch attributed every message to the first contact.** `wa_id` was read
+once from `value.contacts[0]` *outside* the message loop, so a batch carrying messages from two
+senders logged both against the first sender's identity — one person's transaction written into
+another household's ledger. Each message now resolves its own `message.from`.
+
+**Sign-out left the previous user's data in memory.** It cleared transactions, budgets and accounts
+but not `budgetAllocations`, `recurringSchedules`, `notifications` or either `sharedSplits`
+collection — a direct violation of the binding rule that a signed-out device must not hold the last
+user's ledger. They now clear together.
+
+Also: Settings read/unlink still wrote the frozen legacy `profiles` columns and could self-assert
+`phone_verified_at`. They now call authenticated `whatsapp-verify-otp` `status`/`unlink` actions
+against the server-owned `whatsapp_identities` table (RLS on, zero policies — service-role only).
+Admin route permissions moved to one `canAccessPage` rule imported by both the app and its tests,
+instead of the test restating the rule it was meant to check.
+
+### The two resurrection writers are DELETED
+
+`backfillSchedulesFromTransactions` (v7.3) and `rekeyLegacyRecurringIds` (v10.20.5) are gone from
+`react/src/lib/recurring.ts`, with `isStorableId`, `scheduleSignature`, `BackfillResult` and
+`RekeyResult`. The backfill recreated a schedule from any transaction carrying a legacy `recurring`
+field and could not distinguish a deliberate deletion from a legacy gap — deleting a recurring
+schedule and reloading brought it back, for roughly two years. It was unwired in v10.20.7 and its
+tests were removed in this build, but it stayed **exported**: a resurrection writer with no callers
+and no test holding it to its contract, which is worse than either keeping it tested or removing it.
+Both migrations have long since run on every live device. A delete is final.
+
+The `!autoConfirm` guard left a dead `if (s.autoConfirm)` branch behind it; removed, with the
+reasoning recorded at the guard.
+
+### The inventory replaces the unit half of the reconciler
+
+`docs/TEST_SCENARIOS.md` and `docs/UNIT_TEST_INVENTORY.json` are now GENERATED from passing Vitest
+assertion results (`npm run test:ci`), not regex-matched IDs. This is stricter than the check it
+replaces: it rejects failed, skipped, TODO, empty and uncollected cases, requires every test file to
+be classified in `scripts/test-inventory-config.mjs`, and requires every classified file to have
+actually executed. The consumer runner also widened from `*.test.ts` to `*.test.{ts,tsx}` — component
+tests were being silently skipped. E2E IDs stay on the existing reconciler.
+
+**Retired browser IDs now survive regeneration.** The first version of the §5 rewrite dropped the
+retired `CON-E2E-020`/`021` entries, silently freeing those IDs for reuse — the one thing that
+section exists to prevent. They are carried forward, and the §4 roster capture is scoped to §4 so a
+retired entry cannot be scooped back into the live roster.
+
+**One tooling bug fixed on the way in.** The inventory drift check compared the generated JSON
+byte-for-byte with no line-ending normalisation, so on any checkout with `core.autocrlf=true` — every
+Windows clone — git rewrites the committed file to CRLF and the gate fails against a file it would
+regenerate identically. CI is Linux, so it never fired there; it only ever broke local runs, which is
+the worst place for a gate to cry wolf. Both sides are normalised now.
+
+### What the number means
+
+937 passing cases is not 937 shipped features, and the inventory says so per row:
+
+| Availability | Cases | Meaning |
+|---|---:|---|
+| `available` | 228 | exposed by current source |
+| `conditional` | 124 | needs cloud, auth, config or channel activation |
+| `infrastructure` | 585 | implemented and tested, **not connected to any user entrypoint** |
+
+The 585 are the learned-ingestion agent modules (227) and the server money-port parity suite (358) —
+real code under real test, neither reachable by a user today. Handler tests stub DB and provider
+transport; the PGlite fixture is a focused schema, not production RLS. None of this is release
+approval, and `docs/UNIT_TEST_CI_HANDOFF.md` records the live gates that remain.
+
+### Deployment order
+
+Deploy `whatsapp-verify-otp` and `whatsapp-webhook` **before** promoting the consumer that calls the
+new status/unlink actions. Both are in `deploy.yml`, but the function job and the Vercel build race
+on push; the window's failure mode is a soft "could not load WhatsApp link status" toast, not data
+loss.
+
+_No migration. `whatsapp_identities` already exists in production._
+
+---
+
+## v10.22.1 — a budget overrun finally shows its size *(2026-09-09)*
+
+**An overrun no longer reads as exactly 100%.** `pct()` in `Budgets.tsx` clamped at 100 and fed BOTH
+the displayed percentage and the bar width, so ₹350 spent against a ₹300 budget rendered **"100%"** —
+indistinguishable from spending exactly ₹300. The magnitude of an overrun, which is the one thing a
+budget card exists to tell you, was carried only by a terra tint. The clamp now applies to the bar
+alone (`barPct`, where a width past 100% would overflow its trough); the number tells the truth.
+Found while rewriting the budgets e2e specs, which now assert the real 117%.
+
+**The money invariants are documented, not renumbered.** `moneyModel.invariants` has been quoted as
+"INV-1..9" throughout, which made the gaps at 4 and 8 look like missing coverage. They are a
+labelling drift — the file runs off-by-one from the spec past INV-4 — and its header now carries the
+full mapping, deliberately without renumbering, because the existing labels are cited by id in the
+CHANGELOG and in source comments. The one genuine gap is spec **INV-7 (atomicity)**: force-fail a leg
+of an EMI or transfer and the whole event must roll back. Nothing asserts that; it remains the open
+"atomic reversal" blocker. `CLAUDE.md` and `CLAUDE-1.md` corrected to stop overstating the gate as
+nine covered invariants.
+
+_No migration. No schema change. One display fix and documentation._
+
+---
+
+## v10.22.0 — `anon` can no longer reach a single SECURITY DEFINER function *(2026-09-09)*
+
+P4 of the technical-debt register. Two database hardening items from the Supabase security advisor,
+both long-standing.
+
+### 19 privileged functions were callable without signing in
+
+A SECURITY DEFINER function runs as its **owner** and bypasses RLS by design. Postgres grants
+EXECUTE on a new function to **PUBLIC** by default, and `anon` inherits PUBLIC — so an explicit
+`grant … to authenticated` never took the default away. All nineteen were reachable from an
+unauthenticated client through `/rest/v1/rpc/<name>`, including `erase_household_data`,
+`transfer_ownership`, `request_account_deletion` and the four `admin_*` reporting functions.
+
+**This was not a live breach** — every one fails internally on a null `auth.uid()`. But the names
+alone are enumerable from a signed-out client, and defence that depends on each function
+remembering to check is not defence. It is the same class as the revokes already applied in
+20260430092130 and 20260816120000; those set the precedent, and these nineteen were simply missed.
+
+Verified before writing the migration: every one requires a signed-in user semantically. The only
+plausible pre-auth caller was the invite flow, and `AcceptInvite.tsx` checks `getSession()` first
+and stashes the token to prompt sign-in — so `anon` never calls `accept_invitation_link`.
+
+Dry-run against production, then rolled back: **anon-executable definer functions 19 → 0**, with
+`authenticated` retaining all 33 and losing nothing.
+
+### A caller could redirect name resolution inside them
+
+An unqualified name inside a SECURITY DEFINER function resolves against the **caller's**
+`search_path`, so a caller who puts a same-named table or operator earlier on the path can change
+what the function does while it runs as the owner. Six app functions had no pinned path
+(`accept_invitation`, `leave_household`, `transfer_ownership`, and the three `updated_at`
+triggers). All six are now pinned to `public, pg_temp`; **zero** definer functions remain unpinned.
+
+`pg_trgm` is deliberately left in `public`. Moving an extension is riskier than it looks: existing
+`gin_trgm_ops` indexes resolve their operator class through the search path, so that is its own
+change with its own verification, not a line in this one.
+
+### P3 · one real cause found in Lane A, and an honest scope correction
+
+The 68 Lane A failures are not one problem. Clustering them showed 37 with no shared selector at
+all, so "fix the stale selectors" was the wrong model.
+
+One concrete cause **is** now identified. `budgets.spec.ts` fails at `goto()`, not on any
+assertion: its create block seeds `transactions: []`, App.tsx then treats the household as fresh
+(`hasExistingData` is false), and **/budgets redirects to /onboarding**. The spec sits in
+`waitForURL("**/budgets")` until the 30s timeout, which reads as a stale selector and hides the
+real cause. Diagnosed by dumping `page.url()`, which was `/onboarding`.
+
+A blanket fixture fix — marking onboarding complete for every seeded household — was tried and
+**reverted**: it took the suite from 22 passing to 15, breaking specs that were green. Only the
+suites seeding an empty ledger are redirected, so the fix belongs in those specs, not the shared
+fixture. Recorded here so the next attempt starts from the finding rather than the symptom.
+
+Also fixed: `BudgetsPage.card()` matched `div.rounded-xl`, a class the Aurora redesign removed,
+so it selected nothing. It keys on `[data-testid="budget-card"]` now — the same precedent as
+`txn-row` and `schedule-row`. Necessary but not sufficient for those six tests.
+
+### Still open, and not fixable from SQL
+
+**Leaked-password protection is disabled** in Supabase Auth. It checks new passwords against
+HaveIBeenPwned and is a dashboard setting, not a migration — Authentication → Policies.
+
+---
+
+## v10.21.1 — The budget editor keeps what you type, and offers every category *(2026-09-09)*
+
+Defects **1** and **3** from the original list, plus a database correction that was quietly
+undoing part of v10.21.0.
+
+### "It reset the already filled info"
+
+The hydration effect listed the store's `budgetAllocations` array in its dependency array. That
+array takes a **new identity on every sync poll**, so the effect re-ran while you were typing and
+called `setForm()` — which for a new budget means `setForm(blank())`. Everything entered vanished,
+with no interaction from you at all, at whatever moment the next poll happened to land.
+
+Hydration now happens when the sheet **opens**, reading the allocations imperatively so the form is
+still populated correctly without being hostage to store churn.
+
+**CON-E2E-051** reproduces this at its cause: it types into the form, calls the same `refresh()`
+a sync poll calls, and asserts the values survive. Run against the old dependency array, the typed
+`450` comes back as `""`.
+
+### Every category, without the "Add category" dance
+
+Each allocation used to need a **＋ Add category** tap and a dropdown selection, so the effort
+scaled with how thorough you were being — which is exactly why budgets ended up covering a handful
+of categories. All 18 expense categories are now listed with an amount field; leave one blank and
+it simply isn't allocated. Filled rows are visually distinct from empty ones.
+
+That also makes a **duplicate category unrepresentable**. The old picker fell back to
+`other_expense` once every category was used, and two rows sharing a category violate
+`uq_balloc_cat` — the database rejected the save with 23505 *after* you had done the work.
+
+### The database was overriding the Travel reclassification
+
+`category_classifications` is an admin-editable table that **overrides** `NEEDS_WANTS_MAP` at
+runtime. Its `travel` row still said **want**, written in May when Travel meant holidays — so the
+"Travel is a need" change shipped in v10.21.0 was not actually in effect in production. Corrected,
+and eight pre-v9 ids that can no longer match any category (`food`, `rent`, `other_exp`,
+`debt_*`, `investment_*`) were removed. Backed up first.
+
+> Worth knowing for the future: a code-level default can be silently overridden by a row in that
+> table, and nothing in the app says so.
+
+### Also in this release
+
+The audit author's corrective checkpoint — the loan payment contract, dialog and outbox
+safeguards, and cache boundary extensions. See `docs/CORRECTIVE_REVIEW_2026-09-09.md` for their
+deployment notes; the loan RPC change in particular requires the migration to be applied before
+the consumer, because the new client depends on authoritative rows in the response.
+
+---
+
+## v10.21.0 — Transport merges into Travel, and five categories you asked for *(2026-09-09)*
+
+### Travel absorbed Transport
+
+They were indistinguishable in practice: a taxi to the airport and the flight it fed were filed
+apart for no reason anyone could articulate. One category now covers getting from A to B, and it
+carries a **route** icon — neither a car nor a plane described the whole of it.
+
+The holiday half of the old Travel became its own category, which is what people were reaching for
+when they picked it. That also changes what Travel *means*, so its needs/wants classification moved
+with it: **Travel is now a need** (commuting is not optional) and **Holiday & Outstay is the want**.
+
+### Five new categories
+
+Holiday & Outstay · Gifts & Donations · Electronics & Decor · Personal Care · Repairs & Maintenance.
+
+Each carries its own icon and label — the suite now fails if any two categories share a glyph,
+because a duplicated icon is how Transport and Travel became indistinguishable in the first place.
+
+### The data migration merges rather than renames
+
+`budget_allocations` has a unique index on `(budget_id, category)`. A budget holding **both** a
+transport and a travel allocation therefore cannot simply have transport renamed — it collides, the
+migration aborts, and since v10.20.5 that blocks the entire release.
+
+Checked against production before writing the migration: exactly one budget was affected, holding
+transport 10,000 and travel 200. Colliding pairs are **summed** into the surviving travel
+allocation and the transport row is soft-deleted — the only option that keeps a budget's
+allocations reconciling against its container total. Dry-run against production (executed, then
+rolled back): 0 transport rows left, that allocation merged to **10,200**, and 0 duplicate
+`(budget, category)` pairs.
+
+Every table storing a category gains a nullable `category_prev` column recording what the row used
+to be, so the reclassification is auditable and reversible with one UPDATE per table.
+
+**No money moved.** The golden snapshot changed in exactly two lines — the fixture's category id and
+its key in `spendByCategory` — with the amount untouched at 150.
+
+### Three copies of the category set, now guarded
+
+The WhatsApp parser and the agent each hold their own allowlist, because they are Deno modules and
+cannot import the client constants. Drift there is silent: a category the app offers is rejected as
+unknown and the expense lands in "other". **CON-UNIT-161/162** now fail if any of the three sets
+disagree — verified by removing a single id and watching the guard catch it.
+
+---
+
+## v10.20.8 — Audit stabilisation, honest cache invalidation, and a build that loads the right config *(2026-09-09)*
+
+Lands the 2026-09-07 engineering audit (money truth, durable sync, security hardening) together
+with three corrections found while reviewing it.
+
+### ⚠️ Your Pulse Score will jump, and that is intended
+
+Pulse's **budget** component changed meaning. It used to scale with utilisation, so a household
+sitting comfortably inside its budget still scored a fraction of the marks. It now reads
+**allocation-derived** budget lines and scores **full marks at or under 100%**, degrading only on
+overspend.
+
+In the golden fixture that moved the component from **25 to 100**. If your Pulse rises sharply
+after this release, that is this change and not a data problem. The money model itself is
+untouched — no transaction, balance or total moved.
+
+### The build was loading the wrong config
+
+`react/vite.config.js` was a committed TypeScript **compile artifact**. Vite resolves
+`vite.config.js` *before* `vite.config.ts`, so it — not the maintained TypeScript — was the file
+the build actually loaded. Proved by replacing it with a `throw`: the build failed. Any future
+edit to `vite.config.ts`, including the audit's service-worker security fix, would have been
+silently ignored.
+
+Deleting it was not enough. `tsconfig.node.json` sets `composite: true` (TypeScript refuses
+`noEmit` on a composite project) with no `outDir`, so `tsc -b` wrote the output next to its input.
+Emit now lands in `node_modules/.tmp`. The artifact also carried the **only two ESLint errors** in
+the consumer app.
+
+### Cache invalidation now clears the cache that actually exists
+
+v10.20.7 swept **localStorage**. The entity cache lives in **IndexedDB** — `kvStore` uses IDB as
+its primary backend and deletes the localStorage copy after a successful write — so in a browser
+the purge cleared nothing and the privacy guarantee was not delivered.
+
+Its tests passed because vitest runs in `node` with a localStorage polyfill and no IndexedDB: they
+exercised the fallback path and reported a guarantee the code did not provide. **That is the more
+serious half of the defect.** The suite now imports `fake-indexeddb/auto` and runs the browser path;
+reverting the fix fails six of them.
+
+Also fixed: the purge is **awaited before hydration** (it was fire-and-forget, so `init()` raced
+it), and a **cache generation** counter stops a cloud read that was already in flight from writing
+the previous session's rows back into the cache that was just cleared.
+
+`CACHE_EPOCH` → `v10.20.8`, because devices still hold the cache v10.20.7 failed to clear. Every
+device purges once at next sign-in.
+
+### Recent transactions are chronological again, and the dashboard shows this month
+
+Two display bugs with one root cause — code that leaned on **incidental array order**, exposed the
+moment the cache stopped supplying its old order:
+
+- `transactionSortValue` fell back to `created_at` ahead of the transaction date, so rows sorted by
+  *when they were written*. Three Salary rows written in one catch-up batch outranked a transaction
+  dated a month later — July's salary above September's rent. `created_at` is now only a tie-break
+  within the same day.
+- The dashboard flattened **every budget the household had ever had** and took the first five, so
+  the month on screen was decided by array position — August's budget in September. It now filters
+  to the current period.
+
+### Test catalogue back in lock-step
+
+The reconciler had been red since before v10.19.0 and had drifted to 54 problems. It is now
+**0 — 184 scenarios in code, 184 in the doc.** Three specs had been sharing IDs with other specs
+(so a result could not be attributed to a scenario), and `storage.test.ts` carried its IDs on
+`describe()` blocks where the gate does not look. A trap worth knowing: §6 of the catalogue sits
+*after* "## 5. Retired IDs", and the gate harvests every ID-shaped token after that heading as
+retired — so an ID mentioned there silently un-registers its own §4 row.
+
+---
+
+## v10.20.7 — The reset: recurring cleared, and the local cache finally expires *(2026-09-08)*
+
+A deliberate reset rather than another patch. Recurring schedules kept coming back because the
+device, not the server, was the source of truth — and nothing ever invalidated the device.
+
+### The local cache never expired
+
+The local store is a **cache** of cloud state, and until now nothing dropped it. Two consequences,
+both live in production:
+
+| | |
+|---|---|
+| **Privacy** | Signing in as a second user on a shared device left the first user's households, accounts and transactions in `localStorage`. The adapter answers from cache before the network replies, so the new user could be shown the previous user's data. |
+| **Ghost rows** | Rows whose cloud write had FAILED lived on locally and were re-uploaded by the next sync. A deleted schedule came back. `recurring_schedules` held **zero** rows in production for months while devices rendered a full list from cache and generated a transaction from it every week. |
+
+`lib/cacheInvalidation.ts` drops the cache at the session boundary when it cannot be trusted —
+the signed-in user is not the user the cache was built for, or the cache was written by an older
+epoch. A routine re-login by the same user keeps its cache, so offline work and cold starts are
+unaffected. **The pending write queue is never dropped**; those are the user's own unsynced
+changes, and discarding them would be the data loss this is meant to prevent. Sign-out clears the
+cache too.
+
+Bumping `CACHE_EPOCH` is now the reset lever: every device drops its cache once, at next sign-in.
+
+### The resurrection machinery is retired
+
+Two migrations ran inside `refresh()` on every load. Both are gone, and nothing replaces them:
+
+- **`backfillSchedulesFromTransactions` (v7.3)** recreated a schedule for any transaction marked
+  `recurring` whose signature matched nothing. It had **no concept of a deliberate deletion**, so
+  deleting a schedule and reloading brought it back — announced by a "Recovered 1 recurring
+  schedule" toast that read as helpful. That is the whole of the long-running "deletion doesn't
+  work" report, and 45 transactions in production still carry a `recurring` marker it would have
+  fed on.
+- **The v10.20.5 re-key** has served its purpose, and its remaining risk was duplication: re-keying
+  changes the primary key, so it inserts rather than updates.
+
+`recurring_schedules` is now an ordinary synced entity. What the cloud holds is what exists, and a
+delete is final.
+
+### Server-side reset
+
+Every recurring schedule in the project was archived to
+`maintenance.recurring_archive_20260908` and removed. Schedules can be recreated in the fixed form
+— which since v10.20.6 requires an account, computes the right due date, and posts nothing on
+creation.
+
+### Coverage
+
+**CON-UNIT-099..104** — different-user purge (including the legacy `ff_*` namespace), same-user
+retention, the epoch lever, write-queue survival, sentinel clearing, and sign-out.
+
+---
+
+## v10.20.6 — Creating a recurring schedule no longer charges you today *(2026-09-08)*
+
+Three defects behind one report: schedules duplicating on refresh, then vanishing, and a new
+schedule "appearing as a transaction for the current day".
+
+### 1. Creating a schedule posted a transaction, dated today
+
+`upsertRecurring` seeded a transaction on create, dated `startDate` — which for a new schedule is
+**today**. So setting up rent for the 28th charged you on the 8th, for money that had not moved.
+It also set `lastGenerated`, which told the engine an occurrence had already been produced, so the
+schedule's first real due date was silently consumed.
+
+The comment said it was "so a freshly-created schedule shows up in Transactions immediately". A
+schedule is a **template**; `runRecurringEngine` materialises it on its due date, and that is the
+only place allowed to create one. The seeding is removed.
+
+> Onboarding had already been working around this — `nextMonthlyDate` forced a future start date
+> specifically to dodge the seed guard. A workaround in the codebase was the clue; it took a user
+> report to act on it.
+
+### 2. A schedule could be born overdue
+
+The save path computed its due date with `computeNextDueDate`, which always steps **one period on**
+from its base. Two consequences:
+
+| | Old | New |
+|---|---|---|
+| Create on the 8th, pick the 20th | 20 Oct — skipped this month | **20 Sep** |
+| Edit a schedule that began 22 May | **2 Jun — three months in the PAST** | 2 Oct |
+
+The edit case is the damaging one. The form passed `lastGenerated: undefined`, so the base was the
+schedule's *original* start date. `dueSchedules` then matched the past date and the engine
+materialised a back-dated transaction — advancing one month per page refresh. Replacing it with
+`nextDueAfterSave` (first occurrence on or after today, never one already generated) fixes both.
+As defence in depth for schedules already carrying a bad date, the engine now fast-forwards past
+anything older than 45 days instead of writing it. A genuine offline gap still catches up.
+
+### 3. The form had no account field at all
+
+Every transaction moves an account — and the database enforces it per type via
+`ck_txn_accounts_by_type`. A schedule created in this form carried no account, so the transaction
+the engine generated from it was rejected with **23514** and lived only on the device that made it.
+Verified against production. Backfilled schedules inherited an account from their source
+transaction, which is why only form-created ones were affected.
+
+The form now asks for the account (and, for an investment, the destination) and refuses to save
+without one.
+
+### Also: the v10.20.5 duplication
+
+Re-keying changes a schedule's **primary key**, so writing the re-keyed row inserted a second one
+and left the original in the local cache under its old id. The next load listed both, and deleting
+one of the pair left the other — which read as "delete doesn't work". The migration now retires the
+old keys, and content-identical twins collapse to a single row rather than being returned twice.
+
+### Coverage
+
+Eleven new scenarios, because none of this had any: **CON-UNIT-092..098** (the occurrence calculus
+and the re-key) and **CON-E2E-036..039** (create for the Xth with a chosen account · roll-forward ·
+delete surviving a reload · creating a schedule writes no transaction). CON-UNIT-092 and 094 were
+run against the old implementation first and fail there.
+
+---
+
+## v10.20.5 — Recurring schedules can finally reach the cloud *(2026-09-08)*
+
+The previous release stopped the app **complaining** about writes that could not land. This one
+makes them land.
+
+### The defect
+
+Two retired id generators produced values that are not UUIDs:
+
+| Generator | Shape | Retired in |
+|---|---|---|
+| `backfillSchedulesFromTransactions` | `bf-${txn.id}` | v10.20.3 |
+| `recurringSlice.upsertRecurring` | base-36 timestamp + random | v10.20.3 |
+
+`recurring_schedules.id` is a `uuid` column. Every write carrying one of those ids died with
+Postgres `22P02` (invalid input syntax for type uuid), so the schedule lived **only in that
+device's local cache**. That is why production held **zero rows** while the app showed a full
+list — and why a deleted schedule came back on refresh: the delete never reached a row that had
+never been stored.
+
+Fixing the generators in v10.20.3 stopped the bleeding but migrated nothing. Schedules created
+before that release still carried unstorable ids.
+
+### The fix — a one-time, deterministic re-key
+
+`rekeyLegacyRecurringIds()` (`react/src/lib/recurring.ts`) gives every schedule whose id cannot
+be stored a real UUID, and repoints the transactions that referenced it.
+
+**Why deterministic rather than random.** Each device holds its own local copy of the same
+schedules. Random ids would have device A upload eleven rows and device B upload its own eleven —
+the duplicate-household pattern all over again. The id is derived from the schedule's *content*
+(type, description, currency, amount, frequency, day/weekday), so two devices holding the same
+schedule compute the same id and the upsert collapses them into one row. The signature
+deliberately excludes `nextDueDate`, `lastGenerated` and `startDate`, which drift as the engine
+runs — a schedule that has fired on one device still matches the same schedule on one that has not.
+
+**The transaction side matters as much.** `transactions.recurring_schedule_id` is an FK to this
+table, and the adapter's `fkOrNull` silently nulls any non-UUID, so cloud transactions had already
+lost the link. Both sides are remapped together, and written **schedules first** —
+`transactions_recurring_schedule_id_fkey` requires the schedule row to exist.
+
+Guarded by a `recurring_rekeyed_${householdId}` sentinel, and idempotent regardless: a schedule
+that already has a valid UUID is untouched, so a second run changes nothing.
+
+Covered by **CON-UNIT-089/090/091**.
+
+### The deploy gate no longer lies
+
+`db-migrations` carried `continue-on-error: true`, and `deploy-edge-functions`, `consumer` and
+`admin` ran with `if: always()`. The intent was that a Supabase auth hiccup should never block an
+app deploy. In practice the job failed on a stale `SUPABASE_ACCESS_TOKEN` for **four consecutive
+releases** while the workflow reported overall success — so nobody noticed, and the safety valve
+had become the normal state.
+
+The risk that makes this unacceptable: a release whose frontend expects new schema ships even
+though the migration never ran, and nothing says so. That is the same **silent-success** shape as
+every defect this stabilisation programme has been fixing.
+
+All four jobs now gate on `db-migrations`. A failed migration stops the release.
+
+### Making that gate safe to enforce
+
+Turning the gate on would have been a landmine on its own, so the underlying desync was repaired
+first:
+
+- **The migration tracker had drifted from the filenames.** Migrations applied through the Supabase
+  MCP are stamped with the MCP's own version, not the file's, so `supabase db push --include-all`
+  saw six already-applied migrations as pending and would have tried to re-run them the moment the
+  token was refreshed. The tracker rows were realigned to their filenames (and one duplicate
+  `ai_usage_metering` stamp removed). Verified: **all 60 migrations on disk are recorded as
+  applied, zero pending.**
+- **A migration appeared to exist only in the live database.**
+  `20260906150000_agent_helper_revoke_public_execute.sql` was added on that reading. It was
+  **wrong** — the revocation was already on disk at
+  `20260816120000_agent_ingestion_state.sql:195`, and the file was a redundant re-assertion. The
+  file has since been removed and this entry corrected. **No security gap ever existed** — `anon`
+  has never been able to reach `agent_conversation_in_household()`.
+
+The tracker realignment does not alter production behaviour — it records what the database
+already is.
+
+---
+
+## v10.20.4 — The sync-health banner is gone *(2026-09-08)*
+
+**Removed `SyncHealthIndicator`** — the *"Some changes may not have synced"* popup with its
+Refresh action. Product decision, and a justified one: it interrupted the user for a condition
+they could not act on, and the remedy it offered did not address the message.
+
+`Refresh` called `manualRefresh()`, which is a **pull**. The banner's own message is about a
+**push** that failed. Pulling fresh data can never re-send a write that did not land, so clicking
+the button changed nothing about the reported problem — it just dismissed the banner until the
+next dead-letter.
+
+### What is gone, and what is not
+
+| | |
+|---|---|
+| Gone | The banner, its Refresh action, and the interruption. |
+| Kept | The sync queue and its bounded retry/backoff. Writes still queue, still retry, still work offline. |
+| Kept | Fault recording in `lib/faults.ts`. Dropped writes are still captured in the ring buffer and still visible in `FaultsPanel` (dev builds). |
+| Kept | `manualRefresh()` itself — the budget editor's duplicate-recovery, `SyncConflictBanner` and `SyncStatusBadge` all use it. |
+
+### Why it was firing so often
+
+It was not random. Deleting a recurring schedule queued a cloud write for a row whose id was
+`` `bf-…` `` — not a UUID, so Postgres rejected it with `22P02`, the op exhausted its retries and
+dead-lettered, and `droppedWrite()` raised the banner. The banner was reporting a real failure
+every single time.
+
+> **This release does not make those writes succeed.** Schedules already carrying `bf-*` ids still
+> cannot reach the cloud; re-keying them is a separate data migration. What changes is that the app
+> no longer interrupts you about it on every attempt.
+
+---
+
+## v10.20.3 — Recurring schedules stop coming back from the dead *(2026-09-08)*
+
+The reported defect was "deleting a recurring schedule doesn't work". **The delete was never at
+fault.** The app was rebuilding the schedule on the next page load.
+
+### The chain
+
+`refresh()` — which runs on every page load — called `backfillSchedulesFromTransactions`. That
+function matches transactions to schedules by signature (`type|description|recurring|currency`) and
+recreates any schedule the signature cannot find. It has no concept of a deliberate deletion, so a
+deleted schedule looked exactly like a legacy gap.
+
+Delete → gone, toast honest. Refresh → rebuilt, with a *"Recovered 1 recurring schedule from
+existing transactions"* toast that read as helpful rather than as the bug.
+
+It was written as a **one-time v7.3 migration** for legacy rows. It ran forever.
+
+### And why the table was empty
+
+The backfill minted ids as `` `bf-${txn.id}` `` — not a UUID. `recurring_schedules.id` is a `uuid`
+column, so every one of those cloud writes died with `22P02`, and the failure was swallowed by
+`catch { /* best-effort */ }` on the next line. Schedules lived only in each device's local cache;
+production held zero rows while the app showed a full list.
+
+`upsertRecurring` had the same flaw independently — `Date.now().toString(36) + Math.random()…` is
+also not a UUID. Recurring was the only entity in the app not minting ids with `uid()`.
+
+### Fixed
+
+| | |
+|---|---|
+| The migration | Runs **once per household**, behind a localStorage sentinel mirroring `HybridAdapter`'s `cloud_synced_*` pattern. Marked done even when it recovers nothing — "nothing to recover" is a completed migration, and re-running can only resurrect what the user has since deleted. |
+| The swallowed error | `catch {}` replaced with `droppedWrite()`, so a failed write reaches the fault transport and the sync banner instead of vanishing. The binding rule is *never a silent write-loss `catch {}`*. |
+| The ids | `deterministicUuid()` in the backfill (so two devices running the migration converge on one row rather than duplicating), `uid()` in `upsertRecurring`. |
+
+### Known remaining
+
+Schedules already carrying `bf-*` ids on a device still cannot sync — their ids remain illegal.
+Making them sync means minting fresh UUIDs and letting them upload as new rows, which is a data
+migration over live records and is deliberately **not** included here.
+
+Tests: CON-UNIT-087 (every backfilled id is a valid UUID — fails against the previous
+implementation) and CON-UNIT-088 (the same source transaction always derives the same id).
+
+---
+
+## v10.20.2 — Recurring: an editable day field and a delete that tells the truth *(2026-09-08)*
+
+Two reported defects that survived the previous release because the previous release
+did not touch them. Both reproduced against the running app before being changed.
+
+### The day-of-month field fought every edit
+
+    onChange={e => setDayOfMonth(Math.max(1, Math.min(31, parseInt(e.target.value) || 1)))}
+
+Clamping on every keystroke means the box can never be transiently empty. Backspacing to
+clear it yields `NaN`, `|| 1` turns that into `1`, and the field re-renders as "1" while you
+are still typing. Observed live: clearing the field showed `1`; typing `0` showed `1`.
+
+The raw text is now the state and the number is derived from it. The clamp moved to blur and
+submit. After the fix the field accepts `""`, `0` and `25` mid-edit, and on blur settles
+`0` → 1, empty → today, `47` → 31.
+
+### Deleting a schedule claimed success whatever happened
+
+    onClick={() => { if (confirm(…)) { remove(s.id); toast('Schedule deleted'); } }}
+
+`remove(s.id)` was never awaited and the success toast fired on the next line regardless. A
+rejection became an unhandled promise rejection: nothing in the UI, nothing to report, and a
+toast insisting it had worked. That is why this read as "deletion doesn't work" with no error
+to go on.
+
+Now awaited, with the real failure surfaced. **This is deliberately diagnostic**: production
+currently holds zero rows in `recurring_schedules` while schedules appear in the app, and the
+error text is what will distinguish "the row was never on the server" from "the server refused
+the write". Until now there was no error to read.
+
+### Writes that change nothing no longer report success
+
+A row-level-security policy does not raise on a blocked write — the statement runs, matches
+zero rows, and returns `{ error: null }`. Every delete in the Supabase adapter used
+`if (error) throw`, so a refusal was indistinguishable from success: local state dropped the
+row, the UI said "Deleted", and the next sync pulled it back.
+
+`deleteHousehold`, the memberships delete and the soft-delete path now ask for the affected
+rows and count them; zero throws a typed `WriteNotAppliedError` naming what happened.
+`deleteHousehold` in the store also had its order wrong — it switched you to the local
+household *before* attempting the delete, so a refused delete evicted you from a household
+that still existed. It deletes first now, and only switches on success.
+
+> **Note for anyone whose rows are not server-side.** The adapter is stricter than it was, so
+> a queued delete for a row the server does not have will now fail rather than pass quietly.
+> That is the intended behaviour, but it can produce sync-banner noise until such a divergence
+> is resolved.
+
+Tests: 800 unit (CON-UNIT-084..086) and 10 Lane B against real Postgres, including three new
+specs that prove a real policy really does refuse silently — the mocks alone could not.
+
+---
+
+## v10.20.1 — Stabilisation: silent data loss, blind tests, overstated copy *(2026-09-08)*
+
+Three defects that shared one property: **each reported success while doing the wrong thing.** No
+new features; this is the stabilisation pass the independent audit recommended before more surface
+area lands.
+
+### Renaming an account no longer erases its balance and history
+
+The worst of the three, and the one nobody reported — because it never looked like a failure.
+
+`AccountFormModal` sends a metadata-only patch (name, kind, currency, flags). `accountToRow` then
+read `?? 0` / `?? []` for `opening_balance`, `reconciliation_offset` and `reconciliation_log`, and
+the upsert wrote those zeroes over the stored values. **Renaming an account — or archiving it, or
+changing its currency — reset its opening balance to 0 and emptied its reconciliation log**, under
+an "Account updated" toast.
+
+Fixed at two layers: the mapper now omits financial columns the caller did not supply (all three are
+NOT NULL *with DB defaults*, so omission is correct on INSERT and preserving on UPDATE), and
+`upsertAccount` merges the patch onto the existing account. The generic adapter's replace semantics
+are deliberately untouched — changing those would alter every entity, and some callers rely on them.
+
+### The test suite could not reach the code it was meant to cover
+
+`myRole` was never populated in local-only mode: its only writer sat behind a `cloudEnabled` guard,
+so `can()` fell through to deny-by-default and **every write-gated screen rendered read-only** — no
+Add Budget, no delete household, no recurring edit. Lane A builds local-only, so no e2e test could
+open the editors behind those controls. The suite was green and blind at once.
+
+Fixing it surfaced a latent privilege hole in the same function: the ownership fallback keyed on "no
+session" rather than "no cloud", so a signed-out **cloud** user resolved to `owner`. Unreachable
+while nothing called it in that state — live the moment this fix added that caller. `resolveMyRole()`
+now sits beside `can()` in `lib/permissions.ts` as one pure, testable policy.
+
+### Lane B exists — the cloud lane against a real database
+
+Previously undone work, documented as "Phase 4". Every unique index, CHECK constraint and RLS policy
+in the schema was invisible to CI, because Lane A has no database to violate.
+
+`vyact-test` (free tier, $0/mo) now carries the same 94 RLS policies and 72 functions as production.
+Seven specs run against real Postgres in ~20s: duplicate-allocation rejection, cross-household
+isolation (read, write, insert), and the account-patch acceptance test above. Standing it up caught
+four wrong schema assumptions in the fixtures before they shipped, including
+`ck_txn_accounts_by_type` — the money model is enforced in the *database*, not only the client.
+
+### Ask Vyact copy now claims what the guard actually delivers
+
+v10.20 said *"Your numbers are calculated, never guessed"* and *"A reply containing a number Vyact
+did not calculate is discarded."* `assertNoInventedFigures` does not prove that. It matches numeric
+tokens, not meaning, and it exempted more than it should have:
+
+* `100` — the likeliest confabulation in a finance assistant ("100% of your budget"). Removed; a
+  genuine 100 arrives inside a computed value and is allowed by that route anyway.
+* **Every number from 1900–2099**, unconditionally, as "probably a year". That band is squarely
+  inside real amounts: *"You spent £2,050 on rent"* and *"Your net worth is £1,999"* both passed the
+  guard completely un-computed. The exemption is now conditional on the figure not being presented
+  as money.
+
+Copy across the chat screen, the Ask drawer and the privacy policy now describes the division of
+labour — Vyact does the maths, the model does the words — plus the screening as a safeguard rather
+than a guarantee. `CLAUDE.md` records that the guard must never be described as proof.
+
+### Also
+
+Lane A's Playwright `webServer` timeout raised 180s → 480s. A cold build overran it and Playwright
+then **exits 0 having run nothing** — a suite reporting success while executing zero tests, which is
+the same failure family as everything above.
+
+Tests: 797 unit (up from 792) + 7 Lane B. The catalogue reconciler now scans `e2e/lane-b`, and its
+23 pre-existing problems are tracked in [#74](https://github.com/Authen27/Vyact/issues/74).
+
+---
+
+## v10.20.0 — Ask Vyact becomes model-backed *(2026-09-07)*
+
+**Breaking.** The deterministic `RulesBackend` is **removed**. `LlmBackend` is the only assistant
+backend and there is no rules fallback. With no model configured or reachable, Ask Vyact returns an
+explicit *unavailable* turn — it never silently degrades to a canned answer, because a finance
+assistant that quietly stops thinking while still sounding confident is worse than one that says it
+is offline.
+
+> **Operational precondition.** `OPENROUTER_API_KEY` must be set in Supabase Edge Function secrets.
+> Without it every Ask Vyact turn returns *"I can't reach the assistant right now."* The model row
+> (`ai_model_configs`) is already enabled: `anthropic/claude-sonnet-5` via OpenRouter.
+
+### What the model does — and what it is never allowed to do
+
+**The assistant phrases; services compute.** Stage 4 (`resolve`) was NOT removed and is still the
+sole source of every figure. The model picks the intent (stage 3) and words the answer (stage 5); it
+never does arithmetic on money. That is enforced mechanically, not by prompt: `assertNoInventedFigures`
+discards any reply containing a number no calculation produced. A hallucinated total cannot reach a
+user, because it did not come from a tool.
+
+The provider key lives server-side in the `ask-vyact` Edge Function. The browser-direct Gemini
+client, `ChatBackend`, `StubChatBackend`, `SupabaseChatBackend` and the `SubAgent` registry were all
+retired with it — no API key ships in the bundle.
+
+### Response chips now reach the user (#62)
+
+`resolve()` had returned a `chip` since the assistant shipped, but `AssistantTurn` had no field for
+it, so the orchestrator dropped it and **no chip had ever reached a user**. Every "two or three
+likely follow-ups" in the response deck was undeliverable for that one reason.
+
+`ResolveResult.chips` is now an ordered list (max three) threaded through `AssistantTurn` and
+`ChatMessage` to a chip row under the newest reply; tapping one sends its `prompt` as the next turn.
+Rules pinned in code: extras are **dropped, never wrapped**; a chip without a `prompt` is dropped
+rather than rendered as an untappable dead end; and chips are **never model-authored** — they come
+from stage 4 beside the figures, closing a path `assertNoInventedFigures` does not guard.
+`renderChipsAsNumberedList()` gives WhatsApp the same list as numbered options (CONV-09).
+
+### Honest copy — three false claims removed
+
+Removing the rules backend made shipped UI copy untrue. All three are corrected in this release:
+
+| Where | Was | Now |
+|---|---|---|
+| Ask Vyact privacy block | "Answered on this device … no model involved." | "Your numbers are calculated, never guessed." |
+| Ask Vyact page subtitle | "On-device · private · two taps…" | "Two taps to capture, inquire, or plan" |
+| Ask drawer header | "On-device · private" | "Your numbers, computed — never guessed" |
+
+`Planner` and `Insights` keep their "fixed rules, no model" lines — those are still true; neither
+calls a model.
+
+### Privacy Policy (`POLICY_VERSION` → 2026-09-07)
+
+A new **"How Ask Vyact uses a language model"** disclosure states exactly what leaves Vyact per
+question: your question as you typed it, and the figures already calculated for that one answer.
+Your transaction history is never sent, nor any record that is not part of the answer you asked for.
+The sub-processor list is updated to match. No claim is made about provider training or retention —
+that is not asserted until the account terms are confirmed.
+
+### Agent service (in build, not user-facing)
+
+- **Ingestion pipeline core** — the eight-stage extractor cascade with the confirm gate:
+  *if a model touched it, a human confirms it*. Only deterministic extractors (grammar/recipe/manual)
+  may write unattended.
+- **Learned-recipe cache** — digit-masked SMS signature → LLM extraction on miss → derived recipe, so
+  a repeat format becomes free and deterministic.
+- **`ask-vyact` gateway** — OpenAI-compatible model router, probe endpoint, quota + origin pinning.
+- **Server-side money port** (`_shared/money`) under parity tests against the client TS originals —
+  WhatsApp has no browser.
+- **Eval harness** — 84 cases, green. It found four real bugs on first run, including a missing
+  `bought`/`buy` verb and an unreachable card-disambiguation question.
+
+### Database
+
+| Migration | What |
+|---|---|
+| `20260612120100_v91_feedback_batch` | De-duplicates a colliding timestamp |
+| `20260816120000_agent_ingestion_state` | `agent_conversations`, `agent_pending_intents`, `sms_format_recipes` (RLS + expiry) |
+| `20260816130000_provenance_source_agent` | Widens the `source` CHECK to allow `'agent'` |
+| `20260906120000_ai_model_configs` | Model router config; `enabled` defaults **false** |
+| `20260906130000_whatsapp_log_transaction_backdate` | Adds `p_date` — a bank SMS is routinely backdated |
+| `20260906140000_seed_model_catalogue` | 8 models, all disabled by default |
+
+> All six are **already applied to production** (via MCP). Their recorded version stamps differ from
+> the filenames, so `supabase db push` sees them as pending; the CI `db-migrations` job does not run
+> them today (stale `SUPABASE_ACCESS_TOKEN`). No action needed for this release — flagged so the
+> next person does not re-apply by hand.
+
+### Tests
+
+789 unit tests green, including 7 new chip tests (`CON-UNIT-ASK-057..063`) and the money invariants
+INV-1..9 untouched. E2E was partially unbroken (dead route, dead page object, 49 phantom tests
+removed); the remaining failures are pre-existing and tracked separately.
+
+---
+
+## v10.19.0 — Agent-as-a-service: architecture + the LLM-spend gate *(2026-08-15)*
+
+Kicks off the **Vyact Agent** programme — extending Ask Vyact from a deterministic rules assistant
+into an **LLM agent that answers every user query**, playing a **Planner/Advisor** and an **Actions**
+role, across **Ask Vyact and WhatsApp**.
+
+> **The agent is NOT live in this release.** Ask Vyact remains 100% rules-based and on-device. This
+> release lands the *architecture of record* and the *measurement* that authorises the build.
+
+**Architecture — a service, not a second app.** One Supabase Edge gateway serves every client (PWA ·
+Android · future iOS · WhatsApp) through **channel adapters**; only presentation and policy differ per
+channel. Full design in the new [`vyact-agent-architecture.md`](../vyact-agent-architecture.md);
+binding rules recorded in `CLAUDE.md`:
+- **The LLM never computes money** — it selects tools and phrases their returns; stage 4 (`resolve`)
+  stays the sole source of every figure. This preserves the spec's "assistant phrases, services
+  compute" non-negotiable *and* is the anti-hallucination guarantee.
+- **Hybrid, not replacement** — rules answer first; the model runs only on a miss.
+- **Reads/writes separated** — planner holds read tools only; writes are **propose → user confirms**.
+- **All stored text is untrusted** (`transactions.description` now carries WhatsApp-ingested text).
+- **"Learning" = context + memory, never fine-tuning** (cross-tenant leakage risk).
+- **OpenAI-compatible providers** so a model swap is a DB row; the feature's **off state must be
+  provably byte-identical to today**.
+- Money the agent calls must live **server-side** (`_shared/` ports + Postgres RPCs) — WhatsApp has no
+  browser — guarded by **parity tests** against the client TS originals.
+
+**Shipped: the LLM-spend gate (spec §8/§10).** Adoption + cost measurement is the *precondition* for
+authorising LLM spend, and `ai_usage` previously recorded intent/sentiment/length only.
+- Migration `20260815120000_ai_usage_metering.sql` adds 12 nullable columns — `backend`, `tier`,
+  `provider`, `model`, `prompt_tokens`, `completion_tokens`, `cost_usd`, `latency_ms`, `outcome`,
+  `tool_calls`, `helpful`, `tap_depth` — with CHECK constraints.
+- `admin_ai_usage_summary()` gains `byModel`, `byProvider`, `byBackend`, `tokens30`, `cost7Usd`,
+  `cost30Usd`, `latencyMsP50/P95`, `fallbackRate30`, `errorRate30`, **`deterministicRate30`**,
+  `helpfulRate30`, `ratedCount30`. All six existing keys (incl. `segments`) are preserved, so the
+  admin Intelligence page is unaffected.
+- `aiUsage.ts` accepts the new optional telemetry; `Chat.tsx` now logs *after* the turn so it records
+  which engine answered, the outcome and latency.
+
+The headline metric is **`deterministicRate30`** — the share answered by rules alone. Every such row
+is an LLM call never paid for, so it directly sizes the future bill.
+
+**Privacy contract unchanged: no message content is stored, ever.**
 
 ## v10.18.1 — Splits: de-duplicate the split view *(2026-08-10)*
 
@@ -215,7 +4866,7 @@ Round of fixes on v10.14.0's split sharing, from live testing:
   previously they'd only find it by opening the Splits page.
 - **Verification of feedback 3 (did it reach the other accounts?):** the shared
   rows were created correctly. `u.reddy@vidaxl.com` (an existing account) **does**
-  see the split via RLS on their Splits page once signed in; `uday.iitkgp@gmail.com`
+  see the split via RLS on their Splits page once signed in; `owner@example.com`
   has no account yet, so it's pending their signup (by design). **No emails were
   sent because the app has no email-sending capability at all** — all split
   notifications are in-app. Real email/push delivery is a separate,
@@ -1579,7 +6230,7 @@ Three follow-up fixes on top of v9.8.1:
   Contact", but Help had no such section; there was no way to actually reach support from a legal
   page. Added a real "Contact support" panel to `Help.tsx` (anchor `#contact`) with a subject/
   message form that opens a pre-filled `mailto:` to a temporary support inbox
-  (`uday.kr27@gmail.com` — flagged as temporary, to be replaced by proper ticketing as volume
+  (`owner@example.com` — flagged as temporary, to be replaced by proper ticketing as volume
   grows), and updated the Privacy/Terms/Cookies Contact sections to link directly to a working
   `mailto:` (so it works even for signed-out visitors reading the docs from an external link) in
   addition to the in-app form for signed-in users.
@@ -4734,8 +9385,8 @@ GRANT EXECUTE ON FUNCTION public.role_in(uuid)  TO authenticated;
 
 | User | Result post-fix |
 |---|---|
-| `uday.kr27@gmail.com`     | Returns `My Household · personal · USD · owner` |
-| `bhushandandolu8@gmail.com` | Returns `My Household · personal · USD · owner` |
+| `owner@example.com`     | Returns `My Household · personal · USD · owner` |
+| `developer@example.com` | Returns `My Household · personal · USD · owner` |
 
 ---
 

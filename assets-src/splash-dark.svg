@@ -1,6 +1,6 @@
 <svg width="2732" height="2732" viewBox="0 0 2732 2732" xmlns="http://www.w3.org/2000/svg">
-  <!-- Launch splash (dark): pip on the dark warm ink canvas. -->
-  <rect width="2732" height="2732" fill="#1B1612"/>
+  <!-- Launch splash (dark): pip on the Aurora "Nocturne" canvas (#0F181B) — the app's default theme. -->
+  <rect width="2732" height="2732" fill="#0F181B"/>
   <svg x="1046" y="1006" width="640" height="640" viewBox="-3 -4 42 43">
     <defs>
       <radialGradient id="pipSplashD" cx="50%" cy="38%" r="62%">

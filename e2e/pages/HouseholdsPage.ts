@@ -44,15 +44,19 @@ export class HouseholdsPage {
 
   async switchTo(name: string) { await this.card(name).click(); }
 
-  /** Danger-zone "Delete" for the currently ACTIVE household. Auto-accepts the native confirm(). */
+  /** Danger-zone "Delete" for the ACTIVE household. Aurora 4.0 CF15: the sheet wants the name typed. */
   async deleteActiveHousehold() {
-    this.page.once('dialog', d => d.accept());
     await this.page.getByRole('button', { name: /^delete$/i }).click();
+    const sheet = this.page.getByRole('dialog', { name: /^Delete .* for everyone\?$/ });
+    const field = sheet.getByLabel('Type the household name to confirm');
+    await field.fill((await field.getAttribute('placeholder')) ?? '');
+    await sheet.getByRole('button', { name: 'Delete household', exact: true }).click();
   }
 
+  /** Aurora 4.0 CF14 — Leave asks in a sheet. */
   async leaveActiveHousehold() {
-    this.page.once('dialog', d => d.accept());
     await this.page.getByRole('button', { name: /^leave$/i }).click();
+    await this.page.getByRole('dialog', { name: /^Leave .*\?$/ }).getByRole('button', { name: 'Leave household', exact: true }).click();
   }
 
   /**

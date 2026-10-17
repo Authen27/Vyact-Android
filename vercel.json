@@ -3,37 +3,172 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
-  "installCommand": "npm install",
+  "installCommand": "npm ci",
+  "ignoreCommand": "if [ -n \"$VERCEL_GIT_PREVIOUS_SHA\" ] && git cat-file -e \"$VERCEL_GIT_PREVIOUS_SHA^{commit}\" 2>/dev/null && git diff --quiet \"$VERCEL_GIT_PREVIOUS_SHA\" HEAD -- . ':!*.md' ':!**/*.md' ':!docs'; then exit 0; else exit 1; fi",
+  "redirects": [
+    {
+      "source": "/learn/:path*",
+      "has": [{ "type": "host", "value": "demo.vyact.app" }],
+      "destination": "https://vyact.app/learn/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/for/:path*",
+      "has": [{ "type": "host", "value": "demo.vyact.app" }],
+      "destination": "https://vyact.app/for/:path*",
+      "permanent": false
+    },
+    {
+      "source": "/:page(about|private|sitemap.xml|llms.txt|llms-full.txt)",
+      "has": [{ "type": "host", "value": "demo.vyact.app" }],
+      "destination": "https://vyact.app/:page",
+      "permanent": false
+    },
+    {
+      "source": "/v/:n",
+      "has": [{ "type": "host", "value": "demo.vyact.app" }],
+      "destination": "https://vyact.app/v/:n",
+      "permanent": false
+    }
+  ],
   "rewrites": [
-    { "source": "/learn", "destination": "/api/learn" },
-    { "source": "/learn/", "destination": "/api/learn" },
-    { "source": "/learn/:slug", "destination": "/api/learn?slug=:slug" },
-    { "source": "/sitemap.xml", "destination": "/api/sitemap" },
-    { "source": "/robots.txt", "destination": "/api/robots" },
-    { "source": "/((?!api/|assets/).*)", "destination": "/index.html" }
+    {
+      "source": "/learn",
+      "destination": "/api/learn"
+    },
+    {
+      "source": "/learn/",
+      "destination": "/api/learn"
+    },
+    {
+      "source": "/learn/topic/:topic",
+      "destination": "/api/learn?topic=:topic"
+    },
+    {
+      "source": "/learn/:slug",
+      "destination": "/api/learn?slug=:slug"
+    },
+    {
+      "source": "/sitemap.xml",
+      "destination": "/api/sitemap"
+    },
+    {
+      "source": "/robots.txt",
+      "destination": "/api/robots"
+    },
+    {
+      "source": "/llms.txt",
+      "destination": "/api/llms"
+    },
+    {
+      "source": "/llms-full.txt",
+      "destination": "/api/llms?full=1"
+    },
+    {
+      "source": "/for/:audience",
+      "destination": "/api/for?audience=:audience"
+    },
+    {
+      "source": "/v/:n",
+      "destination": "/api/v?n=:n"
+    },
+    {
+      "source": "/about",
+      "destination": "/api/about"
+    },
+    {
+      "source": "/private",
+      "destination": "/api/for?audience=private"
+    },
+    {
+      "source": "/((?!api/|assets/|\\.well-known/).*)",
+      "destination": "/index.html"
+    }
   ],
   "headers": [
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains; preload" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "DENY" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains; preload"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "Content-Security-Policy-Report-Only",
+          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://static.userback.io https://va.vercel-scripts.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://static.userback.io; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self' https://dmxqkvploojokffuhxnz.supabase.co wss://dmxqkvploojokffuhxnz.supabase.co https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com https://*.userback.io https://vitals.vercel-insights.com; frame-src https://www.youtube-nocookie.com https://www.youtube.com https://*.userback.io; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(self), geolocation=()"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "demo.vyact.app" }],
+      "headers": [
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex, nofollow"
+        }
       ]
     },
     {
       "source": "/assets/:path*",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/(landing.html|site.css)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
       ]
     },
     {
       "source": "/index.html",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/.well-known/assetlinks.json",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/json"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600"
+        }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/*.js": {
+      "includeFiles": ".env.production"
+    }
+  }
 }

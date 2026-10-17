@@ -200,14 +200,23 @@ hold rows that still describe roadmap-era behaviour.
 
 ### ✅ CON-E2E-001 — Boots into dashboard in local-only mode
 - **File**: `react/e2e/tests/smoke.spec.ts`
-- **Scenario**: No Supabase env vars; visiting `/` should land on dashboard.
-- **Steps**: `goto('/')` → expect redirect to `/dashboard`.
+- **Scenario**: No Supabase env vars; navigating straight to `/dashboard` should
+  render with no auth bounce (since v10.33.0, `/` itself is the public Landing
+  page, not a redirect — see CON-E2E-054).
+- **Steps**: `dashboard.goto()` (→ `/dashboard` directly).
 - **Expected**: Title contains "Vyact" (post-v7.0.0 rebrand); `dashboard.logoLink` visible.
 
 ### ✅ CON-E2E-002 — Does not render cloud auth screen in local-only mode
 - **File**: `smoke.spec.ts`
 - **Steps**: `goto('/')`.
 - **Expected**: URL never matches `/auth/`.
+
+### ✅ CON-E2E-054 — Landing page renders at "/" in local-only mode
+- **File**: `smoke.spec.ts`
+- **Scenario**: `/` renders the public Landing page even with no Supabase env
+  vars, with a single CTA straight into the app (no auth concept locally).
+- **Steps**: `goto('/')` → assert not on `/dashboard` or `/auth` → click "Open Vyact".
+- **Expected**: Landing heading visible; click lands on `/dashboard`.
 
 ### ✅ CON-E2E-003 — Seeded transactions are visible
 - **File**: `smoke.spec.ts`
@@ -881,22 +890,23 @@ amount unchanged.
 
 # §23 · Multi-Currency & FX (FX-FC)
 
-### ✅ FX-FC-001 — Editing an exchange rate re-renders converted totals everywhere
+### ✅ FX-FC-001 — Rows labelled in another currency count at face value; there is no rates sheet (v10.66.0, D14)
 ### 🟡 FX-FC-002 — Rounding uses banker's rounding at the target's native exponent
 - **Property**: A 300-row schedule must end exactly on `0.00` outstanding —
   no per-step drift (`lib/amortization.ts` guarantee).
 ### 🟡 FX-FC-003 — Sums in dinero space match per-row currency-formatted values
 ### 🟡 FX-FC-004 — Cloud `numeric(15,2)` string serialisation parses via `parseMoneyFromCloud`
-### ✅ FX-FC-005 — Switching `baseCurrency` re-anchors every chart without precision loss
+### ✅ FX-FC-005 — Changing the household currency changes the symbol only, without precision loss (v10.66.0, D14)
 
 ---
 
 # §24 · Keyboard Shortcuts & Accessibility (A11Y-FC)
 
-### ✅ A11Y-FC-001 — `N` opens Add Transaction and `Esc` closes the active modal
-- **Checkpoint note**: The help text still mentions `G` / `D` / `A` / `/`,
-  but the current shipped shortcut wiring only registers `n` / `N` on the
-  Transactions page plus modal-level `Escape` close.
+### ✅ A11Y-FC-001 — a single letter opens nothing, `/` focuses search, `Esc` closes the form
+- **v10.91.0 (audit FE-UIS-10, WCAG 2.1.4; owner decision 13 Oct 2026)**: the
+  single-key `n` / `b` / `d` / `a` add shortcuts are removed. The test used to
+  assert that `N` opened Add Transaction; it now asserts that the letters open
+  nothing. `/` on Transactions (focus only), `⌘K` and `Esc` stay.
 ### 🟡 A11Y-FC-002 — Modal focus trap returns focus to the trigger on close
 - **Checkpoint note**: Current modals expose `role="dialog"` and `Escape`
   close, but they do not yet implement a true focus trap or trigger-focus
@@ -984,7 +994,7 @@ rather than a Clarification 🟠. Only #4 remains an open product question.
   `page.clock.setFixedTime`.
 - ✅ `seedWith({ debts?, goals?, recurring?, splits?, members?, assets?, profile? })`
   factory that deep-merges into `defaultSeed`.
-- ✅ `sampleCreditCardDebt` reference seed for §7 DEBT-FC.
+- ✅ `sampleLoanDebt` reference seed for §7 DEBT-FC (W4f: a loan with terms; cards are accounts).
 - 🟡 `mockExchangeRates(rates)` to pin FX for FX-FC suite.
 - 🟡 `withCloud()` wrapper running against an ephemeral Supabase branch
   via the Supabase MCP (`create_branch` / `delete_branch`). Mock path

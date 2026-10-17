@@ -5,6 +5,7 @@
 // remove, change roles. Anyone can leave (except sole owner).
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Users as UsersIcon, Mail, Trash2, LogOut, Shield, Activity, Copy, Check, Link as LinkIcon } from 'lucide-react';
 import { useStore } from '../store';
 import { Card, Panel } from '../components/ui/Card';
@@ -14,11 +15,14 @@ import Modal from '../components/ui/Modal';
 import HalfSheet from '../components/ui/HalfSheet';
 import { Input, Select, Field, FieldRow } from '../components/ui/Input';
 import Badge from '../components/ui/Badge';
+import Chip from '../components/ui/Chip';
 import { PROFILE_TYPES, CURRENCIES, deterministicColor } from '../constants';
+import { HOUSEHOLD_TYPE_ORDER, normalizeHouseholdType, typeFits, inviteBlockedReason, householdLimitMessage, nextHouseholdAfterExit } from '../lib/householdTypes';
 import {
   createInviteLink, listInvitations, revokeInvitation, INVITE_LABEL_SENTINEL,
   changeMemberRole, removeMembership, leaveHousehold, listActivity,
 } from '../lib/auth';
+import { track } from '../lib/analytics';
 import { sb } from '../lib/supabase';
 import { can, roleLabel, type Action } from '../lib/permissions';
 import type { ProfileTypeKey, AppRole } from '../types';
@@ -26,6 +30,11 @@ import ActivityRow from '../components/households/ActivityRow';
 import {
   formatActivity, ACTIVITY_TYPE_FILTERS, type ActivityRow as ActivityRowData,
 } from '../lib/activityFormat';
+import PageHead from '../components/ui/PageHead';
+import { confirmSheet } from '../lib/confirmSheet';
+import { deleteHouseholdRequest, leaveHouseholdRequest, removeMemberRequest, revokeInvitationRequest } from '../lib/confirmCopy';
+import { checkInviteEmail, inviteEmailNotice, invitationWho, sendInviteEmail } from '../lib/invitations';
+import { shareOrigin } from '../lib/native'; // ANDROID-OVERLAY — invite links must not use https://localhost
 
 interface Membership {
   id: string;
@@ -37,7 +46,10 @@ interface Membership {
 }
 interface Invitation {
   id: string;
+  /** The label the inviter typed, or the "(shareable link)" sentinel (a legacy column name). */
   invited_email: string;
+  /** v10.95.0 (#9) — the invitee's address, when the invitation is addressed to a person. */
+  recipient_email?: string | null;
   role: AppRole;
   token: string;
   expires_at: string;
@@ -62,11 +74,11 @@ function RoleChip({ role }: { role: AppRole }) {
   const style = role === 'owner'
     ? { background: 'var(--accent)', color: 'var(--accent-ink)' }
     : role === 'admin'
-    ? { background: 'color-mix(in srgb, hsl(var(--denim)) 16%, transparent)', color: 'hsl(var(--denim))' }
+    ? { background: 'color-mix(in srgb, hsl(var(--denim)) 16%, transparent)', color: 'var(--info-text)' }
     : { background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' };
   return (
     <span
-      className={`font-mono text-[0.62rem] tracking-wider uppercase px-2.5 py-1 rounded-pill flex-shrink-0 whitespace-nowrap ${role === 'owner' || role === 'admin' ? '' : 'text-ink-mid'}`}
+      className={`text-[12px] font-medium px-2.5 py-1 rounded-pill flex-shrink-0 whitespace-nowrap ${role === 'owner' || role === 'admin' ? '' : 'text-ink-mid'}`}
       style={style}
     >
       {roleLabel(role)}
@@ -88,8 +100,30 @@ export default function Households() {
   const myRole = useStore(s => s.myRole);
   const toast = useStore(s => s.toast);
 
+  // W7a (audit INT-HH-13): leaving the household that is open moves the app to one the person is
+  // still in (it used to stay on the old one, whose reads now fail). Both Leave buttons use this.
+  async function leaveActive(h: { id: string; name: string }) {
+    if (!(await confirmSheet(leaveHouseholdRequest({ household: h.name })))) return;
+    try {
+      await leaveHousehold(h.id);
+      await refreshHouseholds();
+      const next = nextHouseholdAfterExit(useStore.getState().households, h.id);
+      if (h.id === currentHouseholdId && next) await switchHousehold(next);
+      toast(`Left ${h.name}`, 'info');
+    } catch (e) { toast((e as Error).message, 'error'); }
+  }
+
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // v10.49.0 (#32) — the "Invite your partner" prompt after the first entry lands here.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get('invite') !== '1') return;
+    if (can(myRole, 'invite_member')) setInviteOpen(true);
+    const rest = new URLSearchParams(searchParams);
+    rest.delete('invite');
+    setSearchParams(rest, { replace: true });
+  }, [searchParams, setSearchParams, myRole]);
 
   const [members, setMembers] = useState<Membership[]>([]);
   const [invites, setInvites] = useState<Invitation[]>([]);
@@ -133,36 +167,25 @@ export default function Households() {
   // Local-only mode banner
   if (!cloudEnabled) {
     return (
-      <div>
-        <h1 className="display-italic text-4xl text-ink mb-1.5">Households</h1>
-        <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim mb-6">
-          Local-only mode — set Supabase env vars to enable cloud
-        </p>
+      <div className="ui-pilot">
+        <PageHead title="Households" subtitle="Local-only mode — set Supabase env vars to enable cloud" />
 
         {/* Basic household identity (name/type) still lives on this device even
             without cloud — it just isn't shared with other members/devices. */}
         {active && (
           <Panel title="Household Settings" sub={active.name}>
             <div className="p-5 grid sm:grid-cols-2 gap-4">
+              <HouseholdNameField name={active.name}
+                onSave={async next => { await renameHousehold(active.id, next); toast('Renamed', 'success'); }} />
               <div>
-                <label className="mono-label mb-1.5 block">Name</label>
-                <div className="flex gap-2">
-                  <Input value={active.name} readOnly className="flex-1" />
-                  <Button variant="ghost" onClick={() => {
-                    const next = prompt('New name:', active.name);
-                    if (!next || next === active.name) return;
-                    renameHousehold(active.id, next).then(() => toast('Renamed', 'success'));
-                  }}>Rename</Button>
-                </div>
-              </div>
-              <div>
-                <label className="mono-label mb-1.5 block">Household Type</label>
-                <Select value={active.type as ProfileTypeKey}
+                <label htmlFor="households-type" className="mono-label mb-1.5 block">Household Type</label>
+                <Select id="households-type" value={normalizeHouseholdType(active.type)}
                   onChange={e => updateProfile({ household: e.target.value as ProfileTypeKey })}>
-                  {Object.entries(PROFILE_TYPES).map(([k, v]) => (
-                    <option key={k} value={k}>{v.icon} {v.label}</option>
+                  {HOUSEHOLD_TYPE_ORDER.map(k => (
+                    <option key={k} value={k}>{PROFILE_TYPES[k].icon} {PROFILE_TYPES[k].label} — {PROFILE_TYPES[k].desc}</option>
                   ))}
                 </Select>
+                <p className="text-[0.78rem] text-ink-mid mt-1.5">{PROFILE_TYPES[normalizeHouseholdType(active.type)].detail}</p>
               </div>
             </div>
           </Panel>
@@ -189,18 +212,13 @@ export default function Households() {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-start mb-6 gap-4 flex-wrap">
-        <div>
-          <h1 className="display-italic text-4xl text-ink mb-1.5">Households</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            {households.length} household{households.length === 1 ? '' : 's'} · signed in as {session?.user?.email}
-          </p>
-        </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus size={14} /> Create Household
-        </Button>
-      </div>
+    <div className="ui-pilot">
+      {/* HH4 — on phones the header + creates a household (the page button is desktop-only). */}
+      <PageHead
+        title="Households"
+        subtitle={<>{households.length} household{households.length === 1 ? '' : 's'} · signed in as {session?.user?.email}</>}
+        action={{ label: 'Create Household', icon: true, entity: 'household', onClick: () => setCreateOpen(true) }}
+      />
 
       {/* Household cards — board E · .hh-card: same neu treatment + member
           avatar stack as the household-switch pull-down (HouseholdSheet.tsx);
@@ -208,7 +226,7 @@ export default function Households() {
           their initials. */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
         {households.map(h => {
-          const meta = PROFILE_TYPES[h.type as ProfileTypeKey] || PROFILE_TYPES.family;
+          const meta = PROFILE_TYPES[normalizeHouseholdType(h.type)];
           const isActive = h.id === currentHouseholdId;
           // `members` (below) is the cloud Membership[] rows for the active
           // household; the avatar stack wants the entity-level Member[] (has
@@ -243,14 +261,14 @@ export default function Households() {
                   <span className="text-2xl" aria-hidden>{meta.icon}</span>
                 )}
                 {isActive
-                  ? <span className="mono-label px-2 py-0.5 rounded-pill flex-shrink-0" style={{ background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent)' }}>✓ current</span>
+                  ? <span className="mono-label px-2 py-0.5 rounded-pill flex-shrink-0" style={{ background: 'color-mix(in srgb, var(--accent) 15%, transparent)', color: 'var(--accent-text)' }}>✓ current</span>
                   : null}
               </div>
               <div className="font-semibold text-ink mb-0.5">{h.name}</div>
-              <div className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim mb-3">
+              <div className="text-[12px] text-ink-dim mb-3">
                 {meta.label} · {h.baseCurrency}
               </div>
-              <div className="font-mono text-[0.62rem] text-ink-dim">
+              <div className="text-[12px] text-ink-dim">
                 Created {new Date(h.createdAt).toLocaleDateString()}
               </div>
             </button>
@@ -268,8 +286,13 @@ export default function Households() {
             <Panel
               title={`Members (${members.length})`}
               action={can(myRole, 'invite_member')
-                ? <button onClick={() => setInviteOpen(true)} className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70 flex items-center gap-1">
-                    <Plus size={12} /> Invite
+                ? <button onClick={() => {
+                      // v10.59.0 — Personal is private and Couple has room for one; say so up front.
+                      const blocked = inviteBlockedReason(active.type, members.length, invites.length);
+                      if (blocked) toast(blocked, 'info'); else setInviteOpen(true);
+                    }}
+                    className="text-[13px] font-medium text-coral hover:opacity-70 flex items-center gap-1 min-h-[44px] px-1">
+                    <Plus size={14} /> Invite
                   </button>
                 : null}
             >
@@ -281,14 +304,7 @@ export default function Households() {
                       members={members} myRole={myRole}
                       currentUserId={session!.user.id}
                       onChanged={() => active && loadHouseholdDetails(active.id)}
-                      onLeave={async () => {
-                        if (!confirm(`Leave ${active.name}?`)) return;
-                        try {
-                          await leaveHousehold(active.id);
-                          await refreshHouseholds();
-                          toast(`Left ${active.name}`, 'info');
-                        } catch (e) { toast((e as Error).message, 'error'); }
-                      }}
+                      onLeave={() => leaveActive(active)}
                     />
               }
             </Panel>
@@ -325,52 +341,48 @@ export default function Households() {
               the user's profile, so it's edited here rather than in Settings. */}
           <div className="mt-3.5">
             <Panel title="Household Settings">
-              <div className="p-4 max-w-xs">
-                <label className="mono-label mb-1.5 block">Household Type</label>
-                <Select value={active.type as ProfileTypeKey}
+              <div className="p-4 max-w-md space-y-4">
+                <HouseholdNameField name={active.name} disabled={!can(myRole, 'edit_household_settings')}
+                  onSave={async next => {
+                    try { await renameHousehold(active.id, next); toast('Renamed', 'success'); }
+                    catch (e) { toast((e as Error).message, 'error'); throw e; }
+                  }} />
+                <div>
+                <label htmlFor="households-type" className="mono-label mb-1.5 block">Household Type</label>
+                <Select id="households-type" value={normalizeHouseholdType(active.type)}
                   disabled={!can(myRole, 'edit_household_settings')}
-                  onChange={e => updateProfile({ household: e.target.value as ProfileTypeKey })}>
-                  {Object.entries(PROFILE_TYPES).map(([k, v]) => (
-                    <option key={k} value={k}>{v.icon} {v.label}</option>
+                  onChange={async e => {
+                    const next = e.target.value as ProfileTypeKey;
+                    if (!typeFits(next, members.length)) {
+                      toast(`This household has ${members.length} members — more than a ${PROFILE_TYPES[next].label} household allows.`, 'error');
+                      return;
+                    }
+                    try { await updateProfile({ household: next }); }
+                    catch (err) { toast(householdLimitMessage(err) ?? (err as Error).message, 'error'); }
+                  }}>
+                  {HOUSEHOLD_TYPE_ORDER.map(k => (
+                    <option key={k} value={k} disabled={!typeFits(k, members.length)}>
+                      {PROFILE_TYPES[k].icon} {PROFILE_TYPES[k].label} — {PROFILE_TYPES[k].desc}
+                    </option>
                   ))}
                 </Select>
+                <p className="text-[0.78rem] text-ink-mid mt-1.5">{PROFILE_TYPES[normalizeHouseholdType(active.type)].detail}</p>
+                </div>
               </div>
             </Panel>
           </div>
 
-          {/* Danger zone */}
+          {/* Danger zone — only what cannot be undone easily: leave and delete (HH2). */}
           <div className="mt-6">
             <Panel title="Danger Zone">
               <div className="p-4 space-y-3">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div>
-                    <div className="font-semibold text-ink">Rename household</div>
-                    <div className="text-[0.78rem] text-ink-mid">Visible to all members.</div>
-                  </div>
-                  <Button variant="ghost" disabled={!can(myRole, 'edit_household_settings')}
-                    onClick={async () => {
-                      const next = prompt('New name:', active.name);
-                      if (!next || next === active.name) return;
-                      try { await renameHousehold(active.id, next); toast('Renamed', 'success'); }
-                      catch (e) { toast((e as Error).message, 'error'); }
-                    }}>
-                    Rename
-                  </Button>
-                </div>
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div>
                     <div className="font-semibold text-ink">Leave this household</div>
                     <div className="text-[0.78rem] text-ink-mid">Sole owner must transfer first.</div>
                   </div>
                   <Button variant="ghost" disabled={households.length <= 1}
-                    onClick={async () => {
-                      if (!confirm(`Leave ${active.name}?`)) return;
-                      try {
-                        await leaveHousehold(active.id);
-                        await refreshHouseholds();
-                        toast(`Left ${active.name}`, 'info');
-                      } catch (e) { toast((e as Error).message, 'error'); }
-                    }}>
+                    onClick={() => leaveActive(active)}>
                     <LogOut size={14} /> Leave
                   </Button>
                 </div>
@@ -381,7 +393,7 @@ export default function Households() {
                   </div>
                   <Button variant="danger" disabled={!can(myRole, 'delete_household')}
                     onClick={async () => {
-                      if (!confirm(`Permanently delete ${active.name}? This cannot be undone.`)) return;
+                      if (!(await confirmSheet(deleteHouseholdRequest({ household: active.name })))) return;
                       try {
                         await deleteHousehold(active.id);
                         toast(`Deleted ${active.name}`, 'warning');
@@ -438,8 +450,9 @@ function MembersList({
   currentUserId: string;
   onChanged: () => void; onLeave: () => void;
 }) {
-  const ROLE_OPTIONS: AppRole[] = ['admin','member','viewer','child'];
+  const ROLE_OPTIONS: AppRole[] = ['admin','member','viewer'];
   const toast = useStore(s => s.toast);
+  const householdName = useStore(s => s.households.find(h => h.id === s.currentHouseholdId)?.name ?? 'this household');
   return (
     <div className="divide-y divide-line">
       {members.map(m => {
@@ -456,13 +469,13 @@ function MembersList({
                 {m.display_name}
                 {isMe && <Badge tone="info">YOU</Badge>}
               </div>
-              <div className="font-mono text-[0.62rem] text-ink-dim mt-0.5">
+              <div className="text-[12px] text-ink-dim mt-0.5">
                 {m.household_role || '—'} · joined {new Date(m.joined_at).toLocaleDateString()}
               </div>
             </div>
             <div className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto sm:flex-shrink-0">
               {canEditRole ? (
-                <Select value={m.role} className="w-full min-w-0 sm:w-[120px]"
+                <Select value={m.role} className="w-full min-w-0 sm:w-[120px]" aria-label={`Role for ${m.display_name}`}
                   onChange={async e => {
                     try { await changeMemberRole(m.id, e.target.value); onChanged(); toast('Role updated', 'success'); }
                     catch (err) { toast((err as Error).message, 'error'); }
@@ -478,7 +491,7 @@ function MembersList({
                 </button>
               ) : canRemoveRow ? (
                 <button onClick={async () => {
-                  if (!confirm(`Remove ${m.display_name}?`)) return;
+                  if (!(await confirmSheet(removeMemberRequest({ name: m.display_name || 'this member', household: householdName })))) return;
                   try { await removeMembership(m.id); onChanged(); toast('Removed', 'info'); }
                   catch (err) { toast((err as Error).message, 'error'); }
                 }} className="p-1.5 text-ink-mid hover:text-terra" title="Remove">
@@ -497,24 +510,38 @@ function InvitesList({ invites, canRevoke, onRevoked }: {
   invites: Invitation[]; canRevoke: boolean; onRevoked: () => void;
 }) {
   const toast = useStore(s => s.toast);
+  const refreshInvitations = useStore(s => s.refreshInvitations);
   const [copied, setCopied] = useState<string | null>(null);
+  // v10.95.0 (#9, owner decision 13 Oct 2026; closes R4) — Revoke asks, then revokes at once. It used to
+  // hide the row and write the revoke after an 8-second Undo, so a tab closed inside that window left a
+  // live link behind a screen that said "revoked".
+  async function revoke(inv: Invitation) {
+    if (!(await confirmSheet(revokeInvitationRequest({ who: invitationWho({ recipientEmail: inv.recipient_email, label: inv.invited_email }) })))) return;
+    try {
+      const revoked = await revokeInvitation(inv.id);
+      toast(revoked ? 'Invitation revoked' : 'Already handled', revoked ? 'success' : 'info');
+      onRevoked();
+      void refreshInvitations();
+    } catch (err) { toast((err as Error).message, 'error'); }
+  }
   return (
     <div className="divide-y divide-line">
       {invites.map(inv => {
-        const url = `${window.location.origin}/invite/${encodeURIComponent(inv.token)}`;
+        const url = `${shareOrigin()}/invite/${encodeURIComponent(inv.token)}`;
         const expiry = new Date(inv.expires_at);
         const expired = expiry < new Date();
         const isLinkOnly = inv.invited_email === INVITE_LABEL_SENTINEL;
-        const displayLabel = isLinkOnly ? 'Shareable link' : inv.invited_email;
+        const displayLabel = inv.recipient_email || (isLinkOnly ? 'Shareable link' : inv.invited_email);
+        const labelNote = inv.recipient_email && !isLinkOnly ? `${inv.invited_email} · ` : '';
         return (
           <div key={inv.id} className="px-4 py-3 flex flex-wrap items-start gap-3 sm:flex-nowrap sm:items-center">
-            {isLinkOnly
+            {isLinkOnly && !inv.recipient_email
               ? <LinkIcon size={14} className="text-coral flex-shrink-0" />
               : <Mail size={14} className="text-ink-dim flex-shrink-0" />}
             <div className="flex-1 min-w-0">
               <div className="text-[0.86rem] font-semibold text-ink truncate">{displayLabel}</div>
-              <div className="font-mono text-[0.62rem] text-ink-dim mt-0.5">
-                {roleLabel(inv.role)} · {expired ? 'expired' : `expires ${expiry.toLocaleDateString()}`}
+              <div className="text-[12px] text-ink-dim mt-0.5">
+                {labelNote}{roleLabel(inv.role)} · {expired ? 'expired' : `expires ${expiry.toLocaleDateString()}`}
               </div>
             </div>
             <div className="ml-auto flex w-full items-center justify-end gap-2 sm:w-auto sm:flex-shrink-0">
@@ -530,11 +557,7 @@ function InvitesList({ invites, canRevoke, onRevoked }: {
                 {copied === inv.id ? <Check size={14} className="text-sage" /> : <Copy size={14} />}
               </button>
               {canRevoke && (
-                <button onClick={async () => {
-                  if (!confirm('Revoke this invitation?')) return;
-                  try { await revokeInvitation(inv.id); onRevoked(); toast('Revoked', 'info'); }
-                  catch (err) { toast((err as Error).message, 'error'); }
-                }} className="p-1.5 text-ink-mid hover:text-terra" title="Revoke">
+                <button onClick={() => { void revoke(inv); }} className="p-1.5 text-ink-mid hover:text-terra" title="Revoke" aria-label="Revoke invitation">
                   <Trash2 size={14} />
                 </button>
               )}
@@ -571,8 +594,9 @@ function CreateHouseholdModal({ open, onClose, onCreated }: {
         <Field label="Name"><Input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Smith Family · Acme Consulting · …" required /></Field>
         <Field label="Type">
           <Select value={type} onChange={e => setType(e.target.value as ProfileTypeKey)}>
-            {Object.entries(PROFILE_TYPES).map(([k, m]) => <option key={k} value={k}>{m.icon} {m.label} — {m.desc}</option>)}
+            {HOUSEHOLD_TYPE_ORDER.map(k => <option key={k} value={k}>{PROFILE_TYPES[k].icon} {PROFILE_TYPES[k].label} — {PROFILE_TYPES[k].desc}</option>)}
           </Select>
+          <p className="text-[0.78rem] text-ink-mid mt-1.5">{PROFILE_TYPES[type].detail}</p>
         </Field>
         <Field label="Base currency">
           <Select value={currency} onChange={e => setCurrency(e.target.value)}>
@@ -595,15 +619,21 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
   onClose: () => void; onSent: () => void;
 }) {
   const [label, setLabel] = useState('');
-  const [role, setRole] = useState<'admin'|'member'|'viewer'|'child'>('member');
+  // v10.95.0 (#9; owner decision 13 Oct 2026) — optional: the invitee's address. Vyact emails the
+  // invitation, and they find it in their bell once signed in with it. Empty = a link-only invitation.
+  const [email, setEmail] = useState('');
+  const [emailedTo, setEmailedTo] = useState<string | null>(null);
+  const [role, setRole] = useState<'admin'|'member'|'viewer'>('member');
   const [householdRole, setHouseholdRole] = useState('partner');
   const [submitting, setSubmitting] = useState(false);
   const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const toast = useStore(s => s.toast);
+  const myEmail = useStore(s => s.session?.user?.email);
+  const refreshInvitations = useStore(s => s.refreshInvitations);
 
   function reset() {
-    setLink(null); setLabel(''); setRole('member');
+    setLink(null); setLabel(''); setEmail(''); setEmailedTo(null); setRole('member');
     setHouseholdRole('partner'); setCopied(false);
   }
 
@@ -640,13 +670,16 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
             <div className="mx-auto mb-3 h-14 w-14 rounded-full bg-coral/15 text-coral flex items-center justify-center">
               <LinkIcon size={26} />
             </div>
-            <p className="text-ink mb-1 font-semibold">Invite link ready</p>
+            <p className="text-ink mb-1 font-semibold">{emailedTo ? 'Invitation sent' : 'Invite link ready'}</p>
             <p className="text-ink-mid text-[0.84rem]">
-              Share it however you like — message, email, in person. Anyone with the link can join as <strong>{roleLabel(role)}</strong>.
+              {emailedTo
+                ? <>We emailed it to <strong>{emailedTo}</strong>. They'll also find it in their notifications when they sign in with that address. </>
+                : 'Share it however you like — message, email, in person. '}
+              Anyone with the link can join as <strong>{roleLabel(role)}</strong>.
             </p>
           </div>
 
-          <div className="bg-bg3 border border-line rounded-md p-3 font-mono text-[0.74rem] text-coral break-all mb-3 select-all">
+          <div className="well p-3 font-mono text-[0.74rem] text-coral break-all mb-3 select-all">
             {link}
           </div>
 
@@ -673,24 +706,50 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
       ) : (
         <form onSubmit={async e => {
           e.preventDefault();
+          const check = checkInviteEmail(email, myEmail);
+          if (!check.ok) {
+            toast(check.reason === 'own'
+              ? "That's your own email. Enter the address of the person you're inviting."
+              : 'Enter a valid email address, or leave it empty to share a link.', 'error');
+            return;
+          }
           setSubmitting(true);
           try {
-            const inv = await createInviteLink(householdId, role, householdRole, label.trim() || undefined);
-            const url = `${window.location.origin}/invite/${encodeURIComponent((inv as { token: string }).token)}`;
+            const inv = await createInviteLink(householdId, role, householdRole, label.trim() || undefined, check.email);
+            track('member_invited', { invite_role: role });
+            const url = `${shareOrigin()}/invite/${encodeURIComponent((inv as { token: string }).token)}`;
             setLink(url);
             void copyLink(url);
             onSent();
+            void refreshInvitations();
+            if (check.email) {
+              // The invitation is saved either way; the email is on top of it, and its outcome is said.
+              const result = await sendInviteEmail((inv as { id: string }).id);
+              const notice = inviteEmailNotice(result, check.email);
+              toast(notice.message, notice.tone);
+              if (result.ok) setEmailedTo(check.email);
+            }
           } catch (err) {
-            toast((err as Error).message, 'error');
+            toast(householdLimitMessage(err) ?? (err as Error).message, 'error');
           } finally { setSubmitting(false); }
         }}>
           <p className="text-ink-mid text-[0.84rem] mb-4">
-            Create a shareable link for this household. No email is sent — copy the link and share it offline.
+            Add their email and Vyact emails them the invitation; they'll also find it in their notifications when
+            they sign in with that address. Or leave it empty and share the link yourself.
           </p>
+
+          <Field label="Their email" hint="optional">
+            <Input
+              autoFocus type="email" inputMode="email" autoComplete="off" autoCapitalize="none" spellCheck={false}
+              value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="name@example.com"
+              maxLength={254}
+            />
+          </Field>
 
           <Field label="Label" hint="optional, for your reference">
             <Input
-              autoFocus value={label} onChange={e => setLabel(e.target.value)}
+              value={label} onChange={e => setLabel(e.target.value)}
               placeholder="e.g. Partner, Mom, Accountant"
               maxLength={80}
             />
@@ -702,7 +761,6 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
                 <option value="admin">Admin</option>
                 <option value="member">Member</option>
                 <option value="viewer">Viewer (read-only)</option>
-                <option value="child">Child (own data only)</option>
               </Select>
             </Field>
             <Field label="Household role">
@@ -718,7 +776,7 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
           <div className="flex gap-2 mt-5 pt-4 border-t border-line">
             <Button variant="ghost" onClick={onClose} full>Cancel</Button>
             <Button type="submit" disabled={submitting} full>
-              {submitting ? 'Creating…' : <><LinkIcon size={14} /> Create invite link</>}
+              {submitting ? 'Creating…' : email.trim() ? <><Mail size={14} /> Send invitation</> : <><LinkIcon size={14} /> Create invite link</>}
             </Button>
           </div>
         </form>
@@ -789,27 +847,20 @@ function ActivityPanel({
     >
       {/* Filter bar */}
       <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-line">
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5" role="group" aria-label="Activity type">
           {ACTIVITY_TYPE_FILTERS.map(f => (
-            <button
-              key={f.value}
-              onClick={() => setActivityType(f.value)}
-              className={`font-mono text-[0.62rem] tracking-wider uppercase px-2.5 py-1 rounded ${
-                activityType === f.value
-                  ? 'bg-coral text-white'
-                  : 'bg-bg3 text-ink-mid hover:text-ink'
-              }`}
-            >
+            <Chip key={f.value} on={activityType === f.value} onClick={() => setActivityType(f.value)}>
               {f.label}
-            </button>
+            </Chip>
           ))}
         </div>
         {memberships.length > 1 && (
           <div className="ml-auto flex items-center gap-2">
-            <label className="font-mono text-[0.6rem] tracking-wider uppercase text-ink-dim">
+            <label htmlFor="activity-actor" className="ui-label">
               Member
             </label>
             <Select
+              id="activity-actor"
               value={activityActor}
               className="w-auto min-w-[140px]"
               onChange={e => setActivityActor(e.target.value)}
@@ -843,17 +894,17 @@ function ActivityPanel({
               <button
                 onClick={() => setPage(p => Math.max(1, p - 1))}
                 disabled={page === 1}
-                className="font-mono text-[0.62rem] tracking-wider uppercase text-coral hover:bg-bg3 px-2.5 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                className="text-[13px] font-medium text-coral hover:bg-bg3 px-3 min-h-[44px] rounded-r2 disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 ← Previous
               </button>
-              <span className="font-mono text-[0.58rem] tracking-wider uppercase text-ink-dim">
+              <span className="text-[12px] text-ink-dim">
                 Page {page} of {totalPages}
               </span>
               <button
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                 disabled={page === totalPages}
-                className="font-mono text-[0.62rem] tracking-wider uppercase text-coral hover:bg-bg3 px-2.5 py-1 rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                className="text-[13px] font-medium text-coral hover:bg-bg3 px-3 min-h-[44px] rounded-r2 disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 Next →
               </button>
@@ -862,5 +913,36 @@ function ActivityPanel({
         </>
       )}
     </Panel>
+  );
+}
+
+/** Aurora 4.0 HH2 — the household's name is a field in Household settings (it sat as "Rename" next to
+ *  Leave and Delete). Save is offered only when the name changed; nothing is asked first. */
+function HouseholdNameField({ name, disabled = false, onSave }: {
+  name: string; disabled?: boolean; onSave: (next: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(name);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setDraft(name); }, [name]);
+  const next = draft.trim();
+  const changed = next.length > 0 && next !== name;
+  async function save() {
+    if (!changed) return;
+    setBusy(true);
+    try { await onSave(next); } catch { setDraft(name); } finally { setBusy(false); }
+  }
+  return (
+    <div>
+      <label htmlFor="household-name" className="mono-label mb-1.5 block">Household name</label>
+      <div className="flex gap-2">
+        <Input id="household-name" value={draft} maxLength={80} disabled={disabled} className="flex-1"
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void save(); } }} />
+        <Button variant="ghost" disabled={disabled || !changed || busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+      <p className="text-[12px] text-ink-dim mt-1.5">Visible to all members.</p>
+    </div>
   );
 }

@@ -1,18 +1,18 @@
-// Vyact v7.4.4 — AddFab
+// Vyact v7.4.4 — AddFab. Aurora 4.0 X4 / IN1.
 //
-// Always-visible primary entry point for adding a transaction. Sits in the
-// bottom-right corner above the MobileBar / safe-area, hides on scroll-down
-// to stop blocking content, and reappears on scroll-up.
-//
-// Long-press (touch) or right-click (desktop) opens a speed-dial with the
-// other CRUD entries (Goal / Budget / Debt / Asset). Plain tap = Add
-// Transaction so the most-common action is one tap away.
+// Desktop-only floating + (on phones the tab bar's raised + adds a transaction). It used to add a
+// transaction on click, doubling the "+ Add Transaction" button in the page header. Now the page's
+// own add button stays in its header (PageHead), and the floating + opens a menu of the OTHER things
+// you can add: the current page's own entity is left out (read from the page action). It shows on
+// every app page, Insights included (IN1); auth and onboarding have no household to add to.
+// It hides on scroll-down while closed, and reappears on scroll-up.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Plus, Wallet, CreditCard, Briefcase, Users, X } from 'lucide-react';
+import { Plus, Wallet, CreditCard, Briefcase, Users, X, ArrowLeftRight } from 'lucide-react';
 import { useStore } from '../../store';
 import { useScrollDirection } from '../../hooks';
+import { usePageAction, type AddEntity } from './pageAction';
 
 export default function AddFab() {
   const location = useLocation();
@@ -21,22 +21,22 @@ export default function AddFab() {
   const openAddDebt   = useStore(s => s.openAddDebt);
   const openAddAsset  = useStore(s => s.openAddAsset);
   const openAddSplit  = useStore(s => s.openAddSplit);
+  const pageEntity = usePageAction()?.entity;
 
   const dir = useScrollDirection();
-  const [dialOpen, setDialOpen] = useState(false);
-  const longPressTimer = useRef<number | null>(null);
-  const longPressFired = useRef(false);
+  const [open, setOpen] = useState(false);
 
-  // Hide on scroll-down only when the dial is closed; once the user opens the
-  // dial, keep it pinned so they can choose without it sliding out.
-  const hidden = dir === 'down' && !dialOpen;
+  // Keep it pinned while the menu is open, so the choice does not slide away.
+  const hidden = dir === 'down' && !open;
+
+  useEffect(() => { setOpen(false); }, [location.pathname]);
 
   useEffect(() => {
-    if (!dialOpen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDialOpen(false); };
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     const onClick = (e: MouseEvent) => {
       const root = document.getElementById('add-fab-root');
-      if (root && !root.contains(e.target as Node)) setDialOpen(false);
+      if (root && !root.contains(e.target as Node)) setOpen(false);
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('mousedown', onClick);
@@ -44,70 +44,38 @@ export default function AddFab() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('mousedown', onClick);
     };
-  }, [dialOpen]);
+  }, [open]);
 
-  // Hide on auth routes — no household, no modal target. Also hidden on /insights
-  // (v9.9.2) — a focused content-reading surface, floating chrome is distracting.
-  // (After the hooks so they run unconditionally — rules-of-hooks; the effect is
-  // a no-op while closed.)
-  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding') || location.pathname.startsWith('/insights')) return null;
+  // (After the hooks so they run unconditionally — rules-of-hooks.)
+  if (location.pathname.startsWith('/auth/') || location.pathname.startsWith('/onboarding')) return null;
 
-  function startLongPress() {
-    longPressFired.current = false;
-    longPressTimer.current = window.setTimeout(() => {
-      longPressFired.current = true;
-      setDialOpen(true);
-    }, 500);
-  }
-  function cancelLongPress() {
-    if (longPressTimer.current) {
-      window.clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }
-  function handleClick() {
-    if (longPressFired.current) { longPressFired.current = false; return; }
-    if (dialOpen) { setDialOpen(false); return; }
-    openAddTxn();
-  }
-  function handleContextMenu(e: React.MouseEvent) {
-    e.preventDefault();
-    setDialOpen(d => !d);
-  }
-
-  function pick(fn: () => void) {
-    setDialOpen(false);
-    fn();
-  }
-
-  const dialItems = [
-    { label: 'New split',  icon: <Users size={16} />,      onClick: () => pick(openAddSplit) },
-    { label: 'Add budget', icon: <Wallet size={16} />,     onClick: () => pick(openAddBudget) },
-    { label: 'Add debt',   icon: <CreditCard size={16} />, onClick: () => pick(openAddDebt) },
-    { label: 'Add asset',  icon: <Briefcase size={16} />,  onClick: () => pick(openAddAsset) },
+  const pick = (fn: () => void) => { setOpen(false); fn(); };
+  const items: { entity: AddEntity; label: string; icon: ReactNode; run: () => void }[] = [
+    { entity: 'transaction', label: 'Add transaction', icon: <ArrowLeftRight size={16} />, run: () => openAddTxn() },
+    { entity: 'split',       label: 'New split',       icon: <Users size={16} />,          run: () => openAddSplit() },
+    { entity: 'budget',      label: 'Add budget',      icon: <Wallet size={16} />,         run: openAddBudget },
+    { entity: 'debt',        label: 'Add loan',        icon: <CreditCard size={16} />,     run: openAddDebt },
+    { entity: 'asset',       label: 'Add asset',       icon: <Briefcase size={16} />,      run: openAddAsset },
   ];
+  const menu = items.filter(item => item.entity !== pageEntity);
 
   return (
     <div
       id="add-fab-root"
-      /* Desktop-only: on phones the primary "+" is the dead-center tab-bar slot
-         (Batch A board M1). Desktop keeps the FAB for the add + speed-dial. */
       className="fixed right-4 z-50 hidden sm:flex flex-col items-end gap-2.5 transition-all duration-300"
-      style={{
-        bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)',
-      }}
+      style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 80px)' }}
     >
-      {/* Speed-dial items render above the FAB. */}
-      {dialOpen && (
-        <div className="flex flex-col items-end gap-2 mb-1 animate-modalIn">
-          {dialItems.map(item => (
+      {open && (
+        <div role="menu" aria-label="Add" className="flex flex-col items-end gap-2 mb-1 animate-modalIn">
+          {menu.map(item => (
             <button
-              key={item.label}
+              key={item.entity}
               type="button"
-              onClick={item.onClick}
-              className="flex items-center gap-2 bg-bg2 border border-line shadow-2 rounded-full pl-3 pr-3.5 py-2 text-[0.82rem] text-ink hover:border-line2 hover:-translate-y-0.5 transition-all"
+              role="menuitem"
+              onClick={() => pick(item.run)}
+              className="tile flex items-center gap-2 !rounded-full min-h-[44px] pl-3.5 pr-4 text-[0.875rem] text-ink hover:-translate-y-0.5 transition-transform"
             >
-              <span className="text-coral">{item.icon}</span>
+              <span style={{ color: 'var(--accent-text)' }}>{item.icon}</span>
               <span className="font-medium">{item.label}</span>
             </button>
           ))}
@@ -116,19 +84,14 @@ export default function AddFab() {
 
       <button
         type="button"
-        aria-label={dialOpen ? 'Close add menu' : 'Add transaction (long-press for more)'}
-        title="Add transaction · long-press for more"
-        onClick={handleClick}
-        onContextMenu={handleContextMenu}
-        onTouchStart={startLongPress}
-        onTouchEnd={cancelLongPress}
-        onTouchCancel={cancelLongPress}
-        onMouseDown={startLongPress}
-        onMouseUp={cancelLongPress}
-        onMouseLeave={cancelLongPress}
-        className={`w-14 h-14 rounded-full bg-coral text-white shadow-2 flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 ${hidden ? 'translate-y-[120%] opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}
+        aria-label={open ? 'Close add menu' : 'Add…'}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Add…"
+        onClick={() => setOpen(o => !o)}
+        className={`w-14 h-14 rounded-full bg-coral text-[color:var(--accent-ink)] shadow-2 flex items-center justify-center hover:scale-105 active:scale-95 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 ${hidden ? 'translate-y-[120%] opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}
       >
-        {dialOpen ? <X size={22} /> : <Plus size={22} strokeWidth={2.4} />}
+        {open ? <X size={22} /> : <Plus size={22} strokeWidth={2.4} />}
       </button>
     </div>
   );

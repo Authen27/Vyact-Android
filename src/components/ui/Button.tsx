@@ -17,9 +17,11 @@ const VARIANT_CLASS: Record<Variant, string> = {
   danger:  'btn-danger',
 };
 
-export default function Button({ variant = 'primary', full = false, className = '', children, ...rest }: Props) {
+// W7a (audit FE-UIS-16): `type` defaults to "button", so a Cancel inside a form no longer submits it.
+// A form's submit button says type="submit" (every one already does).
+export default function Button({ variant = 'primary', full = false, className = '', type = 'button', children, ...rest }: Props) {
   return (
-    <button className={`${VARIANT_CLASS[variant]} ${full ? 'w-full' : ''} ${className}`} {...rest}>
+    <button type={type} className={`${VARIANT_CLASS[variant]} ${full ? 'w-full' : ''} ${className}`} {...rest}>
       {children}
     </button>
   );

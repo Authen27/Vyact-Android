@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { SupabaseAdapter, ConcurrencyConflictError, BudgetExistsError } from '../supabaseAdapter';
+import { SupabaseAdapter, ConcurrencyConflictError, BudgetExistsError, WriteNotAppliedError } from '../supabaseAdapter';
 
 // Test scenarios CON-UNIT-051..053. TD-03 phase A (PR #11) — pins the
 // compare-and-set behaviour added to SupabaseAdapter.upsert so the
@@ -101,34 +101,25 @@ describe('SupabaseAdapter.upsert · TD-03 optimistic concurrency', () => {
   });
 });
 
-describe('SupabaseAdapter.replaceAll · TD-09 RPC dispatch', () => {
-  // CON-UNIT-054 pins the RPC routing that backs replaceAll: each entity
-  // must call the matching `replace_<entity>` RPC (with the 'members' →
-  // 'replace_memberships' special case) and pass the household + rows
-  // payload unchanged. The RPC is the only mechanism that keeps a
-  // full-list replace transactional under RLS, so if the routing breaks
-  // partial writes can corrupt the household snapshot silently.
+describe('SupabaseAdapter.replaceAll · W1: no bulk replace in cloud mode', () => {
+  // CON-UNIT-054 (rewritten in W1, audit 2026-10-04 DB-SEC-01). It used to pin the routing
+  // to the `replace_<entity>` RPCs; those RPCs let any member — a viewer or child included —
+  // seize or wipe a household, and nothing in cloud mode needs them, so they were dropped.
+  // A cloud bulk replace must now refuse WITHOUT calling the server, for every entity.
   function mockSbRpc(): { sb: SupabaseClient; rpc: ReturnType<typeof vi.fn> } {
     const rpc = vi.fn().mockResolvedValue({ data: null, error: null });
     return { sb: { rpc } as unknown as SupabaseClient, rpc };
   }
 
-  it('CON-UNIT-054 · routes each entity to replace_<entity> and passes {h, rows}', async () => {
-    const cases: Array<[Parameters<SupabaseAdapter['replaceAll']>[0], string]> = [
-      ['transactions', 'replace_transactions'],
-      ['budgets',      'replace_budgets'],
-      ['goals',        'replace_goals'],
-      ['debts',        'replace_debts'],
-      ['assets',       'replace_assets'],
-      ['members',      'replace_memberships'], // special case
-    ];
-    for (const [entity, rpcName] of cases) {
+  it('CON-UNIT-054 · refuses every RPC-backed entity and never calls a replace_* RPC', async () => {
+    const entities: Array<Parameters<SupabaseAdapter['replaceAll']>[0]> =
+      ['transactions', 'budgets', 'goals', 'debts', 'assets', 'members', 'accounts', 'savedViews'];
+    for (const entity of entities) {
       const { sb, rpc } = mockSbRpc();
       const adapter = new SupabaseAdapter(sb);
-      const rows = [{ id: '11111111-1111-1111-1111-111111111111' }];
-      await adapter.replaceAll(entity, 'h1', rows);
-      expect(rpc).toHaveBeenCalledTimes(1);
-      expect(rpc).toHaveBeenCalledWith(rpcName, expect.objectContaining({ h: 'h1', rows: expect.any(Array) }));
+      await expect(adapter.replaceAll(entity, 'h1', [{ id: '11111111-1111-1111-1111-111111111111' }]))
+        .rejects.toThrow(/not available in cloud mode/);
+      expect(rpc).not.toHaveBeenCalled();
     }
   });
 });
@@ -146,30 +137,63 @@ describe('SupabaseAdapter.listSince · TD-06 delta pull', () => {
 
   type ListSinceRow = { id: string; updated_at: string; deleted_at: string | null; household_id: string };
 
+  // Audit F8: the query now orders by (updated_at, id) and keyset-paginates.
+  // The mock chain must expose .or() and a double .order().
   function mockSbList(rows: ListSinceRow[]): {
     sb: SupabaseClient;
-    spies: { from: ReturnType<typeof vi.fn>; eq: ReturnType<typeof vi.fn>; gte: ReturnType<typeof vi.fn>; order: ReturnType<typeof vi.fn>; limit: ReturnType<typeof vi.fn> };
+    spies: { from: ReturnType<typeof vi.fn>; eq: ReturnType<typeof vi.fn>; gte: ReturnType<typeof vi.fn>; or: ReturnType<typeof vi.fn>; order: ReturnType<typeof vi.fn>; limit: ReturnType<typeof vi.fn> };
   } {
-    const limit = vi.fn().mockResolvedValue({ data: rows, error: null });
-    const order = vi.fn().mockReturnValue({ limit });
-    const gte   = vi.fn().mockReturnValue({ order });
-    const eq    = vi.fn().mockReturnValue({ gte });
+    // The real query: .select().eq().order().order().limit(), then either
+    // .or(...) or .gte(...) on the LIMITED chain. Build a self-similar chain
+    // where every link returns the chain and the chain is thenable (awaiting
+    // it resolves the rows), so any of these orders resolve correctly.
+    let resolveWith!: (v: { data: ListSinceRow[]; error: null }) => void;
+    const promise = new Promise<{ data: ListSinceRow[]; error: null }>((res) => { resolveWith = res; });
+    type Chain = Record<'order' | 'limit' | 'or' | 'gte', ReturnType<typeof vi.fn>> & {
+      then: Promise<unknown>['then'];
+    };
+    const chain = {} as Chain;
+    const self = () => chain;
+    chain.order = vi.fn().mockImplementation(self);
+    chain.limit = vi.fn().mockImplementation(self);
+    chain.or    = vi.fn().mockImplementation(self);
+    chain.gte   = vi.fn().mockImplementation(self);
+    chain.then  = ((onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) =>
+      promise.then(onF as never, onR as never)) as Chain['then'];
+    queueMicrotask(() => resolveWith({ data: rows, error: null }));
+    const eq    = vi.fn().mockReturnValue(chain);
     const select = vi.fn().mockReturnValue({ eq });
     const from  = vi.fn().mockReturnValue({ select });
-    return { sb: { from } as unknown as SupabaseClient, spies: { from, eq, gte, order, limit } };
+    return { sb: { from } as unknown as SupabaseClient, spies: {
+      from, eq,
+      gte: chain.gte, or: chain.or, order: chain.order, limit: chain.limit,
+    } };
   }
 
-  it('CON-UNIT-055 · issues `.gte(updated_at, since).order(updated_at asc)` and does NOT filter deleted_at', async () => {
+  it('CON-UNIT-055 · keyset-paginates by (updated_at, id); a bare timestamp cursor still uses gte (legacy compat)', async () => {
     const { sb, spies } = mockSbList([]);
     const adapter = new SupabaseAdapter(sb);
     const result = await adapter.listSince('transactions', 'h1', '2026-05-30T00:00:00Z', 100);
     expect(spies.from).toHaveBeenCalledWith('transactions');
     expect(spies.eq).toHaveBeenCalledWith('household_id', 'h1');
+    // Legacy bare-timestamp cursor → gte fallback (re-reads the boundary once).
     expect(spies.gte).toHaveBeenCalledWith('updated_at', '2026-05-30T00:00:00Z');
+    expect(spies.or).not.toHaveBeenCalled();
     expect(spies.order).toHaveBeenCalledWith('updated_at', { ascending: true });
+    expect(spies.order).toHaveBeenCalledWith('id', { ascending: true });
     expect(spies.limit).toHaveBeenCalledWith(100);
     // Empty response → no rows, no tombstones, null cursor advance.
     expect(result).toEqual({ rows: [], tombstones: [], maxUpdatedAt: null });
+  });
+
+  it('CON-UNIT-055b · a composite cursor uses the keyset OR, never gte (no same-timestamp stall)', async () => {
+    const { sb, spies } = mockSbList([]);
+    const adapter = new SupabaseAdapter(sb);
+    await adapter.listSince('transactions', 'h1', '2026-05-30T00:00:00Z|aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 100);
+    expect(spies.gte).not.toHaveBeenCalled();
+    expect(spies.or).toHaveBeenCalledWith(
+      'updated_at.gt.2026-05-30T00:00:00Z,and(updated_at.eq.2026-05-30T00:00:00Z,id.gt.aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)',
+    );
   });
 
   it('CON-UNIT-056 · partitions live rows vs tombstones and reports max(updated_at)', async () => {
@@ -186,7 +210,8 @@ describe('SupabaseAdapter.listSince · TD-06 delta pull', () => {
       'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
       'cccccccc-cccc-cccc-cccc-cccccccccccc',
     ]);
-    expect(result.maxUpdatedAt).toBe('2026-05-31T12:00:00Z');
+    // Audit F8 — the cursor advances as the COMPOSITE pair, not a bare timestamp.
+    expect(result.maxUpdatedAt).toBe('2026-05-31T12:00:00Z|cccccccc-cccc-cccc-cccc-cccccccccccc');
   });
 });
 
@@ -264,7 +289,11 @@ describe('SupabaseAdapter.remove · R1 tombstone propagation', () => {
   // another device's `updated_at >= cursor` window and the row lives on as a
   // ghost (the case-7 net-worth bug). We assert both columns are set.
   it('CON-UNIT-063 · soft-delete sets deleted_at AND bumps updated_at so the tombstone rides the delta window', async () => {
-    const eq = vi.fn().mockResolvedValue({ error: null });
+    // R3 (Phase 1) added `.select('id')` after `.eq()` so the adapter can count
+    // affected rows — an RLS-blocked UPDATE returns no error, so the row count
+    // is the only signal. The mock models that chain; one row back = applied.
+    const select = vi.fn().mockResolvedValue({ data: [{ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }], error: null });
+    const eq = vi.fn().mockReturnValue({ select });
     const update = vi.fn().mockReturnValue({ eq });
     const from = vi.fn().mockReturnValue({ update });
     const sb = { from } as unknown as SupabaseClient;
@@ -276,5 +305,54 @@ describe('SupabaseAdapter.remove · R1 tombstone propagation', () => {
     expect(patch.updated_at).toBeTruthy();
     expect(patch.updated_at).toBe(patch.deleted_at);   // same instant
     expect(eq).toHaveBeenCalledWith('id', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+  });
+});
+
+// CON-UNIT-084..086 — Phase 1. The silent-write-loss guard.
+//
+// A row-level-security policy does NOT raise on a blocked write. The statement
+// runs, matches zero rows, and returns { error: null }.  —
+// the pattern this adapter used everywhere — therefore saw a clean success, the
+// store dropped the row from local state, the UI said Deleted, and the next
+// sync pulled it back. That is defects 5 and 7, and neither was a delete bug:
+// it was the write never being asked whether it had done anything.
+//
+// Verified against the real schema in Lane B (CON-E2E-029): an unauthorised
+// UPDATE and DELETE each reported row_count = 0 with no exception.
+describe('SupabaseAdapter · a write that changes nothing must not report success', () => {
+  it('CON-UNIT-084 · a soft-delete affecting zero rows throws WriteNotAppliedError', async () => {
+    const select = vi.fn().mockResolvedValue({ data: [], error: null });   // RLS refused, silently
+    const eq = vi.fn().mockReturnValue({ select });
+    const update = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ update });
+    const adapter = new SupabaseAdapter({ from } as unknown as SupabaseClient);
+
+    await expect(adapter.remove('recurring', 'h1', 'r1')).rejects.toThrow(WriteNotAppliedError);
+    // The message has to be actionable: it is the only thing the user will see.
+    await expect(adapter.remove('recurring', 'h1', 'r1')).rejects.toThrow(/affected no rows/);
+  });
+
+  it('CON-UNIT-085 · deleting a household affecting zero rows throws', async () => {
+    // The households DELETE policy is role_in(id) = 'owner'. A non-owner used to
+    // get a success toast and a household that was still there.
+    const select = vi.fn().mockResolvedValue({ data: [], error: null });
+    const eq = vi.fn().mockReturnValue({ select });
+    const del = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ delete: del });
+    const adapter = new SupabaseAdapter({ from } as unknown as SupabaseClient);
+
+    await expect(adapter.deleteHousehold('h-not-mine')).rejects.toThrow(WriteNotAppliedError);
+  });
+
+  it('CON-UNIT-086 · a write that DID apply still resolves', async () => {
+    // The guard must not turn every successful delete into an error — one row
+    // back is the normal case and has to stay silent.
+    const select = vi.fn().mockResolvedValue({ data: [{ id: 'h1' }], error: null });
+    const eq = vi.fn().mockReturnValue({ select });
+    const del = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ delete: del });
+    const adapter = new SupabaseAdapter({ from } as unknown as SupabaseClient);
+
+    await expect(adapter.deleteHousehold('h1')).resolves.toBeUndefined();
   });
 });

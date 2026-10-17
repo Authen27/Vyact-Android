@@ -2,7 +2,7 @@
 //   §4 budget identity + allocation flattening + recurring forecast
 //   §5 RRULE composition (incl. month-end/quarterly/COUNT/UNTIL encoding)
 import { describe, it, expect } from 'vitest';
-import { resolveBudgetPeriod, budgetLines, recurringForecastByCategory } from '../calculations';
+import { resolveBudgetPeriod, budgetLines, recurringForecastByCategory, type ForecastSchedule } from '../calculations';
 import { buildRRule } from '../recurring';
 import type { Budget, BudgetAllocation } from '../../types';
 
@@ -31,12 +31,13 @@ describe('v9.1 §4 — budget identity', () => {
   });
 
   it('budgetForecast sums recurring EXPENSE schedules by category; excludes income', () => {
-    const sched = [
-      { transactionTemplate: { type: 'expense', amount: 1000, currency: 'USD', category: 'rent_mortgage' }, frequency: 'monthly' },
-      { transactionTemplate: { type: 'income',  amount: 5000, currency: 'USD', category: 'salary' }, frequency: 'monthly' },
+    const sched: ForecastSchedule[] = [
+      { transactionTemplate: { type: 'expense', amount: 1000, currency: 'USD', category: 'rent_mortgage' }, frequency: 'monthly', startDate: '2026-01-01' },
+      { transactionTemplate: { type: 'income',  amount: 5000, currency: 'USD', category: 'salary' }, frequency: 'monthly', startDate: '2026-01-01' },
     ];
     const f = recurringForecastByCategory(sched, '2026-06-01', '2026-06-30', 'USD', R);
-    expect(f.rent_mortgage).toBeGreaterThan(900);   // ~1 month
+    // v10.91.0 (FE-MNY-16): one real date in June → exactly one rent (it was ~986, a 30/30.4375 estimate).
+    expect(f.rent_mortgage).toBe(1000);
     expect(f.salary).toBeUndefined();               // income excluded from spend forecast
   });
 });

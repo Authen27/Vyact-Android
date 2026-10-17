@@ -13,14 +13,15 @@ import type { Notification, NotificationPrefs } from '../../types';
 import type { Store } from '../../store';
 import {
   recurringDueNotifs, recurringReminderNotifs, budgetThresholdNotifs,
-  debtDueNotifs, incomeLandedNotifs, staleBalanceNotifs,
+  debtDueNotifs, incomeLandedNotifs, staleBalanceNotifs, pipNudgeNotifs,
   splitReceivedNotifs, splitSettledNotifs, splitClosedNotifs,
-  DEFAULT_PREFS, isInQuietHours, showWebPush,
+  DEFAULT_PREFS, isInQuietHours, showWebPush, resolvedBillCards,
 } from '../../lib/notifications';
 import {
   insertNotifications, fetchNotifications, updateNotificationStatus, purgeExpired,
 } from '../../lib/notificationsCloud';
 import { readLocalJson, setLocalJson } from '../localJson';
+import { deviceHasServerPush, syncPush } from '../../lib/webPush';
 
 const KEY = (hid: string) => `notifications_${hid}`;
 const DAY = 86_400_000;
@@ -51,7 +52,7 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
 
   refreshNotifications: async () => {
     const {
-      cloudEnabled, currentHouseholdId, recurringSchedules, budgets, transactions,
+      cloudEnabled, currentHouseholdId, recurringSchedules, budgets, budgetAllocations, transactions,
       debts, accounts, profile, rates, notificationPrefs,
       sharedSplitsOwned, sharedSplitsWithMe, session,
     } = get();
@@ -70,33 +71,47 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     const fresh: Notification[] = [
       ...recurringDueNotifs(recurringSchedules, notificationPrefs, existing, ctx),
       ...recurringReminderNotifs(recurringSchedules, notificationPrefs, existing, ctx),
-      ...budgetThresholdNotifs(budgets, transactions, notificationPrefs, existing, ctx),
+      ...budgetThresholdNotifs(budgets, budgetAllocations, transactions, notificationPrefs, existing, ctx),
       ...debtDueNotifs(debts, notificationPrefs, existing, ctx),
       ...incomeLandedNotifs(transactions, notificationPrefs, existing, ctx),
       ...staleBalanceNotifs(accounts, notificationPrefs, existing, ctx),
+      // v10.107.0 — Pip's nudges (capped: one a day, three a week; bell only).
+      ...pipNudgeNotifs(transactions, notificationPrefs, existing, ctx),
       ...splitReceivedNotifs(sharedSplitsWithMe, myEmail, notificationPrefs, existing, ctx),
       ...splitSettledNotifs(sharedSplitsOwned, notificationPrefs, existing, ctx),
       ...splitClosedNotifs(sharedSplitsWithMe, notificationPrefs, existing, ctx),
     ];
 
+    // W4d (audit FE-UIS-04) — a bill card whose bill was handled elsewhere (approved, skipped, "paid X",
+    // paused) is marked read: acting on it would skip or "approve" the wrong occurrence.
+    const settle = (list: Notification[]): { list: Notification[]; resolved: string[] } => {
+      const resolved = resolvedBillCards(list, recurringSchedules);
+      if (!resolved.length) return { list, resolved };
+      const ids = new Set(resolved);
+      return { list: list.map(n => (ids.has(n.id) ? { ...n, status: 'read' as const } : n)), resolved };
+    };
+
     if (cloud) {
       try {
         if (fresh.length) await insertNotifications(fresh);
         void purgeExpired(hid);
-        const all = purge(await fetchNotifications(hid));
+        const { list: all, resolved } = settle(purge(await fetchNotifications(hid)));
         set({ notifications: all });
+        if (resolved.length) void updateNotificationStatus(resolved, 'read');
       } catch {
         // Offline / RLS hiccup — keep whatever we have; a later refresh retries.
         set({ notifications: purge(existing) });
       }
     } else {
-      const merged = purge(fresh.length ? [...existing, ...fresh] : existing);
+      const { list: merged } = settle(purge(fresh.length ? [...existing, ...fresh] : existing));
       setLocalJson(KEY(hid), merged);
       set({ notifications: merged });
     }
 
     // Web Push for action-required (P1) types outside quiet hours (opt-in).
-    if (fresh.length && notificationPrefs.webPushEnabled && !isInQuietHours(notificationPrefs)) {
+    // v10.48.0 — a device registered for real push gets these from the server (with the
+    // app closed too); popping them here as well would show each one twice.
+    if (fresh.length && notificationPrefs.webPushEnabled && !isInQuietHours(notificationPrefs) && !deviceHasServerPush()) {
       for (const n of fresh) if (n.priority === 'P1') showWebPush(n.title, n.body);
     }
   },
@@ -139,5 +154,10 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     const next = { ...get().notificationPrefs, ...patch };
     setLocalJson('notification_prefs', next);
     set({ notificationPrefs: next });
+    // v10.48.0 — the server applies this device's switches and quiet hours when it pushes.
+    const { cloudEnabled, currentHouseholdId } = get();
+    if (cloudEnabled && currentHouseholdId && currentHouseholdId !== 'local' && next.webPushEnabled) {
+      void syncPush(currentHouseholdId, next);
+    }
   },
 });

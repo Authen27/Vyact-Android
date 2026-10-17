@@ -48,17 +48,16 @@ describe('convertViaUsdRates', () => {
     expect(fromDinero(out)).toBe(50);
   });
 
-  it('CON-UNIT-045 · post-conversion result is quantised to the target currency\'s native exponent', () => {
-    // 100 USD → EUR at rate 0.92 must produce exactly 92 EUR (scale 2),
-    // not 92.0000... at some higher dinero internal scale. Sub-cent
-    // precision bleeding through this boundary is the exact bug that
-    // broke the TD-01 round-trip in CON-UNIT-006.
+  it('CON-UNIT-045 · W3b face value: the same amount, relabelled and quantised to the target\'s native exponent', () => {
+    // No rate is applied (owner decision D14). The result still carries the target currency at
+    // its own scale, so sums with other household amounts stay exact.
     const out = convertViaUsdRates(toDinero(100, 'USD'), 'EUR', DEFAULT_RATES);
     const snap = toSnapshot(out);
     expect(snap.currency.code).toBe('EUR');
     expect(snap.scale).toBe(2);
-    expect(snap.amount).toBe(9200);
-    expect(fromDinero(out)).toBe(92);
+    expect(snap.amount).toBe(10000);
+    expect(fromDinero(out)).toBe(100);
+    expect(fromDinero(convertViaUsdRates(toDinero(99.5, 'USD'), 'JPY'))).toBe(100);   // JPY has no minor unit
   });
 });
 

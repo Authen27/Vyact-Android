@@ -14,7 +14,9 @@
 import { FEATURES, isOnboardingEnabled } from '../config/features';
 import { getOnboarding } from './onboardingState';
 
-export type NudgeKind = 'check_in' | 'confirm_estimate' | 'bank_connect';
+// W6 (audit FE-UIS-11): the 'bank_connect' nudge ("Connect your bank and Vyact logs transactions
+// automatically") is gone. There is no bank connection; it sent people to Settings to look for one.
+export type NudgeKind = 'check_in' | 'confirm_estimate';
 
 export interface Nudge {
   /** Stable id — also the dismissal key. */
@@ -41,8 +43,6 @@ export interface NudgeInputs {
 
 const DISMISS_PREFIX = 'vt_nudge_dismissed_'; // + nudgeId  → ISO timestamp
 const SESSION_FLAG = 'vt_nudge_shown_this_session';
-const BANK_OFFERED_KEY = 'vt_bank_connect_offered_'; // + householdId
-const LOG_THRESHOLD = 5; // ≥5 real logs before the FIRST bank-connect offer
 const CHECK_IN_DAYS = [7, 14, 21] as const;
 
 function dismissed(id: string): boolean {
@@ -66,16 +66,6 @@ export function markNudgeShownThisSession(): void {
   try { sessionStorage.setItem(SESSION_FLAG, '1'); } catch { /* ignore */ }
 }
 
-export function markBankConnectOffered(householdId: string): void {
-  if (typeof localStorage === 'undefined') return;
-  try { localStorage.setItem(BANK_OFFERED_KEY + householdId, new Date().toISOString()); } catch { /* ignore */ }
-}
-
-function bankConnectAlreadyOffered(householdId: string): boolean {
-  if (typeof localStorage === 'undefined') return false;
-  return localStorage.getItem(BANK_OFFERED_KEY + householdId) != null;
-}
-
 function daysBetween(fromIso: string, now: number): number {
   return Math.floor((now - new Date(fromIso).getTime()) / (24 * 60 * 60 * 1000));
 }
@@ -84,7 +74,7 @@ function daysBetween(fromIso: string, now: number): number {
  * Compute the single nudge to show, honoring all governance rules. Returns null
  * when nothing should show (flag off, not completed, rate-limited, dismissed,
  * window closed with nothing urgent, etc.). The caller is responsible for marking
- * it shown (markNudgeShownThisSession) and, for bank-connect, markBankConnectOffered.
+ * it shown (markNudgeShownThisSession).
  */
 export function getActiveNudge(input: NudgeInputs): Nudge | null {
   if (!isOnboardingEnabled()) return null;
@@ -131,19 +121,6 @@ export function getActiveNudge(input: NudgeInputs): Nudge | null {
         href: '/budgets',
       });
     }
-  }
-
-  // ── 3) Bank-connect offer — NEVER at signup; only after the user has seen value
-  //       (≥5 real logs) and only once. Lowest priority (§6.1/§6.2). ────────────
-  if (input.logCount >= LOG_THRESHOLD && !bankConnectAlreadyOffered(input.householdId)) {
-    candidates.push({
-      id: `bank_connect_${input.householdId}`,
-      kind: 'bank_connect',
-      title: 'Tired of typing?',
-      body: 'Connect your bank and Vyact logs transactions automatically. Totally optional.',
-      cta: 'Learn more',
-      href: '/settings',
-    });
   }
 
   // Apply dismissals + session rate-limit, return the top survivor.

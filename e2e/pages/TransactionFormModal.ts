@@ -1,12 +1,14 @@
 import type { Page, Locator } from '@playwright/test';
 import type { TxnType, Recurrence } from '../../src/types';
+import { getCat } from '../../src/constants';
 
 /**
- * Page Object for the GLOBAL TransactionFormModal mounted at App root
- * (`react/src/App.tsx`). The modal is opened/closed via the Zustand store
- * (`openAddTxn`, `openEditTxn`, `closeTxnModal`) — typically from the
+ * Page Object for the transaction form. Since v10.28.0 it is a routed,
+ * full-screen PAGE (`/transactions/new`, `/transactions/:id/edit`), opened by
+ * the store's `openAddTxn` / `openEditTxn` — typically from the
  * "+ Add Transaction" button on the Transactions page, the AddFab, or the
- * `N` keyboard shortcut.
+ * ⌘K palette — and closed back to the screen that opened it. (The `N`
+ * keyboard shortcut was removed in v10.91.0, audit FE-UIS-10.)
  *
  * v10.1 (Aurora forms doctrine): the form is an AMOUNT-FIRST half-sheet.
  * Dropdowns were replaced by chips and the amount is entered on an in-sheet
@@ -48,18 +50,45 @@ export class TransactionFormModal {
 
   constructor(page: Page) {
     this.page = page;
-    this.keypad = page.getByRole('group', { name: 'Amount keypad' });
-    // The txn sheet is the dialog that owns the amount keypad — unambiguous
-    // even if another dialog is on screen.
-    this.dialog = page.getByRole('dialog').filter({ has: this.keypad });
-    this.amountDisplay = this.dialog.locator('[aria-live="polite"]').first();
+    // ANCHORED ON THE DIALOG'S ACCESSIBLE NAME.
+    //
+    // This used to key off a `group` named "Amount keypad". That element no
+    // longer exists anywhere in the app, so the dialog locator matched nothing
+    // and every modal-dependent test failed with a 30s `waitFor` timeout — the
+    // page object was describing a UI that had been redesigned out from under
+    // it (the sheet now renders through HalfSheet, role="dialog" + aria-label).
+    //
+    // The title is `${'Add'|'Edit'} ${typeMeta.label}` (TransactionFormModal
+    // :421), so the name below matches exactly this form and NOT the budget,
+    // debt or split forms that share the same FormPage wrapper.
+    //
+    // v10.28.0 — the form is a page: FormPage renders a `main` landmark named
+    // by its title. The property keeps the name `dialog` so every spec that
+    // scopes a locator to "the transaction form" still reads the same.
+    this.dialog = page.getByRole('main', {
+      name: /^(Add|Edit) (transaction|expense|income|transfer|investment)$/i,
+    });
+    // The keypad group is gone; keep the property pointing at the dialog's
+    // amount control so callers that reference it still resolve to something
+    // meaningful rather than a phantom.
+    this.keypad = this.dialog;
+    // The amount INPUT (not a display element) — see setAmount below.
+    this.amountDisplay = this.dialog.getByLabel('Amount', { exact: true });
     this.descriptionInput = this.dialog.getByLabel('Description');
     this.dateInput = this.dialog.getByLabel('Pick a date');
     this.noteInput = this.dialog.getByLabel('Note');
-    this.excludedCheckbox = this.dialog.getByLabel(/Private — exclude from totals/);
+    this.excludedCheckbox = this.dialog.getByLabel(/Exclude from (household )?totals/)   // W0 (FE-PUB-01): was "🔒 Private — exclude from totals";
     this.splitToggle = this.dialog.getByLabel(/Split this bill with others|Share this income with others/);
     this.allDetailsToggle = this.dialog.getByTestId('txn-all-details');
-    this.submitButton = this.dialog.getByRole('button', { name: /^(Save|Update|Saving…)$/, exact: true });
+    // The primary button is `Save ${form.type}` / `Update ${form.type}` — e.g.
+    // "Save expense" (TransactionFormModal.tsx:476), never a bare "Save". The
+    // old exact `/^(Save|Update|Saving…)$/` matched nothing, so `submit()` sat
+    // out its 30s timeout on every create/edit test. The type alternation is
+    // spelled out rather than using a wildcard so this cannot accidentally
+    // match the "Save & add another" cap link beneath it.
+    this.submitButton = this.dialog.getByRole('button', {
+      name: /^((Save|Update) (transaction|expense|income|transfer|investment)|Saving…)$/i,
+    });
     this.addAnotherButton = this.dialog.getByRole('button', { name: 'Save & add another' });
     this.deleteLink = this.dialog.getByRole('button', { name: /^Delete$/ });
   }
@@ -67,38 +96,60 @@ export class TransactionFormModal {
   async waitOpen() { await this.dialog.waitFor({ state: 'visible' }); }
   async waitClosed() { await this.dialog.waitFor({ state: 'hidden' }); }
 
-  // ── amount keypad ──────────────────────────────────────────────────────
-  private key(label: string): Locator {
-    return this.keypad.getByRole('button', { name: label === '⌫' ? 'Backspace' : label, exact: true });
-  }
+  // ── amount ─────────────────────────────────────────────────────────────
+  //
+  // 🔴 REPAIRED 2026-09-10. THERE IS NO KEYPAD.
+  //
+  // These helpers drove an in-sheet digit pad: `setAmount` clicked "⌫" to clear,
+  // then one button per digit. No such buttons exist — the dialog's full button
+  // list is Close, the four type chips, the category chips, Today/Yesterday,
+  // Pick a time, the account chips, the member chips, Save and Save & add
+  // another. Amount is a plain `input type="text" inputmode="decimal"` with its
+  // own sanitiser.
+  //
+  // The cost of that drift was disproportionate: `setAmount` is on the path of
+  // almost every transaction test, and clicking a button that does not exist
+  // burns the full 30s timeout and then reports `locator.click` on "Backspace" —
+  // an error that names the keypad, not the redesign. A large share of Lane A's
+  // failures traced back to these two methods alone.
+  //
+  // `amountValue` was broken in a quieter way: it read `textContent` from what
+  // is an `<input>`, so it returned "" no matter what the field held, and every
+  // caller comparing against it was asserting nothing.
 
   /** Read the current amount as a plain decimal string ("" when unset). */
   async amountValue(): Promise<string> {
-    const raw = (await this.amountDisplay.textContent()) ?? '';
-    const digits = raw.replace(/[^0-9.]/g, '');
-    return digits === '0' ? '' : digits;
+    const raw = await this.amountDisplay.inputValue();
+    return raw === '0' ? '' : raw;
   }
 
-  /** Clear the amount, then type it digit-by-digit on the in-sheet keypad. */
+  /**
+   * Set the amount through the real input.
+   *
+   * The field silently rejects anything that is not a positive decimal — a
+   * leading '-' is stripped, letters never land, a second '.' is refused — so
+   * the value that sticks may differ from what was asked for. That is the app's
+   * contract (asserted by CON-E2E-013), not something to work around here.
+   */
   async setAmount(amount: number | string) {
-    const cur = await this.amountValue();
-    for (let i = 0; i < cur.length + 2; i++) await this.key('⌫').click();
-    for (const ch of String(amount)) {
-      if (ch >= '0' && ch <= '9') await this.key(ch).click();
-      else if (ch === '.') await this.key('.').click();
-      // any other char (e.g. '-') has no keypad key — silently unenterable
-    }
+    await this.amountDisplay.fill('');
+    await this.amountDisplay.fill(String(amount));
   }
 
   // ── chip / field setters ───────────────────────────────────────────────
-  async setType(type: TxnType) { await this.dialog.getByTestId(`txn-type-${type}`).click(); }
-  async setCategory(id: string) { await this.dialog.getByTestId(`txn-cat-${id}`).click(); }
+  async setType(type: TxnType) { await this.dialog.getByTestId(`txn-type-${type}`).check(); }
+  async setCategory(id: string) {
+    const category = getCat(id);
+    await this.dialog.getByTestId('txn-category').selectOption({ label: `${category.icon} ${category.label}` });
+  }
   async setDate(date: string) { await this.dateInput.fill(date); }
   async setDescription(text: string) { await this.descriptionInput.fill(text); }
 
-  /** Reveal the "All details ▾" section (currency / member / time / note / split). */
+  /** Open the "More details" row (member, exclude from totals) — Aurora 4.0 FRM2. A no-op when it is
+   *  already open (the row stays as a toggle, so a second click would close it). */
   async openAllDetails() {
-    if (await this.allDetailsToggle.count() > 0 && await this.allDetailsToggle.isVisible()) {
+    if (await this.allDetailsToggle.count() > 0 && await this.allDetailsToggle.isVisible()
+      && await this.allDetailsToggle.getAttribute('aria-expanded') !== 'true') {
       await this.allDetailsToggle.click();
     }
   }
@@ -115,10 +166,13 @@ export class TransactionFormModal {
     await this.dialog.getByTestId(`txn-cur-${code}`).click();
   }
 
-  /** Select a member by NAME (chip lives under "All details"). */
+  /** Select a member by NAME (under "More details"). */
   async setMember(name: string) {
     await this.openAllDetails();
-    await this.dialog.getByRole('button', { name, exact: true }).click();
+    const option = await this.dialog.getByTestId('txn-member').locator('option').evaluateAll((options, memberName) =>
+      options.find(option => option.textContent === memberName || option.textContent === `${memberName} (You)`)?.getAttribute('value'), name);
+    if (!option) throw new Error(`Member option not found: ${name}`);
+    await this.dialog.getByTestId('txn-member').selectOption(option);
   }
 
   async setNote(text: string) {
@@ -128,12 +182,12 @@ export class TransactionFormModal {
 
   /** Select the source account chip by its visible NAME (e.g. 'E2E Checking'). */
   async selectAccount(name: string) {
-    await this.dialog.getByRole('button', { name, exact: true }).first().click();
+    await this.dialog.getByTestId('txn-source').selectOption({ label: name });
   }
 
   /** Select the destination account chip (transfer/investment) by NAME. */
   async selectToAccount(name: string) {
-    await this.dialog.getByRole('button', { name, exact: true }).last().click();
+    await this.dialog.getByTestId('txn-destination').selectOption({ label: name });
   }
 
   /**
@@ -170,21 +224,22 @@ export class TransactionFormModal {
     await this.addAnotherButton.click();
   }
 
-  /** Dismiss without saving. The Aurora sheet has no Cancel button — Escape,
-   *  the ✕ (desktop) / grabber (mobile), or a scrim tap all close it. */
+  /** Dismiss without saving. The form has no Cancel button — Escape or the
+   *  ✕ Close control returns to the screen that opened the page. */
   async cancel() {
     await this.page.keyboard.press('Escape');
     await this.waitClosed();
   }
 
   /**
-   * Edit-mode only: clicks the Delete link, accepts the confirm() dialog,
-   * and waits for the sheet to dismiss. Pass `accept=false` to test the
-   * cancel path on the confirm.
+   * Edit-mode only: clicks the Delete link, answers the confirmation sheet
+   * (Aurora 4.0 CF3 — "Delete entry", or Cancel with `accept=false`), and waits
+   * for the form to close.
    */
   async delete({ accept = true }: { accept?: boolean } = {}) {
-    this.page.once('dialog', d => (accept ? d.accept() : d.dismiss()));
     await this.deleteLink.click();
+    const sheet = this.page.getByRole('dialog', { name: /^Delete .*\?$/ });
+    await sheet.getByRole('button', { name: accept ? 'Delete entry' : 'Cancel', exact: true }).click();
     if (accept) await this.waitClosed();
   }
 }

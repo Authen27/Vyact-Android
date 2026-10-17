@@ -25,6 +25,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Fails the run if an Android edit was wiped by a sync, or an overlay file is unregistered or
+      # gitignored (scripts/overlay-manifest.json).
+      - name: Overlay guard
+        run: node scripts/check-overlay-registered.mjs
       - run: npm ci
 
       - name: Install Capacitor + plugins

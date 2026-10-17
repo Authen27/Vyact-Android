@@ -1,7 +1,12 @@
 import { test, expect } from '../fixtures/app';
 import { seedWith } from '../fixtures/seed';
+import { FEATURES } from '../../src/config/features';
 
 test.describe('§13 PULSE-FC · Dashboard pulse behavior', () => {
+  // The Dashboard hides Pulse by design since v10.27.0 (FEATURES.dashboard.showPulse). These
+  // assert its on-screen card, so they run only when it is shown again; the score itself stays
+  // covered by the unit suites (computePulseScore).
+  test.skip(!FEATURES.dashboard.showPulse, 'Pulse is hidden on the Dashboard (FEATURES.dashboard.showPulse = false)');
   test.use({
     seed: seedWith({
       transactions: [],

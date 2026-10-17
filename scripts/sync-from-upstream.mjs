@@ -13,43 +13,38 @@
 // All three sides are normalised to LF before compare/merge so Windows CRLF
 // checkouts don't masquerade as conflicts.
 //
-// Usage (from repo root):  node scripts/sync-from-upstream.mjs <upstreamReactDir> <seedRef>
-// Exit 0 = clean, 1 = merge conflicts to resolve, 2 = bad args.
+// The overlay is declared in scripts/overlay-manifest.json ('merged' = shared files with an
+// Android edit, 'additive' = fork-only files). After the copy, any tracked file that is neither
+// upstream nor additive is reported as an ORPHAN (a file upstream deleted that the plain copy
+// leaves behind — e.g. a stale vite.config.js that shadowed vite.config.ts). Pass
+// --delete-orphans to git rm them.
+//
+// Usage (from repo root):  node scripts/sync-from-upstream.mjs <upstreamReactDir> <seedRef> [--delete-orphans]
+// Exit 0 = clean, 1 = merge conflicts to resolve or orphans reported, 2 = bad args.
 
 import { execFileSync } from 'node:child_process';
-import { cpSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { cpSync, readFileSync, writeFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const upstreamReact = process.argv[2];
-const seedRef = process.argv[3];
+const args = process.argv.slice(2).filter(a => !a.startsWith('--'));
+const deleteOrphans = process.argv.includes('--delete-orphans');
+const [upstreamReact, seedRef] = args;
 if (!upstreamReact || !seedRef) {
-  console.error('usage: node scripts/sync-from-upstream.mjs <upstreamReactDir> <seedRef>');
+  console.error('usage: node scripts/sync-from-upstream.mjs <upstreamReactDir> <seedRef> [--delete-orphans]');
   process.exit(2);
 }
 
 const BASE_DIR = '.upstream-base';
 
-// Shared files carrying inline Android edits — these need a real 3-way merge.
-// IMPORTANT: any file with a hand-applied Android patch (safe-area insets,
-// native hooks, etc.) MUST be listed here, or the next sync's plain upstream
-// copy silently overwrites the patch with no error (bit us once already —
-// MobileHeader/TopBar/SubNav's safe-area fixes were wiped by the 10.18.1 sync
-// because they were patched outside this list. Re-added + fixed 2026-08-10).
-const MERGED = [
-  'index.html',
-  'src/main.tsx',
-  'src/lib/auth.ts',
-  'src/components/layout/FloatingTools.tsx',
-  'src/components/layout/Layout.tsx',
-  'src/components/layout/MobileHeader.tsx',
-  'src/components/layout/TopBar.tsx',
-  'src/components/layout/SubNav.tsx',
-  'src/components/layout/AddFab.tsx',
-  'src/pages/Reports.tsx',
-  'src/pages/Transactions.tsx',
-  'src/store/slices/notifySlice.ts',
-];
+// Shared files carrying inline Android edits — these need a real 3-way merge. The list lives in
+// scripts/overlay-manifest.json. IMPORTANT: any file with a hand-applied Android patch (safe-area
+// insets, native hooks, etc.) MUST be listed there, or the next sync's plain upstream copy
+// silently overwrites the patch with no error (bit us once already — MobileHeader/TopBar/SubNav's
+// safe-area fixes were wiped by the 10.18.1 sync). scripts/check-overlay-registered.mjs enforces it.
+const MANIFEST = JSON.parse(readFileSync('scripts/overlay-manifest.json', 'utf8'));
+const MERGED = MANIFEST.merged;
+const ADDITIVE = MANIFEST.additive;
 
 const norm = (s) => (s == null ? null : s.replace(/\r\n/g, '\n'));
 const show = (ref, file) => {
@@ -94,17 +89,36 @@ for (const f of MERGED) {
 }
 
 // 4) Re-assert the Android .gitignore entries (upstream's react/.gitignore overwrote ours).
+//    Matched as whole LINES and ANCHORED: a bare 'android/' also ignores native/android/ (the
+//    overlay), and a substring test let 'android/' satisfy '/android/' once already.
 let gi = existsSync('.gitignore') ? readFileSync('.gitignore', 'utf8') : '';
-for (const line of ['android/', 'ios/', '/assets/']) if (!gi.includes(line)) gi += (gi.endsWith('\n') ? '' : '\n') + line + '\n';
+const giLines = new Set(gi.split(/\r?\n/).map(l => l.trim()));
+for (const line of ['/android/', '/ios/', '/assets/', '/node_modules/', '/dist/', '*.tsbuildinfo']) if (!giLines.has(line)) gi += (gi.endsWith('\n') ? '' : '\n') + line + '\n';
 writeFileSync('.gitignore', gi);
 
 // 5) Record what we synced to (baseline for drift check).
 const ver = JSON.parse(readFileSync('package.json', 'utf8')).version;
 writeFileSync('.upstream-sync.json', JSON.stringify({ upstream: 'Authen27/Vyact', reactVersion: ver, syncedAt: new Date().toISOString().slice(0, 10) }, null, 2) + '\n');
 
-// 6) Report.
+// 6) Orphans: tracked files that are neither upstream nor declared additive.
+const upstreamFiles = new Set();
+const walk = (dir, rel = '') => {
+  for (const name of readdirSync(join(dir, rel))) {
+    if (['node_modules', '.git', 'dist'].includes(name)) continue;
+    const r = rel ? rel + '/' + name : name;
+    if (statSync(join(dir, r)).isDirectory()) walk(dir, r); else upstreamFiles.add(r);
+  }
+};
+walk(upstreamReact);
+const isAdditive = (f) => ADDITIVE.some(a => (a.endsWith('/') ? f.startsWith(a) : f === a));
+const orphans = execFileSync('git', ['ls-files'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+  .filter(f => existsSync(f) && !upstreamFiles.has(f) && !isAdditive(f));
+if (deleteOrphans && orphans.length) execFileSync('git', ['rm', '-q', '-f', '--', ...orphans], { stdio: 'inherit' });
+
+// 7) Report.
 console.log(`\n== SYNC REPORT (upstream react ${ver}) ==`);
 console.log(`merged cleanly (${report.merged.length}): ${report.merged.join(', ') || '-'}`);
 console.log(`upstream-unchanged (${report.unchanged.length}): ${report.unchanged.join(', ') || '-'}`);
 console.log(`CONFLICTS (${report.conflicts.length}): ${report.conflicts.join(', ') || 'none'}`);
-process.exit(report.conflicts.length ? 1 : 0);
+console.log(`ORPHANS (${orphans.length})${deleteOrphans ? ' - deleted' : ' - re-run with --delete-orphans, or add to overlay-manifest.json "additive"'}: ${orphans.join(', ') || 'none'}`);
+process.exit(report.conflicts.length || (orphans.length && !deleteOrphans) ? 1 : 0);

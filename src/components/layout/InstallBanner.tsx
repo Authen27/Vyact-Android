@@ -21,6 +21,7 @@
 import { useEffect, useState } from 'react';
 import { Download, X } from 'lucide-react';
 import { canPrompt, isIos, isStandalone, promptInstall } from '../../lib/pwa';
+import { shouldOfferPlayStore, playStoreUrl } from '../../lib/playStore';
 
 const SESSION_KEY = 'vt_install_banner_dismissed_session';
 const COUNT_KEY = 'vt_install_banner_dismiss_count';
@@ -41,7 +42,7 @@ export default function InstallBanner() {
     window.addEventListener('vyact:installable', onInstallable);
     window.addEventListener('vyact:installed', onInstalled);
 
-    if (canPrompt()) setShow(true);
+    if (canPrompt() || shouldOfferPlayStore()) setShow(true);
 
     return () => {
       window.removeEventListener('vyact:installable', onInstallable);
@@ -59,6 +60,11 @@ export default function InstallBanner() {
   }
 
   async function install() {
+    // v10.49.0 (#31) — once the Play listing is live, Android browsers get the store.
+    if (shouldOfferPlayStore()) {
+      window.location.href = playStoreUrl('pwa_banner');
+      return;
+    }
     const outcome = await promptInstall();
     if (outcome === 'accepted' || outcome === 'unavailable') setShow(false);
   }
@@ -67,21 +73,23 @@ export default function InstallBanner() {
     <div
       role="dialog"
       aria-label="Install Vyact"
-      className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:max-w-sm z-[60] bg-bg2 border border-line rounded-xl shadow-2 p-3.5 flex items-start gap-3 animate-[modalIn_180ms_ease-out]"
+      className="fixed bottom-above-tabbar left-4 right-4 sm:left-auto sm:right-4 sm:max-w-sm z-[60] bg-bg2 border border-line rounded-xl shadow-2 p-3.5 flex items-start gap-3 animate-[modalIn_180ms_ease-out]"
     >
       <div className="flex-shrink-0 w-9 h-9 rounded-md bg-coral/15 text-coral flex items-center justify-center">
         <Download size={18} strokeWidth={1.8} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="font-semibold text-ink text-[0.92rem] mb-0.5">Install Vyact</div>
+        <div className="font-semibold text-ink text-[0.92rem] mb-0.5">{shouldOfferPlayStore() ? 'Get the Vyact app' : 'Install Vyact'}</div>
         <div className="text-[0.78rem] text-ink-mid leading-snug">
-          Add Vyact to your home screen for full-screen, offline-friendly access.
+          {shouldOfferPlayStore()
+            ? 'Install Vyact from Google Play for the full app experience.'
+            : 'Add Vyact to your home screen for full-screen, offline-friendly access.'}
         </div>
         <button
           onClick={install}
           className="btn-primary mt-2 text-[0.72rem] py-1.5 px-3"
         >
-          Install
+          {shouldOfferPlayStore() ? 'Get it on Google Play' : 'Install'}
         </button>
       </div>
       <button

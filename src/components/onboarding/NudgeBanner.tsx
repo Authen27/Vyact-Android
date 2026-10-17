@@ -9,8 +9,7 @@ import { useNavigate } from 'react-router-dom';
 import { X, Sparkles } from 'lucide-react';
 import { useStore } from '../../store';
 import {
-  getActiveNudge, dismissNudge, markNudgeShownThisSession,
-  markBankConnectOffered, type Nudge,
+  getActiveNudge, dismissNudge, markNudgeShownThisSession, type Nudge,
 } from '../../lib/onboardingNudges';
 import {
   getOnboarding, unconfirmedEstimateCount, confirmedPctFromEntities,
@@ -55,15 +54,11 @@ export default function NudgeBanner() {
     setNudge(active);
     if (active) {
       markNudgeShownThisSession();
-      if (active.kind === 'bank_connect') markBankConnectOffered(householdId);
       const rec = getOnboarding(householdId);
       const days = rec.completedAt
         ? Math.floor((Date.now() - new Date(rec.completedAt).getTime()) / 86_400_000)
         : undefined;
       track('onboarding_nudge_shown', { nudge_kind: active.kind, days_since: days, log_count: logCount });
-      if (active.kind === 'bank_connect') {
-        track('bank_connect_offered', { days_since: days, log_count: logCount });
-      }
     }
     // Recompute when the household, its real-log count, or estimate stats change.
   }, [householdId, logCount, unconfirmedEstimates, confirmedPct]);
@@ -87,7 +82,7 @@ export default function NudgeBanner() {
   }
 
   return (
-    <div className="fixed bottom-4 inset-x-4 sm:inset-x-auto sm:right-4 sm:w-[22rem] z-[120]">
+    <div className="fixed bottom-above-tabbar inset-x-4 sm:inset-x-auto sm:right-4 sm:w-[22rem] z-[120]">
       <div className="bg-bg2 border border-coral/30 rounded-lg shadow-lg p-4">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 h-7 w-7 rounded-full bg-coral-tint text-coral flex items-center justify-center shrink-0">

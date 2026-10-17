@@ -5,7 +5,7 @@
 // metric tiles + insight spine-cards → 3-col panels. Every number reuses the
 // SAME aggregates as before (monthlyData/pulse/spendByCategory) — this pass
 // changes presentation only.
-import { useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../store';
 import { useTranslation } from '../hooks';
@@ -14,21 +14,30 @@ import EmptyState from '../components/ui/EmptyState';
 import { CategoryDonut } from '../components/charts/DonutCharts';
 import {
   selectMonthlyData, selectPulse, selectInsights,
-  selectSpendByCategory, selectRecentTxns, selectTotalAssets, selectTotalLiabilities,
+  selectSpendByCategory, selectRecentTxns, selectNetWorth,
   selectMonthlyDebtPayment,
 } from '../lib/selectors';
-import { fmtShort, monthName, nowMonthKey, convert, today, formatDate } from '../lib/format';
-import { budgetLines, monthlyData } from '../lib/calculations';
+import { fmtShort, monthName, nowMonthKey, today, formatDate } from '../lib/format';
+import { monthlyData } from '../lib/calculations';
+import { budgetLinesNow, budgetPace } from '../lib/budgetProgress';
+import { debtToIncomePct, pctLabel } from '../lib/ratios';
 import Money from '../components/ui/Money';
 import AnimatedMoney from '../components/ui/AnimatedMoney';
-import StartingBaselineBand from '../components/dashboard/StartingBaselineBand';
-import { Pip } from '../components/layout/Brand';
+import EstimateHero, { useStartingBaseline } from '../components/dashboard/EstimateHero';
+import SetupChecklist from '../components/dashboard/SetupChecklist';
+import { can } from '../lib/permissions';
 import { motion } from 'framer-motion';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import { getCat } from '../constants';
 import { ArrowRight } from 'lucide-react';
+import { FEATURES } from '../config/features';
 import type { PulseScore } from '../lib/calculations';
 import type { Transaction } from '../types';
+import PageHead from '../components/ui/PageHead';
+
+// The "Learn in a minute" shelf carries the lesson library (a large JSON): loaded after the Dashboard
+// renders, never in its first paint.
+const LearnShelf = lazy(() => import('../components/dashboard/LearnShelf'));
 
 /** #7 — one actionable line under the Pulse: point at the weakest applicable
  *  component so the user always knows what to do next. */
@@ -59,8 +68,12 @@ export default function Dashboard() {
   const baseCur = profile.baseCurrency;
   const openEditTxn = useStore(s => s.openEditTxn);
   const openAddTxn = useStore(s => s.openAddTxn);
+  const openAddBudget = useStore(s => s.openAddBudget);
+  const myRole = useStore(s => s.myRole);
+  // FR2 — the estimate from setup leads the heroes until real activity replaces it.
+  const [baseline, dismissBaseline] = useStartingBaseline();
   // `rates` stays a live subscription: the selectors return derived values, not
-  // raw collections, and the per-row `convert()` calls in the budget list need it.
+  // raw collections, and the budget progress (lib/budgetProgress) reads it.
   const rates = useStore(s => s.rates);
 
   const mk = nowMonthKey();
@@ -73,12 +86,35 @@ export default function Dashboard() {
   const recent = useStore(selectRecentTxns);
   const transactions = useStore(s => s.transactions);
 
-  const ta = useStore(selectTotalAssets);
-  const tl = useStore(selectTotalLiabilities);
+  // Audit F3 — the dashboard's Net Worth figures come from the ONE canonical
+  // projection (live account balances, liabilities, unlinked assets/debts),
+  // not the static assets/debts arrays that used to drift from NetWorth.tsx.
+  const netWorth = useStore(selectNetWorth);
+  const ta = netWorth.totalAssets;
+  const tl = netWorth.totalLiabilities;
   const monthlyDebtPmt = useStore(selectMonthlyDebtPayment);
-  const dti = month.income > 0 ? (monthlyDebtPmt / month.income) * 100 : 0;
+  // W6 (audit FE-UIC-07): one definition with Debts; no income this month reads "—", not a green 0%.
+  const dti = debtToIncomePct(monthlyDebtPmt, month.income);
   // v9.1 §4 — flatten container budgets + allocations into per-category lines.
-  const budgetView = useMemo(() => budgetLines(budgets, budgetAllocations), [budgets, budgetAllocations]);
+  // Scoped to the CURRENT month. This used to call budgetLines() across every
+  // budget the household has ever had and then slice(0, 5), so the month you saw
+  // was whichever one happened to sort first in the array — in September it
+  // showed August. See budgetLinesForMonth.
+  // Track E, E5 (owner, E-6): the ONE budget-progress basis (lib/budgetProgress.ts) — each line over its
+  // own budget's period (an annual line over the year, not this month), then this month's not-planned
+  // spending; the pace banner reads the month budget's total against ALL its spending.
+  const budgetNow = useMemo(
+    () => budgetLinesNow(budgets, budgetAllocations, transactions, { baseCurrency: baseCur, rates }),
+    // mk re-reads when the month rolls over while the page is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [budgets, budgetAllocations, transactions, baseCur, rates, mk],
+  );
+  // What the Learn shelf picks for: a loan being repaid, a budget over, or no budget yet.
+  const learnSituation = useMemo(() => ({
+    hasDebt: debts.some(d => (d.direction ?? 'owed_by_me') === 'owed_by_me' && !d.paidOffAt),
+    overBudget: budgetNow.lines.some(l => (l.pct ?? 0) >= 100) || budgetNow.notPlanned.length > 0,
+    hasBudget: budgets.length > 0,
+  }), [debts, budgetNow, budgets.length]);
 
   // A6 — inline 6-month net trend for the Cash Flow hero. Presentation only:
   // each point reuses the SAME `monthlyData` aggregate the dashboard already
@@ -97,17 +133,9 @@ export default function Dashboard() {
   // pro-rated by day. Pure arithmetic over the existing aggregates; hidden when
   // no current-month budget exists (never fabricate a pace).
   const pace = useMemo(() => {
-    const now = new Date();
-    const row = budgets.find(b => b.scope === 'month'
-      && b.periodYear === now.getFullYear() && b.periodMonth === now.getMonth() + 1);
-    if (!row) return null;
-    const limitBase = convert(row.limit, row.currency, baseCur, rates);
-    if (limitBase <= 0) return null;
-    const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const expected = limitBase * (now.getDate() / daysIn);
-    const diff = expected - month.expense;
-    return { under: diff >= 0, amt: Math.abs(diff) };
-  }, [budgets, baseCur, rates, month.expense]);
+    const p = budgetPace(budgetNow.month);
+    return p ? { under: p.under, amt: p.amount } : null;
+  }, [budgetNow]);
 
   const advice = pulseAdvice(pulse);
 
@@ -136,9 +164,9 @@ export default function Dashboard() {
       return {
         good,
         text: good ? (
-          <>You've kept <b style={{ color: 'hsl(var(--sage))' }}>{fmtShort(saved, baseCur)}</b> this month — {rate}% of income.</>
+          <>You've kept <b style={{ color: 'var(--good-text)' }}>{fmtShort(saved, baseCur)}</b> this month — {rate}% of income.</>
         ) : (
-          <>You've overspent <b style={{ color: 'hsl(var(--honey))' }}>{fmtShort(-saved, baseCur)}</b> this month.</>
+          <>You've overspent <b style={{ color: 'var(--warn-text)' }}>{fmtShort(-saved, baseCur)}</b> this month.</>
         ),
       };
     }
@@ -146,29 +174,23 @@ export default function Dashboard() {
   }, [pace, month.income, month.expense, rate, baseCur]);
 
   return (
-    <div>
-      {/* Desktop page header (board D1) — mobile identity lives in MobileHeader. */}
-      <div className="hidden sm:flex mb-5 items-end justify-between gap-3">
-        <div>
-          <h1 className="display-italic text-4xl text-ink mb-1.5">
-            {(() => { const who = (profile.name || '').trim().split(/\s+/)[0]; return who ? `${greet()}, ${who}` : greet(); })()}
-          </h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            Family finance overview · {monthName(mk)}
-          </p>
-        </div>
-        <button className="btn-primary flex-shrink-0" onClick={() => openAddTxn()}>+ Add transaction</button>
-      </div>
+    <div className="ui-pilot dashboard-stack" data-testid="dashboard-pilot">
+      {/* Page header (Aurora 4.0 PageHead) — on phones the identity lives in MobileHeader, and the
+          tab bar's + adds a transaction, so there is no header + here. */}
+      <PageHead
+        flush
+        title={(() => { const who = (profile.name || '').trim().split(/\s+/)[0]; return who ? `${greet()}, ${who}` : greet(); })()}
+        subtitle={<>Family finance overview · {monthName(mk)}</>}
+        action={{ label: 'Add transaction', icon: true, entity: 'transaction', headerPlus: false, onClick: () => openAddTxn() }}
+      />
 
-      {/* v9.7 — estimated starting picture from onboarding; clears as real data lands. */}
-      <StartingBaselineBand />
 
       {/* Board M1 — mobile status banner (desktop carries this in the insight
           cards). Budget-pace nudge when a current-month budget exists, else a
           this-month savings status. */}
       {banner && (
         <div
-          className="sm:hidden flex items-center gap-2.5 rounded-[13px] px-3.5 py-2.5 mb-3.5"
+          className="sm:hidden flex items-center gap-2.5 rounded-r2 px-3.5 py-2.5 mb-3.5"
           style={{
             background: `color-mix(in srgb, hsl(var(${banner.good ? '--sage' : '--honey'})) 12%, transparent)`,
             boxShadow: `inset 0 0 0 1px color-mix(in srgb, hsl(var(${banner.good ? '--sage' : '--honey'})) 24%, transparent)`,
@@ -183,26 +205,54 @@ export default function Dashboard() {
           (Cash flow, then Net worth peeks in beside it); desktop shows the
           pair side by side. One instance of each hero: flex+snap collapses to
           a 2-col grid at sm. */}
-      <div className="flex sm:grid sm:grid-cols-2 gap-3.5 mb-3.5 overflow-x-auto sm:overflow-visible snap-x snap-mandatory sm:snap-none [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
+      <div data-testid="dashboard-heroes" className="flex sm:grid sm:grid-cols-2 gap-section-content overflow-x-auto sm:overflow-visible snap-x snap-mandatory sm:snap-none [&::-webkit-scrollbar]:hidden" style={{ scrollbarWidth: 'none' }}>
         <div className="snap-start shrink-0 basis-[86%] sm:basis-auto sm:shrink">
-          <CashFlowHero series={netSeries} month={month} rate={rate} baseCur={baseCur} mk={mk} />
+          {baseline
+            ? <EstimateHero baseline={baseline} onDismiss={dismissBaseline} />
+            : <CashFlowHero series={netSeries} month={month} rate={rate} baseCur={baseCur} mk={mk} />}
         </div>
         <div className="snap-start shrink-0 basis-[86%] sm:basis-auto sm:shrink">
           <NetWorthHero ta={ta} tl={tl} baseCur={baseCur} />
         </div>
       </div>
 
+      {/* Aurora 4.0 FR1 — "Finish setting up", after a real onboarding only. */}
+      <SetupChecklist />
+
+      {/* Aurora 4.0 D1 — phones: the insight cards are desktop-only below, so phones get the top two
+          here as "What to look at", with See all. */}
+      {insights.length > 0 && (
+        <div className="sm:hidden" data-testid="dashboard-look-at">
+          <Panel title="What to look at" action={<Link to="/insights" className="text-[13px] font-medium text-coral hover:opacity-70">See all</Link>}>
+            {insights.slice(0, 2).map((c, i) => {
+              const tone = c.cls === 'chip-good' ? 'hsl(var(--sage))'
+                         : c.cls === 'chip-warn' ? 'hsl(var(--honey))'
+                         : c.cls === 'chip-alert' ? 'hsl(var(--terra))'
+                         :                          'hsl(var(--denim))';
+              const body = (
+                <div className={`relative py-3 pr-4 pl-[18px] ${i ? 'border-t border-line' : ''}`}>
+                  <span aria-hidden className="absolute left-0 top-[12px] bottom-[12px] w-[3px] rounded-r" style={{ background: tone }} />
+                  <div className="text-[13.5px] font-medium text-ink leading-snug">{c.icon} {c.text}</div>
+                  {c.detail && <div className="text-[13px] text-ink-mid mt-1 leading-relaxed">{c.detail}</div>}
+                </div>
+              );
+              return c.to ? <Link key={i} to={c.to} className="block">{body}</Link> : <div key={i}>{body}</div>;
+            })}
+          </Panel>
+        </div>
+      )}
+
       {/* Pulse + desktop metric tiles / insight spine-cards (board D1). */}
-      <div className="grid sm:grid-cols-[230px_1fr] gap-3.5 mb-3.5">
-        <div>
+      <div data-testid="dashboard-metrics" className={FEATURES.dashboard.showPulse ? 'grid sm:grid-cols-[230px_1fr] gap-section-content' : 'hidden sm:block'}>
+        {FEATURES.dashboard.showPulse && <div data-testid="dashboard-pulse">
           <PulseBlock pulse={pulse} />
           {/* #7 — actionable next step; board mobile keeps this as the one nudge line. */}
           <Link to={advice.to} className="sm:hidden mt-2 flex items-start gap-1.5 text-[0.76rem] text-ink-mid hover:text-ink px-1">
             <span>{advice.text}</span><ArrowRight size={13} className="text-coral shrink-0 mt-0.5" />
           </Link>
-        </div>
-        <div className="hidden sm:flex flex-col gap-3">
-          <div className="grid grid-cols-3 gap-3">
+        </div>}
+        <div className="hidden sm:flex flex-col gap-group">
+          <div className="grid grid-cols-3 gap-section-content">
             <MetricTile
               to={`/transactions?type=income&month=${mk}`} label={t('monthly-income')}
               spine="hsl(var(--sage))"
@@ -220,18 +270,17 @@ export default function Dashboard() {
             />
           </div>
           {insights.length > 0 && (
-            <motion.div className="grid grid-cols-2 gap-3" variants={staggerContainer} initial="hidden" animate="visible">
+            <motion.div className="grid grid-cols-2 gap-section-content" variants={staggerContainer} initial="hidden" animate="visible">
               {insights.slice(0, 4).map((c, i) => {
                 const tone = c.cls === 'chip-good' ? 'hsl(var(--sage))'
                            : c.cls === 'chip-warn' ? 'hsl(var(--honey))'
                            : c.cls === 'chip-alert' ? 'hsl(var(--terra))'
                            :                          'hsl(var(--denim))';
                 const body = (
-                  <div className="relative rounded-r2 py-3 pr-4 pl-[18px] h-full overflow-hidden"
-                    style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+                  <div className="relative py-2 pr-4 pl-[18px] h-full">
                     <span aria-hidden className="absolute left-0 top-[10px] bottom-[10px] w-[3px] rounded-r" style={{ background: tone }} />
                     <div className="text-[13px] font-medium text-ink leading-snug">{c.icon} {c.text}</div>
-                    {c.detail && <div className="text-[11.5px] text-ink-dim mt-0.5 leading-snug">{c.detail}</div>}
+                    {c.detail && <div className="text-[13px] text-ink-mid mt-2 leading-relaxed">{c.detail}</div>}
                   </div>
                 );
                 return (
@@ -246,27 +295,33 @@ export default function Dashboard() {
       </div>
 
       {/* Panels — board D1 third row is a 3-up (budgets · recent · spending). */}
-      <div className="grid lg:grid-cols-3 gap-3.5 mb-3.5">
+      <div data-testid="dashboard-details" className="grid lg:grid-cols-3 gap-x-section-content gap-y-section">
         <Panel
           title={t('budget-progress')}
-          action={<Link to="/budgets" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">{t('view-all')}</Link>}
+          action={<Link to="/budgets" className="text-[13px] font-medium text-coral hover:opacity-70">{t('view-all')}</Link>}
         >
-          {budgetView.length === 0 ? (
-            <EmptyState icon="◎" message="No budgets yet" />
+          {budgetNow.lines.length === 0 && budgetNow.notPlanned.length === 0 ? (
+            // Aurora 4.0 FR3 — say what is missing and offer the one action.
+            <EmptyState compact
+              message={budgetNow.progress.length ? 'This month\'s budget has no category lines yet.' : 'No budget yet.'}
+              action={can(myRole, 'manage_budgets')
+                ? (budgetNow.progress.length ? { label: 'Add category lines', to: '/budgets' } : { label: 'Set a budget', onClick: openAddBudget })
+                : undefined} />
           ) : (
             <div className="px-4 pt-2.5 pb-1.5">
-              {budgetView.slice(0, 5).map(b => {
-                const cat = getCat(b.category ?? '');
-                const limitBase = convert(b.limit, b.currency, baseCur, rates);
-                const spent = spend[b.category ?? ''] || 0;
-                const pct = limitBase > 0 ? Math.min(100, Math.round(spent / limitBase * 100)) : 0;
+              {/* v10.27.2 — the five most-utilised categories, highest first
+                  (lib/budgetOrdering), not the first five the store returned. E5: each over its own
+                  budget's period (an annual line says so), then this month's not-planned spending. */}
+              {budgetNow.lines.slice(0, 5).map(line => {
+                const cat = getCat(line.category);
+                const pct = Math.min(100, Math.round(line.pct ?? 0));
                 // Board trough bands: <80 good · 80–99 warn · 100 crit.
                 const color = pct >= 100 ? 'hsl(var(--terra))' : pct >= 80 ? 'hsl(var(--honey))' : 'hsl(var(--sage))';
                 return (
-                  <div key={b.id} className="mb-3 last:mb-1.5">
-                    <div className="flex justify-between items-center mb-1.5 text-[12.5px]">
-                      <span className="text-ink">{cat.icon} {cat.label}</span>
-                      <span className="num text-ink-mid">{fmtShort(spent, baseCur)} / {fmtShort(limitBase, baseCur)}</span>
+                  <div key={`${line.budgetId}:${line.category}`} className="mb-3 last:mb-1.5">
+                    <div className="flex justify-between items-center mb-1.5 text-[12.5px] gap-2">
+                      <span className="text-ink truncate">{cat.icon} {cat.label}{line.annual ? <span className="text-ink-dim"> · this year</span> : null}</span>
+                      <span className="num text-ink-mid flex-shrink-0">{fmtShort(line.spent, baseCur)} / {fmtShort(line.limit, baseCur)}</span>
                     </div>
                     <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
                       <div className="h-full rounded-full chart-grow transition-[width] duration-500" style={{ width: `${pct}%`, background: color }} />
@@ -274,51 +329,76 @@ export default function Dashboard() {
                   </div>
                 );
               })}
+              {budgetNow.notPlanned.slice(0, 3).map(line => {
+                const cat = getCat(line.category);
+                return (
+                  <div key={`np:${line.category}`} data-testid="dashboard-not-planned" className="mb-3 last:mb-1.5">
+                    <div className="flex justify-between items-center mb-1.5 text-[12.5px] gap-2">
+                      <span className="text-ink truncate">{cat.icon} {cat.label}</span>
+                      <span className="num text-terra flex-shrink-0">{fmtShort(line.spent, baseCur)} over · not planned</span>
+                    </div>
+                    <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+                      <div className="h-full rounded-full chart-grow transition-[width] duration-500" style={{ width: '100%', background: 'hsl(var(--terra))' }} />
+                    </div>
+                  </div>
+                );
+              })}
+              {budgetNow.notPlanned.length > 3 && (
+                <p className="text-[11.5px] text-ink-dim mb-1.5">
+                  +{budgetNow.notPlanned.length - 3} more not planned · <Link to="/budgets" className="text-coral">see Budgets</Link>
+                </p>
+              )}
             </div>
           )}
         </Panel>
 
         <Panel
           title={t('recent-transactions')}
-          action={<Link to="/transactions" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">{t('view-all')}</Link>}
+          action={<Link to="/transactions" className="text-[13px] font-medium text-coral hover:opacity-70">{t('view-all')}</Link>}
         >
           {recent.length === 0 ? (
-            <EmptyState icon={<Pip size={44} />} message="No transactions yet" />
+            <EmptyState compact message="Nothing logged yet." action={{ label: '+ Add your first expense', onClick: () => openAddTxn({ type: 'expense' }) }} />
           ) : (
             recent.map(txn => <RecentRow key={txn.id} txn={txn} onEdit={openEditTxn} />)
           )}
         </Panel>
 
         <Panel title={t('spending-by-category')} sub={t('this-month')}
-          action={<Link to="/reports" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">View All →</Link>}>
+          action={<Link to="/reports" className="text-[13px] font-medium text-coral hover:opacity-70">{t('view-all')}</Link>}>
           {donutData.length === 0
-            ? <EmptyState icon="🥯" message="No expenses this month" />
+            ? <EmptyState compact message="No spending recorded this month." />
             : <CategoryDonut data={donutData} currency={baseCur} monthKey={mk} />
           }
         </Panel>
       </div>
 
       {/* Debt overview. */}
-      <div>
+      {FEATURES.dashboard.showDebtSummary && <div data-testid="dashboard-debt-summary">
         <Panel
           title={t('debt-overview')}
-          action={<Link to="/debts" className="font-mono text-[0.6rem] tracking-wider uppercase text-coral hover:opacity-70">View →</Link>}
+          action={<Link to="/debts" className="text-[13px] font-medium text-coral hover:opacity-70">{t('view-all')}</Link>}
         >
           {debts.length === 0 ? (
-            <EmptyState icon={<Pip size={44} />} message="Debt-free — nothing owed" />
+            <EmptyState compact message="Debt-free — nothing owed." />
           ) : (
             <div className="px-4 py-3 space-y-2">
               <Row label={`Total · ${debts.length} accounts`} value={<Money amount={tl} currency={baseCur} maxChars={11} />} valueClass="text-terra" />
               <Row label="Monthly minimum" value={<Money amount={monthlyDebtPmt} currency={baseCur} maxChars={11} />} valueClass="text-honey" />
               <Row
                 label="Debt-to-income"
-                value={`${dti.toFixed(0)}%`}
-                valueClass={dti <= 25 ? 'text-sage' : dti <= 36 ? 'text-honey' : 'text-terra'}
+                value={pctLabel(dti, 0)}
+                valueClass={dti == null ? 'text-ink-dim' : dti <= 25 ? 'text-sage' : dti <= 36 ? 'text-honey' : 'text-terra'}
               />
             </div>
           )}
         </Panel>
-      </div>
+      </div>}
+
+      {/* Owner, 16 Oct 2026 — two or three lessons for what the household is dealing with, readable in
+          place, with a shortcut to the library. */}
+      <Suspense fallback={null}>
+        <LearnShelf situation={learnSituation} todayISO={today()} />
+      </Suspense>
     </div>
   );
 }
@@ -390,7 +470,7 @@ function CashFlowHero({ series, month, rate, baseCur, mk }: {
         role="img" aria-label={`Six-month net cash-flow trend, ${monLabel(selPt.mk)} selected`}
       >
         <div
-          className="glass-panel absolute top-0 z-[2] px-2.5 py-1.5 rounded-[10px] text-center whitespace-nowrap pointer-events-none"
+          className="glass-panel absolute top-0 z-[2] px-2.5 py-1.5 rounded-r2 text-center whitespace-nowrap pointer-events-none"
           style={{ left: `${(X(sel) / 320) * 100}%`, transform: `translateX(${sel === 0 ? '-8%' : sel === series.length - 1 ? '-92%' : '-50%'})` }}
         >
           <div className="num text-[12px] font-bold leading-tight" style={{ color: selPt.net >= 0 ? 'hsl(var(--sage))' : 'hsl(var(--terra))' }}>
@@ -508,7 +588,7 @@ function PulseBlock({ pulse }: { pulse: PulseScore }) {
       </div>
       {/* D1 — titled pulse card. */}
       <div className="hidden sm:block rounded-r3 p-4 text-center h-full" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-        <div className="font-mono text-[8.5px] tracking-[0.15em] uppercase mb-3" style={{ color: 'var(--accent)' }}>Family Pulse Score™</div>
+        <div className="font-mono text-[8.5px] tracking-[0.15em] uppercase mb-3" style={{ color: 'var(--accent-text)' }}>Family Pulse Score™</div>
         <Link to="/reports" aria-label={`Family Pulse ${score ?? '—'} of 100 — open reports`} className="inline-block rounded-full mb-3">
           {ring(118, 32)}
         </Link>
@@ -524,7 +604,7 @@ function MetricTile({ label, value, spine, to }: { label: string; value: ReactNo
     <Link to={to} className="relative block rounded-r2 px-4 py-3.5 overflow-hidden"
       style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
       <span aria-hidden className="absolute left-0 right-0 bottom-0 h-[3px]" style={{ background: spine }} />
-      <div className="font-mono text-[8.5px] tracking-[0.15em] uppercase text-ink-dim mb-2">{label}</div>
+      <div className="ui-label mb-related">{label}</div>
       <div className="num font-bold text-[22px] leading-tight text-ink">{value}</div>
     </Link>
   );
@@ -532,6 +612,7 @@ function MetricTile({ label, value, spine, to }: { label: string; value: ReactNo
 
 /** Board M1 recent row — tinted category tile · name + "category · when" · amount. */
 function RecentRow({ txn, onEdit }: { txn: Transaction; onEdit: (t: Transaction) => void }) {
+  const baseCur = useStore(s => s.profile.baseCurrency);   // W3b: one currency per household
   const cat = getCat(txn.category ?? '');
   const emoji = txn.type === 'transfer' ? '🔄' : txn.type === 'investment' ? '📈' : cat.icon;
   const catLabel = txn.type === 'transfer' ? 'Transfer' : txn.type === 'investment' ? 'Investment' : cat.label;
@@ -541,16 +622,16 @@ function RecentRow({ txn, onEdit }: { txn: Transaction; onEdit: (t: Transaction)
   return (
     <button type="button" onClick={() => onEdit(txn)}
       className="w-full flex items-center gap-[11px] px-4 py-[11px] border-b border-line last:border-b-0 text-left hover:bg-bg3 transition-colors cursor-pointer">
-      <div className="w-[34px] h-[34px] rounded-[9px] flex items-center justify-center text-[16px] flex-shrink-0"
+      <div className="w-[34px] h-[34px] rounded-r2 flex items-center justify-center text-[16px] flex-shrink-0"
         style={{ background: `color-mix(in srgb, ${cat.color || 'hsl(var(--denim))'} 15%, transparent)`, boxShadow: 'var(--neu-sm)' }} aria-hidden>
         {emoji}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="font-semibold text-[13.5px] text-ink truncate">{txn.description || catLabel}</div>
-        <div className="num text-[10px] text-ink-dim">{catLabel} · {when}</div>
+        <div className="font-medium text-[13.5px] text-ink truncate">{txn.description || catLabel}</div>
+        <div className="text-[12px] text-ink-mid">{catLabel} · {when}</div>
       </div>
       <span className={`num font-semibold text-[13.5px] flex-shrink-0 ${isIncome ? 'text-sage' : 'text-ink'}`}>
-        {isExpense ? '−' : isIncome ? '+' : ''}<Money amount={txn.split?.isSplit ? txn.split.yourShare : txn.amount} currency={txn.currency} maxChars={9} />
+        {isExpense ? '−' : isIncome ? '+' : ''}<Money amount={txn.split?.isSplit ? txn.split.yourShare : txn.amount} currency={baseCur} maxChars={9} />
       </span>
     </button>
   );

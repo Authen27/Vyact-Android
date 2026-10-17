@@ -5,7 +5,7 @@ import {
 import { copyBudgets, suggestBudget, budgetHistory, budgetRollup } from '../budgetIntel';
 import { monthlyData } from '../calculations';
 import type {
-  Transaction, Budget, Debt, Goal, Asset, Account, RecurringSchedule, ExchangeRates,
+  Transaction, Budget, Debt, Asset, Account, RecurringSchedule, ExchangeRates,
 } from '../../types';
 
 // CON-UNIT-MM-100..0xx — Money-Model engine tests, v9 txn-redesign semantics
@@ -82,17 +82,18 @@ describe('budgetIntel — read-only inference (A8)', () => {
     expect((out[0] as { id?: string }).id).toBeUndefined();
   });
 
-  it('CON-UNIT-MM-111 · suggestBudget proposes from recurring + debts + goals, traceably', () => {
+  it('CON-UNIT-MM-111 · suggestBudget proposes from recurring + loans, traceably, in categories the form shows', () => {
+    // W4h (owner decision D27), deliberately: no goal line (Goals are retired; its 'savings' row was
+    // invisible yet counted in the total), and a legacy id is proposed as its current one.
     const recurring: RecurringSchedule[] = [
       { id: 'r1', frequency: 'monthly', startDate: d('01'), nextDueDate: d('01'),
         transactionTemplate: { type: 'expense', amount: 1200, currency: 'USD', description: '', category: 'rent' } as Omit<Transaction,'id'|'date'> },
     ];
     const debts: Debt[] = [{ id: 'd1', type: 'loan', name: 'L', principal: 0, currentBalance: 5000, interestRate: 8, minimumPayment: 250, currency: 'USD' }];
-    const goals: Goal[] = [{ id: 'g1', type: 'savings', name: 'Trip', target: 1200, current: 0, currency: 'USD', completed: false }];
-    const s = suggestBudget({ transactions: [], debts, goals, recurring, baseCurrency: 'USD', rates: R });
-    expect(s.find(x => x.category === 'rent')).toMatchObject({ limit: 1200, basis: 'recurring' });
+    const s = suggestBudget({ transactions: [], debts, recurring, baseCurrency: 'USD', rates: R });
+    expect(s.find(x => x.category === 'rent_mortgage')).toMatchObject({ limit: 1200, basis: 'recurring' });
     expect(s.find(x => x.category === 'loan_emi')).toMatchObject({ limit: 250, basis: 'debt' });
-    expect(s.find(x => x.category === 'savings')?.basis).toBe('goal');
+    expect(s.map(x => x.category).sort()).toEqual(['loan_emi', 'rent_mortgage']);
   });
 
   it('CON-UNIT-MM-112 · budgetRollup nests category budgets under monthly/annual totals', () => {

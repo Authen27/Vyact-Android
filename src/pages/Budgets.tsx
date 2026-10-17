@@ -10,23 +10,33 @@ import { useStore } from '../store';
 import { can } from '../lib/permissions';
 import { useTranslation } from '../hooks';
 import { Panel } from '../components/ui/Card';
-import { convert, fmt, fmtShort, today } from '../lib/format';
-import { spendByCategoryInRange, cumulativeSpendSeries } from '../lib/calculations';
+import { fmt, fmtShort, today } from '../lib/format';
+import { cumulativeSpendSeries } from '../lib/calculations';
+import { budgetProgress } from '../lib/budgetProgress';
 
 import { getCat } from '../constants';
 import Money from '../components/ui/Money';
 import BudgetPaceChart from '../components/budgets/BudgetPaceChart';
-import type { Budget } from '../types';
+import { sortBudgetsForDisplay } from '../lib/budgetOrdering';
+import PageHead from '../components/ui/PageHead';
+import EmptyState from '../components/ui/EmptyState';
+import { confirmSheet } from '../lib/confirmSheet';
+import { deleteBudgetRequest } from '../lib/confirmCopy';
+import { budgetTitle } from '../lib/budgetForm';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-function budgetTitle(b: Budget): string {
-  if (b.scope === 'annual') return `${b.periodYear}`;
-  if (b.scope === 'month' && b.periodMonth) return `${MONTHS[b.periodMonth - 1]} ${b.periodYear}`;
-  // legacy fallback
-  return b.periodStart ? `${b.periodStart} → ${b.periodEnd}` : 'Budget';
-}
-function pct(spent: number, limit: number) { return limit > 0 ? Math.min((spent / limit) * 100, 100) : 0; }
+// v10.22.1 — the displayed percentage and the bar width are NOT the same number.
+//
+// `pct` used to clamp at 100 and feed both, so ₹350 spent against a ₹300 budget
+// read "100%" — identical to spending exactly ₹300. The magnitude of an overrun,
+// which is the one thing a budget card exists to tell you, was invisible; only
+// the terra tint distinguished the two.
+//
+// The clamp was there for the bar (a width over 100% overflows its trough), so
+// it stays — on the bar alone. The number now tells the truth.
+function pct(spent: number, limit: number) { return limit > 0 ? (spent / limit) * 100 : 0; }
+function barPct(p: number) { return Math.min(p, 100); }
 function barCls(p: number) { return p >= 100 ? 'bg-terra' : p >= 80 ? 'bg-honey' : 'bg-sage'; }
 
 export default function Budgets() {
@@ -47,48 +57,55 @@ export default function Budgets() {
 
   const cur = profile.baseCurrency;
 
-  // per-budget resolved view: total, allocations with spend, overall spend.
-  const rows = useMemo(() => budgets.map(b => {
-    const start = b.periodStart || '';
-    const end = b.periodEnd || '';
-    const spendMap = start && end ? spendByCategoryInRange(transactions, start, end, cur, rates) : {};
-    const allocs = allocations.filter(a => a.budgetId === b.id).map(a => ({
-      ...a,
-      limitBase: convert(a.amount, b.currency, cur, rates),
-      spent: spendMap[a.category] || 0,
-    }));
-    const totalBase = convert(b.limit, b.currency, cur, rates);
-    const spent = allocs.reduce((s, a) => s + a.spent, 0);
-    return { b, allocs, totalBase, spent };
-  }), [budgets, allocations, transactions, cur, rates]);
-
   // §4.2 — nudge: no budget for the CURRENT month.
   const now = new Date();
+  const nowKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
+
+  // per-budget resolved view: total, allocations with spend, overall spend.
+  // v10.27.2 — budgets run current month → oldest (lib/budgetOrdering), and the
+  // categories inside each run most-utilised first. Display order only.
+  // Track E, E5 (owner, E-6): the ONE budget-progress basis (lib/budgetProgress.ts). The total counts ALL
+  // spending in the budget's period (it used to subtract only allocated spending from the full total), each
+  // line is measured over the budget's own period, and spending nothing was allocated to is listed as
+  // "not planned".
+  const rows = useMemo(() => sortBudgetsForDisplay(budgets, new Date()).map(b => ({
+    b,
+    p: budgetProgress(b, allocations, transactions, { baseCurrency: cur, rates }),
+    allocationCount: allocations.filter(a => a.budgetId === b.id).length,
+    // nowKey re-sorts when the month rolls over while the page is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  })), [budgets, allocations, transactions, cur, rates, nowKey]);
   const hasCurrentMonth = budgets.some(b => b.scope === 'month'
     && b.periodYear === now.getFullYear() && b.periodMonth === now.getMonth() + 1);
   // Board C — the current-month budget drives the pace hero.
   const currentMonthRow = rows.find(r => r.b.scope === 'month'
     && r.b.periodYear === now.getFullYear() && r.b.periodMonth === now.getMonth() + 1);
 
+  // Aurora 4.0 CF6 — names the budget, its allocations, and that the spending stays.
   async function del(id: string) {
-    if (!confirm('Delete this budget?')) return;
+    const row = rows.find(r => r.b.id === id);
+    if (!row) return;
+    const ok = await confirmSheet(deleteBudgetRequest({
+      label: budgetTitle(row.b),
+      allocations: row.allocationCount,
+      spent: row.p.spent > 0 ? fmt(row.p.spent, cur) : undefined,
+      period: row.b.scope === 'annual' ? `${row.b.periodYear} spending` : `${budgetTitle(row.b)} spending`,
+    }));
+    if (!ok) return;
     await removeBudget(id);
     toast('Budget removed', 'info');
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-start mb-5 gap-4">
-        <div className="min-w-0">
-          <h1 className="display-italic text-4xl text-ink mb-1.5">{t('budgets')}</h1>
-          <p className="font-mono text-[0.6rem] tracking-[0.14em] uppercase text-ink-dim">
-            Month, annual &amp; custom plans · per-category allocations
-          </p>
-        </div>
-        {canManage
-          ? <button className="btn-primary flex-shrink-0" onClick={openAddBudget}>+ Add Budget</button>
-          : <span className="flex-shrink-0 font-mono text-[0.6rem] tracking-[0.12em] uppercase text-ink-dim border border-line rounded-md px-2.5 py-1.5 self-center" title="Budgets are managed by the household owner or admin">View only</span>}
-      </div>
+    <div className="ui-pilot">
+      <PageHead
+        title={t('budgets')}
+        subtitle="Month and annual plans · per-category allocations"
+        action={canManage ? { label: '+ Add Budget', entity: 'budget', onClick: openAddBudget } : undefined}
+        aside={!canManage && (
+          <span className="ui-label well px-2.5 py-1.5" title="Budgets are managed by the household owner or admin">View only</span>
+        )}
+      />
 
       {/* §4.2 — create nudge for the current month (owner/admin only) */}
       {!hasCurrentMonth && canManage && (
@@ -106,19 +123,18 @@ export default function Budgets() {
           over a left accent spine, with a plain-language daily allowance and
           the overall-usage trough beneath. */}
       {currentMonthRow && (() => {
-        const { b, allocs, totalBase, spent } = currentMonthRow;
-        const overall = pct(spent, totalBase);
+        const { b, p } = currentMonthRow;
+        const totalBase = p.limit;
+        const spent = p.spent;
+        const overall = p.pct;
         const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const daysLeft = Math.max(1, daysInMonth - now.getDate() + 1);
-        const remaining = totalBase - spent;
+        const remaining = p.left;
         const perDay = remaining / daysLeft;
-        // Cumulative series across the budget's allocated categories, day 1 → today.
-        const catSet = new Set(allocs.map(a => a.category));
+        // Cumulative series of ALL spending (the total's basis, E5), day 1 → today.
         const todayStr = today();
-        const upto = b.periodEnd && todayStr > b.periodEnd ? b.periodEnd : todayStr;
-        const series = (b.periodStart && catSet.size)
-          ? cumulativeSpendSeries(transactions, catSet, b.periodStart, upto, cur, rates)
-          : [];
+        const upto = todayStr > p.end ? p.end : todayStr;
+        const series = cumulativeSpendSeries(transactions, null, p.start, upto, cur, rates);
         const dayNum = series.length || now.getDate();
         const lastCum = series.length ? series[series.length - 1].cumulative : spent;
         const projectedEnd = dayNum ? (lastCum / dayNum) * daysInMonth : 0;
@@ -127,7 +143,7 @@ export default function Budgets() {
           : overall >= 80 ? { label: 'watch', tone: 'honey' }
           : { label: 'on pace', tone: 'sage' };
         return (
-          <div className="relative rounded-r3 p-5 mb-4 overflow-hidden" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
+          <div className="card-raised p-5 mb-4 overflow-hidden" data-testid="budget-hero">
             <span className="absolute left-0 top-3.5 bottom-3.5 w-[3px] rounded-full" style={{ background: 'var(--accent)' }} />
             <div className="flex justify-between items-start gap-3">
               <div className="min-w-0">
@@ -140,7 +156,10 @@ export default function Budgets() {
                   {status.label}
                 </span>
                 {canManage && (
-                  <button onClick={() => openEditBudget(b)} className="block ml-auto mt-2 font-mono text-[8.5px] tracking-wider uppercase text-ink-dim hover:text-coral">edit ▸</button>
+                  <div className="flex justify-end gap-1 mt-1.5">
+                    <button onClick={() => openEditBudget(b)} className="row-action" aria-label={`Edit the ${budgetTitle(b)} budget`} title="Edit"><Pencil size={14} strokeWidth={1.6} /></button>
+                    <button onClick={() => del(b.id)} className="row-action danger" aria-label={`Delete the ${budgetTitle(b)} budget`} title="Delete"><Trash2 size={14} strokeWidth={1.6} /></button>
+                  </div>
                 )}
               </div>
             </div>
@@ -152,15 +171,15 @@ export default function Budgets() {
               {' '}· {daysLeft} day{daysLeft === 1 ? '' : 's'} to go
             </div>
             <BudgetPaceChart series={series} limit={totalBase} daysInMonth={daysInMonth} currency={cur} />
-            <div className="flex justify-between font-mono text-[8px] tracking-[0.08em] uppercase text-ink-dim mt-1 mb-2">
+            <div className="flex justify-between gap-2 text-[11px] text-ink-dim mt-1 mb-2">
               <span>{MONTHS[now.getMonth()]} 1</span>
               <span className={projUnder >= 0 ? 'text-sage' : 'text-terra'}>
                 projected · lands {fmtShort(Math.abs(projUnder), cur)} {projUnder >= 0 ? 'under' : 'over'}
               </span>
               <span>{MONTHS[now.getMonth()]} {daysInMonth}</span>
             </div>
-            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-              <div className={`h-full rounded-full chart-grow ${barCls(overall)}`} style={{ width: `${overall}%` }} />
+            <div className="trough h-1.5">
+              <div className={`h-full rounded-full chart-grow ${barCls(overall)}`} style={{ width: `${barPct(overall)}%` }} />
             </div>
           </div>
         );
@@ -168,18 +187,18 @@ export default function Budgets() {
 
       {rows.length === 0 ? (
         <Panel>
-          <div className="px-6 py-14 text-center">
-            <div className="text-4xl mb-3 opacity-60">◎</div>
-            <p className="text-ink-mid mb-4">{canManage ? 'No budgets yet. Add one to start tracking your spending.' : 'No budgets yet. The household owner or admin can add one.'}</p>
-            {canManage && <button className="btn-primary" onClick={openAddBudget}>Add First Budget</button>}
-          </div>
+          <EmptyState icon="🎯" title="No budgets yet"
+            message={canManage ? 'Set one for this month and each category shows what is left as you spend.' : 'The household owner or an admin can set one; it shows here when they do.'}
+            action={canManage ? { label: 'Set a budget', onClick: openAddBudget } : undefined}
+            hint={canManage ? 'or ask Pip: "suggest a budget from last month"' : undefined} />
         </Panel>
       ) : (
         <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          {rows.map(({ b, allocs, totalBase, spent }) => {
-            const overall = pct(spent, totalBase);
+          {rows.map(({ b, p }) => {
+            const { limit: totalBase, spent, lines: allocs, notPlanned } = p;
+            const overall = p.pct;
             return (
-              <div key={b.id} className="rounded-r3 p-4 min-w-0" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }}>
+              <div key={b.id} data-testid="budget-card" className="tile !rounded-r3 p-4 min-w-0">
                 <div className="flex items-start justify-between mb-2 gap-2">
                   <button onClick={() => navigate(`/transactions?budgetId=${b.id}`)}
                     className="font-semibold text-ink text-[0.95rem] truncate hover:text-coral text-left" title="View transactions">
@@ -201,28 +220,48 @@ export default function Budgets() {
                   </span>
                   <span className={overall >= 100 ? 'text-terra font-medium' : 'text-ink-dim'}>{Math.round(overall)}%</span>
                 </div>
-                <div className="h-2 bg-bg3 rounded-full mb-3 overflow-hidden">
-                  <div className={`h-full rounded-full chart-grow transition-all ${barCls(overall)}`} style={{ width: `${overall}%` }} />
+                <div className="trough h-2 mb-3">
+                  <div className={`h-full rounded-full chart-grow transition-all ${barCls(overall)}`} style={{ width: `${barPct(overall)}%` }} />
                 </div>
                 {/* allocations */}
-                {allocs.length === 0 ? (
-                  <p className="text-[0.74rem] text-ink-dim">No category allocations — edit to add some.</p>
-                ) : (
+                {allocs.length === 0 && (
+                  <p className="text-[0.74rem] text-ink-dim mb-1.5">No category allocations — edit to add some.</p>
+                )}
+                {(allocs.length > 0 || notPlanned.length > 0) && (
                   <div className="space-y-1.5">
                     {allocs.map((a, ai) => {
-                      const ap = pct(a.spent, a.limitBase);
+                      const ap = pct(a.spent, a.limit);
                       const c = getCat(a.category);
                       return (
-                        <button key={a.id} onClick={() => navigate(`/transactions?budgetId=${b.id}&cat=${a.category}`)}
+                        <button key={a.category} onClick={() => navigate(`/transactions?budgetId=${b.id}&cat=${a.category}`)}
                           className="w-full text-left group">
                           <div className="flex justify-between items-center text-[0.74rem] mb-0.5">
                             <span className="text-ink-mid group-hover:text-coral truncate">{c.icon} {c.label}</span>
                             <span className="text-ink-dim flex-shrink-0">
-                              <Money amount={a.spent} currency={cur} maxChars={7} /> / <Money amount={a.limitBase} currency={cur} maxChars={7} />
+                              <Money amount={a.spent} currency={cur} maxChars={7} /> / <Money amount={a.limit} currency={cur} maxChars={7} />
                             </span>
                           </div>
-                          <div className="h-1.5 bg-bg3 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full chart-grow ${barCls(ap)}`} style={{ width: `${ap}%`, animationDelay: `${ai * 60}ms` }} />
+                          <div className="trough h-1.5">
+                            <div className={`h-full rounded-full chart-grow ${barCls(ap)}`} style={{ width: `${barPct(ap)}%`, animationDelay: `${ai * 60}ms` }} />
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {/* E5 (owner): spending in a category with nothing allocated — always over, after the plan. */}
+                    {notPlanned.map(a => {
+                      const c = getCat(a.category);
+                      return (
+                        <button key={`np-${a.category}`} data-testid="budget-not-planned"
+                          onClick={() => navigate(`/transactions?budgetId=${b.id}&cat=${a.category}`)}
+                          className="w-full text-left group">
+                          <div className="flex justify-between items-center text-[0.74rem] mb-0.5 gap-2">
+                            <span className="text-ink-mid group-hover:text-coral truncate">{c.icon} {c.label}</span>
+                            <span className="text-terra flex-shrink-0">
+                              <Money amount={a.spent} currency={cur} maxChars={7} /> over · not planned
+                            </span>
+                          </div>
+                          <div className="trough h-1.5">
+                            <div className="h-full rounded-full chart-grow bg-terra" style={{ width: '100%' }} />
                           </div>
                         </button>
                       );

@@ -179,14 +179,19 @@ describe('onboardingNudges — progressive capture (spec §6)', () => {
     expect(n.getActiveNudge({ householdId: HID, logCount: 0, ...WITH_ESTIMATE })).toBeNull();
   });
 
-  it('CON-UNIT-ONB-015 · bank-connect offer requires ≥5 real logs and never repeats', async () => {
+  it('CON-UNIT-ONB-015 · no bank-connect offer: Vyact has no bank connection (W6, audit FE-UIS-11)', async () => {
     await complete(2); // within window, everything confirmed so check_in/confirm don't pre-empt
     const n = await import('../onboardingNudges');
-    expect(n.getActiveNudge({ householdId: HID, logCount: 4, ...ALL_CONFIRMED })).toBeNull(); // below threshold
-    const offer = n.getActiveNudge({ householdId: HID, logCount: 5, ...ALL_CONFIRMED });
-    expect(offer?.kind).toBe('bank_connect');
-    n.markBankConnectOffered(HID);
-    expect(n.getActiveNudge({ householdId: HID, logCount: 9, ...ALL_CONFIRMED })).toBeNull(); // once only
+    // It used to offer "Connect your bank" after 5 logs and link to Settings, where nothing exists.
+    for (const logCount of [4, 5, 50]) {
+      expect(n.getActiveNudge({ householdId: HID, logCount, ...ALL_CONFIRMED }), String(logCount)).toBeNull();
+    }
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const onboarding = readFileSync(resolve(__dirname, '../../pages/Onboarding.tsx'), 'utf8');
+    expect(onboarding).not.toMatch(/35%|confirmed_pct/);            // the fabricated "picture confirmed" figure
+    const accounts = readFileSync(resolve(__dirname, '../../pages/Accounts.tsx'), 'utf8');
+    expect(accounts.match(/isEstimate\((account|acc)\) && <EstimatedTag/g)?.length).toBe(1);   // every account card, Cash included (A5 AC1)
   });
 
   it('CON-UNIT-ONB-016 · active nudging tapers after the 21-day window', async () => {

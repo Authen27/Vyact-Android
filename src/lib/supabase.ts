@@ -28,7 +28,10 @@ const FALLBACK_KEY = 'sb_publishable_SpuQFPzUWOnKI3nRR6ghNw_ktWqrKCA';
 // so journeys aren't gated behind the cloud auth screen — without this guard a
 // prod-style test build picks up the fallback creds and every route redirects
 // to /auth/sign-in. Real deploys (MODE === 'production') keep the fallback.
-const USE_FALLBACK = import.meta.env.PROD && import.meta.env.MODE !== 'test';
+// v10.57.0 — VITE_LOCAL_ONLY=1 (set by vite.config.ts for Vercel PREVIEW builds and the guest
+// demo build) also turns the fallback off. Before this, a preview build emptied VITE_SUPABASE_URL
+// but the fallback filled it straight back in, so previews ran against PRODUCTION (found 2 Oct 2026).
+const USE_FALLBACK = import.meta.env.PROD && import.meta.env.MODE !== 'test' && import.meta.env.VITE_LOCAL_ONLY !== '1';
 const URL  = (import.meta.env.VITE_SUPABASE_URL  as string | undefined) || (USE_FALLBACK ? FALLBACK_URL : undefined);
 const KEY  = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) || (USE_FALLBACK ? FALLBACK_KEY : undefined);
 export const APP_URL = (import.meta.env.VITE_APP_URL as string | undefined) || (typeof window !== 'undefined' ? window.location.origin : '');

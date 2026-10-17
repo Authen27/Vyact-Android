@@ -26,4 +26,11 @@ export interface QueueOp {
    */
   attempts?: number;
   nextRetryAt?: number;
+  /**
+   * W3c (v10.67.0; audit INT-TXN-08) — the cached row as it was BEFORE this write: null when the
+   * write created it, the row itself for an update or a remove. When the cloud rejects the write for
+   * good (a CHECK, a foreign key, a permission), the cache is put back exactly as it was. Undefined
+   * only on an op queued by an older app, which is resolved by a full resync instead.
+   */
+  before?: unknown | null;
 }

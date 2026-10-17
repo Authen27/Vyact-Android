@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { Transaction, RecurringSchedule } from '../../types';
 import { nowMonthKey, today, monthName, fmtShort } from '../../lib/format';
 import { scheduleFiresOnDate } from '../../lib/recurring';
+import { dayTotalsForMonth } from '../../lib/txnListTotals';
 
 interface TxnCalendarProps {
   transactions: Transaction[];          // all transactions (filtered to the viewed month internally)
@@ -38,19 +39,9 @@ export default function TxnCalendar({
     };
   }, [viewMonth]);
 
-  // Per-day income & expense totals for the viewed month (counted, non-private).
-  const dayTotals = useMemo(() => {
-    const map = new Map<string, { income: number; expense: number }>();
-    for (const t of transactions) {
-      if (t.excluded) continue;
-      if (!t.date.startsWith(viewMonth + '-')) continue;
-      if (t.type !== 'income' && t.type !== 'expense') continue;
-      const cur = map.get(t.date) ?? { income: 0, expense: 0 };
-      cur[t.type] += Math.abs(t.amount || 0);
-      map.set(t.date, cur);
-    }
-    return map;
-  }, [transactions, viewMonth]);
+  // Per-day income & expense totals for the viewed month — W7a (FE-UIC-17): reportable rows at your
+  // share, like every other total (transfer legs and balance adjustments no longer count).
+  const dayTotals = useMemo(() => dayTotalsForMonth(transactions, viewMonth, currency), [transactions, viewMonth, currency]);
 
   // Board §.cal — the expense dot's opacity is a heat read (bigger day = more
   // solid dot), scaled against this month's single biggest spend day.
@@ -164,7 +155,7 @@ export default function TxnCalendar({
                 boxShadow: isSelected ? `var(--neu-inset), 0 0 0 1.5px var(--accent)` : 'none',
               }}
             >
-              <span style={isSelected ? { color: 'var(--accent)' } : undefined}>{d}</span>
+              <span style={isSelected ? { color: 'var(--accent-text)' } : undefined}>{d}</span>
               {hasRecurring && (
                 <span aria-hidden className="absolute top-[3px] right-[5px] text-[8px] text-ink-dim leading-none">↻</span>
               )}

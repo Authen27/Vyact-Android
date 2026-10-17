@@ -9,13 +9,33 @@
 //
 // The dangerous parts the spec warns about — month-end (BYMONTHDAY=31 skips short
 // months per RFC 5545), leap years (Feb 29) — are handled by anchoring on UTC
-// calendar math and by SKIPPING (not clamping) impossible dates, which is the RFC
-// behaviour. Covered by unit tests in __tests__/rrule.test.ts.
+// calendar math. Without a policy an impossible date is SKIPPED (the RFC
+// behaviour); a schedule always passes its month-end policy (W3e), so the app
+// moves the date to the month's last day or the next month's 1st instead.
+// Covered by unit tests in __tests__/rrule.test.ts.
 //
 // Dates are handled as YYYY-MM-DD strings (the app's transaction date format);
 // internally we use UTC Date to avoid TZ drift.
 
 export type Freq = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
+
+/**
+ * W3e (v10.69.0; owner decision D13) — what a day-of-month that a month does not have (the 29th–31st,
+ * Feb 29) becomes, chosen per schedule:
+ *   • 'last_day'         — the last day of that month (the 31st → 30 Apr, 28 Feb). The default.
+ *   • 'next_month_first' — the 1st of the next month (31 Jan → 1 Mar can make March hold two).
+ * Without a policy the expansion keeps the RFC 5545 behaviour and SKIPS the month, which is how a
+ * bill on the 31st silently missed February, April, June, September and November.
+ */
+export type ShortMonthPolicy = 'last_day' | 'next_month_first';
+export interface ExpandOptions { shortMonthPolicy?: ShortMonthPolicy }
+
+/** The date a day-of-month lands on in a given month under a policy; null = skip (no policy). */
+function landDay(year: number, month0: number, dom: number, policy?: ShortMonthPolicy): Date | null {
+  if (monthHasDay(year, month0, dom)) return new Date(Date.UTC(year, month0, dom));
+  if (!policy) return null;
+  return policy === 'last_day' ? new Date(Date.UTC(year, month0 + 1, 0)) : new Date(Date.UTC(year, month0 + 1, 1));
+}
 
 export interface RRule {
   freq: Freq;
@@ -93,7 +113,7 @@ function monthHasDay(year: number, month0: number, day: number): boolean {
  * occurrence consumed before `from` still counts toward COUNT). Bounded by a hard
  * safety cap so a misconfigured open-ended rule can't loop forever.
  */
-export function expandRRule(rule: RRule, dtstart: string, from: string, to: string): string[] {
+export function expandRRule(rule: RRule, dtstart: string, from: string, to: string, opts: ExpandOptions = {}): string[] {
   const start = toUTC(dtstart);
   const windowEnd = toUTC(to);
   const windowStart = toUTC(from);
@@ -101,6 +121,8 @@ export function expandRRule(rule: RRule, dtstart: string, from: string, to: stri
   const hardEnd = untilDt && untilDt < windowEnd ? untilDt : windowEnd;
   const interval = Math.max(1, rule.interval);
   const out: string[] = [];
+  const policy = opts.shortMonthPolicy;
+  const seen = new Set<number>();   // a moved day can meet a real one (31st → 1st, and the 1st itself)
   let produced = 0;                 // counts toward COUNT (all occurrences, not just in-window)
   const CAP = 10_000;               // safety: never loop unbounded
   let iters = 0;
@@ -109,13 +131,22 @@ export function expandRRule(rule: RRule, dtstart: string, from: string, to: stri
     // returns false to signal "stop expanding entirely" (COUNT/UNTIL exhausted)
     if (untilDt && dt > untilDt) return false;
     if (rule.count != null && produced >= rule.count) return false;
+    if (seen.has(dt.getTime())) return true;      // the same date twice is one occurrence
+    seen.add(dt.getTime());
     produced++;
     if (dt >= windowStart && dt <= hardEnd) out.push(fmt(dt));
     return true;
   };
 
   if (rule.freq === 'DAILY') {
-    for (let dt = new Date(start); iters < CAP; dt = addDays(dt, interval), iters++) {
+    // W3e: an open-ended rule jumps straight to the window (whole intervals, so the phase holds).
+    // Stepping day by day from a years-old start ran into CAP, and "no date found" reads as finished.
+    let first = new Date(start);
+    if (rule.count == null && windowStart > start) {
+      const steps = Math.floor((windowStart.getTime() - start.getTime()) / (86_400_000 * interval));
+      first = addDays(start, steps * interval);
+    }
+    for (let dt = first; iters < CAP; dt = addDays(dt, interval), iters++) {
       if (dt > hardEnd && !(rule.count != null)) break;
       if (!emit(dt)) break;
     }
@@ -124,9 +155,11 @@ export function expandRRule(rule: RRule, dtstart: string, from: string, to: stri
     // iterate week by week from the week containing start
     for (let wk = new Date(start); iters < CAP; wk = addDays(wk, 7 * interval), iters++) {
       let stop = false;
-      for (const d of days) {
-        const delta = (d - wk.getUTCDay() + 7) % 7;
-        const occ = addDays(wk, delta);
+      // Emit this week's days in DATE order, not BYDAY order: a week anchored on a
+      // Tuesday start holds Fri before Mon, and stopping at a Monday past the
+      // window would otherwise drop the Friday inside it (and misorder COUNT).
+      const week = days.map((d) => addDays(wk, (d - wk.getUTCDay() + 7) % 7)).sort((a, b) => a.getTime() - b.getTime());
+      for (const occ of week) {
         if (occ < start) continue;                 // before DTSTART
         if (occ > hardEnd && rule.count == null) { stop = true; break; }
         if (!emit(occ)) { stop = true; break; }
@@ -157,11 +190,16 @@ export function expandRRule(rule: RRule, dtstart: string, from: string, to: stri
     } else {
       const startDom = start.getUTCDate();
       const doms = rule.byMonthDay?.length ? [...rule.byMonthDay].sort((a, b) => a - b) : [startDom];
-      for (let m = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1)); iters < CAP; m = addMonths(m, interval), iters++) {
+      // 'next_month_first' moves a short month's day into the NEXT month, so the month before the
+      // start can hold an occurrence on or after it (a start of 1 May is April's 31st). Begin there;
+      // anything before the start is skipped below and never counted.
+      const lead = policy === 'next_month_first' ? interval : 0;
+      for (let m = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() - lead, 1)); iters < CAP; m = addMonths(m, interval), iters++) {
         let stop = false;
         for (const dom of doms) {
-          if (!monthHasDay(m.getUTCFullYear(), m.getUTCMonth(), dom)) continue;  // RFC: skip short months
-          const occ = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth(), dom));
+          // RFC: skip short months — unless the schedule chose a month-end policy (W3e).
+          const occ = landDay(m.getUTCFullYear(), m.getUTCMonth(), dom, policy);
+          if (!occ) continue;
           if (occ < start) continue;
           if (occ > hardEnd && rule.count == null) { stop = true; break; }
           if (!emit(occ)) { stop = true; break; }
@@ -173,14 +211,36 @@ export function expandRRule(rule: RRule, dtstart: string, from: string, to: stri
     const mo  = rule.byMonth?.length    ? rule.byMonth[0] - 1 : start.getUTCMonth();
     const dom = rule.byMonthDay?.length ? rule.byMonthDay[0]  : start.getUTCDate();
     for (let y = start.getUTCFullYear(); iters < CAP; y += interval, iters++) {
-      if (!monthHasDay(y, mo, dom)) continue;       // Feb 29 in a common year → skip
-      const occ = new Date(Date.UTC(y, mo, dom));
+      const occ = landDay(y, mo, dom, policy);       // Feb 29 in a common year → skip, or the policy's day
+      if (!occ) continue;
       if (occ < start) continue;
       if (occ > hardEnd && rule.count == null) break;
       if (!emit(occ)) break;
     }
   }
   return out;
+}
+
+const shiftDays = (iso: string, n: number): string => fmt(addDays(toUTC(iso), n));
+
+/**
+ * W3e — the first occurrence strictly AFTER `after` (YYYY-MM-DD), honouring COUNT and UNTIL counted
+ * from `dtstart`; null when the rule has no further occurrence (it is finished). Looks ahead in
+ * widening windows, so a daily rule costs a few days and an every-four-years rule still resolves.
+ */
+export function nextOccurrenceAfter(rule: RRule, dtstart: string, after: string, opts: ExpandOptions = {}): string | null {
+  return firstOccurrenceOnOrAfter(rule, dtstart, shiftDays(after, 1), opts);
+}
+
+/** W3e — the first occurrence on or after `from` (inclusive); null when the rule is finished. */
+export function firstOccurrenceOnOrAfter(rule: RRule, dtstart: string, from: string, opts: ExpandOptions = {}): string | null {
+  const floor = from < dtstart ? dtstart : from;
+  for (const span of [62, 400, 1600, 4000]) {
+    if (rule.until && rule.until < floor) return null;
+    const dates = expandRRule(rule, dtstart, floor, shiftDays(floor, span * Math.max(1, rule.interval)), opts);
+    if (dates.length) return dates[0];
+  }
+  return null;
 }
 
 /** Human label for a rule, e.g. "Every month on the 1st", "Every 3 months". */

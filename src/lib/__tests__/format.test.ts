@@ -14,14 +14,15 @@ describe('convert', () => {
     expect(convert(0, 'USD', 'EUR', DEFAULT_RATES)).toBe(0);
   });
 
-  it('CON-UNIT-003 · converts USD → EUR using the rate table', () => {
-    // USD rate 1.00, EUR rate 0.92 → 100 USD = 92 EUR
-    expect(convert(100, 'USD', 'EUR', DEFAULT_RATES)).toBeCloseTo(92, 10);
+  // W3b (v10.66.0; owner decision D14) — one currency per household, nothing converted: the
+  // amount comes back as it is, whatever the labels and whatever rates are passed.
+  it('CON-UNIT-003 · face value: USD → EUR returns the same amount (no rate is applied)', () => {
+    expect(convert(100, 'USD', 'EUR', DEFAULT_RATES)).toBe(100);
   });
 
-  it('CON-UNIT-004 · converts a non-USD pair via the USD base (INR → GBP)', () => {
-    // (amount / rINR) * rGBP = (8320 / 83.20) * 0.79 = 100 * 0.79 = 79
-    expect(convert(8320, 'INR', 'GBP', DEFAULT_RATES)).toBeCloseTo(79, 10);
+  it('CON-UNIT-004 · face value: any pair returns the same amount, rounded to the target\'s minor unit', () => {
+    expect(convert(8320, 'INR', 'GBP', DEFAULT_RATES)).toBe(8320);
+    expect(convert(12.6, 'USD', 'JPY')).toBe(13);
   });
 
   it('CON-UNIT-005 · treats an unknown currency code as rate 1 (documented fallback)', () => {

@@ -11,6 +11,19 @@
 // the swap point.
 
 export const FEATURES = {
+  // v10.49.0 (marketing #30/#31) — the Android app on Google Play. OFF until the listing is
+  // live: then Android browsers are sent to the store instead of the PWA install prompt, and
+  // the app asks for a Play review after the household's 10th entry (needs the in-app-review
+  // plugin in the Android wrapper; a no-op without it).
+  playStore: {
+    live: false,
+    packageId: 'com.vyact.consumer',
+    reviewAfterEntries: 10,
+  },
+  dashboard: {
+    showPulse: false,
+    showDebtSummary: false,
+  },
   onboarding: {
     enabled: true,            // master switch — false disables the entire feature
     perHousehold: true,       // run onboarding per household (vs once per user)
@@ -18,18 +31,17 @@ export const FEATURES = {
     skipAllowedFromStep: 2,   // user may skip from step 2 onward; step 0/1 mandatory
   },
 
-  // Ask Vyact assistant (see vyact-ask-vyact-engineering-spec.md §2). Deterministic
-  // rules-based, no LLM in this build. `enabled = false` reverts the launcher to
-  // its v7.4.5 two-tap behaviour with zero side effects. Per-bucket flags allow a
-  // staged rollout; each handler checks its bucket flag at entry. `backend` selects
-  // the AssistantBackend implementation — 'rules' now, 'llm' is the future drop-in.
+  // Ask Vyact assistant (Pip). `enabled = false` reverts the launcher to its v7.4.5
+  // two-tap behaviour with zero side effects. Per-bucket flags allow a staged rollout;
+  // each handler checks its bucket flag at entry. W7a (audit FE-PIP-18): the old
+  // `backend` setting is gone — nothing read it, and Pip's turns go through the model
+  // gateway (selectAssistantBackend), not a rules engine as it claimed.
   askVyact: {
     enabled: true,            // master switch — false → v7.4.5 launcher, no parsing
     capture: true,
     interpret: true,
     forecast: true,
     proactiveInsight: true,   // the single "here's what to know" card on open (§5)
-    backend: 'rules' as 'rules' | 'llm',
   },
 
   // ── Money-Model v2 (vyact-money-model-execution-and-regression.md) ────────────

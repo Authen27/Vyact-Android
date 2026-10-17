@@ -1,279 +1,145 @@
 // ──────────────────────────────────────────────────────────────────────────
-// GOLDEN TEMPLATE — Complex (C) tier
+// GOLDEN TEMPLATE — Complex (C) tier · W4f (v10.75.0; owner decision D19)
 // ──────────────────────────────────────────────────────────────────────────
 //
-// What "Complex" adds over Medium:
-//   • Precision math: interest/principal splits MUST match dinero arithmetic
-//     to the cent, not eyeballed decimals. Tolerate ±$0.01 only for the
-//     final assertion if the source-of-truth schedule uses banker's
-//     rounding (which `lib/amortization.ts` does — see TD-01 notes).
-//   • Deep state inspection: we read directly from the in-browser Zustand
-//     store via `page.evaluate()` for fields the UI does not surface (the
-//     paymentLog entry's `interest` / `principal` breakdown).
+// A loan is paid from its own Pay sheet. The split is decided by pay_loan's rules (in this local-only
+// run, the same rules in the store: lib/loanSchedule.ts, parity-tested against Postgres): interest
+// first — outstanding × APR/12, banker's rounding to the cent — then principal.
 //
-// DO NOT compute the expected interest/principal in the test by re-deriving
-// it from APR — that puts the test and the implementation on the same logic
-// and they will silently agree on a bug. Hard-code the dinero-correct value
-// from a known-good reference computation (Excel, a calculator, or the
-// vitest unit suite under `react/src/lib/__tests__/amortization.test.ts`).
+// DO NOT compute the expected interest/principal in the test by re-deriving it from APR — that puts the
+// test and the implementation on the same logic and they will silently agree on a bug. The figures
+// below are hard-coded from a hand calculation:
+//   $5,000 × 18.5% / 12 = $77.0833…  → $77.08 interest; $150 − $77.08 = $72.92 principal.
+//
+// Retired with the old command: DEBT-FC-009 ("apply advance"). Paying ahead is a prepayment now, which
+// either finishes the loan sooner or lowers the EMI (DEBT-FC-006 / 007); the owner's model has no third way.
 // ──────────────────────────────────────────────────────────────────────────
 
+import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/app';
-import { defaultSeed, seedWith, sampleCreditCardDebt } from '../fixtures/seed';
+import { defaultSeed, seedWith, sampleLoanDebt } from '../fixtures/seed';
 
-const seed = seedWith({ debts: [sampleCreditCardDebt] });
+const seed = seedWith({ debts: [sampleLoanDebt] });
 
-async function debtSnapshot(page: Parameters<typeof test>[0]['page'], debtId: string) {
-  return page.evaluate((id: string) => {
+type StoreDebt = { id: string; name: string; principal: number; currentBalance: number; minimumPayment: number; tenureMonths?: number;
+  dueDate?: string; firstEmiDate?: string; instalmentsPaid?: number };
+type StoreTxn = { id: string; description: string; type: string; amount: number; linkedDebtId?: string; linkedTxnId?: string };
+
+async function storeState(page: Page) {
+  return page.evaluate(() => {
     const win = window as typeof window & {
-      __vt_store?: { getState(): { debts: Array<{ id: string; currentBalance: number; minimumPayment: number; remainingMonths?: number; paymentLog?: Array<{ partChoice?: string }> }> } };
-      __ff_store?: { getState(): { debts: Array<{ id: string; currentBalance: number; minimumPayment: number; remainingMonths?: number; paymentLog?: Array<{ partChoice?: string }> }> } };
+      __vt_store?: { getState(): { debts: StoreDebt[]; transactions: StoreTxn[] } };
+      __ff_store?: { getState(): { debts: StoreDebt[]; transactions: StoreTxn[] } };
     };
     const store = win.__vt_store ?? win.__ff_store;
     if (!store) throw new Error('Store oracle unavailable');
-    const debt = store.getState().debts.find(d => d.id === id);
-    if (!debt) return null;
-    return {
-      currentBalance: debt.currentBalance,
-      minimumPayment: debt.minimumPayment,
-      remainingMonths: debt.remainingMonths ?? null,
-      paymentLogLength: debt.paymentLog?.length ?? 0,
-      lastPartChoice: debt.paymentLog?.at(-1)?.partChoice ?? null,
-    };
-  }, debtId);
+    const { debts, transactions } = store.getState();
+    return { debts, transactions };
+  });
 }
 
-test.describe('§7 DEBT-FC · Debt Payment Cascading', () => {
+/** Pay from the loan's own sheet: choose the kind, the amount, and record it. */
+async function payFromSheet(page: Page, loanName: string, kind: 'EMI' | 'Prepay', amount?: string, choice?: 'Finish sooner' | 'Lower the EMI') {
+  await page.getByRole('button', { name: 'Pay', exact: true }).filter({ visible: true }).first().click();
+  const sheet = page.getByRole('dialog', { name: `Pay ${loanName}` });
+  await expect(sheet).toBeVisible();
+  await expect(sheet.getByTestId('loan-pay-explainer')).toBeVisible();
+  if (kind === 'Prepay') await sheet.getByRole('radio', { name: 'Prepay', exact: true }).check();
+  if (amount) await sheet.getByRole('textbox').first().fill(amount);
+  if (choice) await sheet.getByRole('radio', { name: choice, exact: true }).check();
+  await sheet.getByRole('button', { name: /record (payment|prepayment)/i }).click();
+  await expect(sheet).toHaveCount(0);
+}
+
+test.describe('§7 DEBT-FC · Loan payments', () => {
   test.describe('creation flow', () => {
     test.use({ seed: defaultSeed });
 
-    test('DEBT-FC-001 · create debt with principal, APR, minimum payment, and tenure', async ({
-      page, debts,
-    }) => {
+    test('DEBT-FC-001 · create a loan with its terms: sanctioned, still owed, APR, EMI, tenure, EMI dates', async ({ page, debts }) => {
       await debts.goto();
-      await page.getByRole('button', { name: /add first debt|add debt/i }).first().click();
+      await page.getByRole('button', { name: /add (a )?loan/i }).first().click();
 
-      const dialog = page.getByRole('dialog', { name: /add debt/i });
+      const dialog = page.getByRole('main', { name: /add loan/i });
       await expect(dialog).toBeVisible();
 
       await dialog.getByLabel('Name').fill('DEBT-FC-001 Loan');
       await dialog.getByLabel('Lender').fill('Local Bank');
       await dialog.getByLabel('Account').fill('1234');
-      await dialog.getByLabel('Current balance').fill('2400');
-      await dialog.getByLabel('Original principal').fill('3000');
+      await dialog.getByLabel('Sanctioned amount').fill('3000');
+      await dialog.getByLabel('Still owed').fill('2400');
       await dialog.getByLabel('Interest rate').fill('12.5');
-      await dialog.getByLabel('Min. monthly payment').fill('180');
       await dialog.getByLabel('Tenure').fill('18');
-      await dialog.getByLabel('Due date').fill('2026-06-15');
+      await dialog.getByLabel('EMI', { exact: true }).fill('180');
+      await dialog.getByLabel('First EMI date').fill('2026-01-15');
+      await dialog.getByLabel('Next EMI date').fill('2026-06-15');
       await dialog.getByRole('button', { name: /^Add$/ }).click();
 
       await expect(dialog).toHaveCount(0);
       await expect(debts.card('DEBT-FC-001 Loan')).toBeVisible();
-      await expect(page.getByText('12.5% APR')).toBeVisible();
-      await expect(page.getByText('$180.00').first()).toBeVisible();
+      await expect(page.getByText(/12\.5% APR/).filter({ visible: true }).first()).toBeVisible();
 
-      const created = await page.evaluate(() => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { debts: Array<{ name: string; principal: number; currentBalance: number; minimumPayment: number; tenureMonths?: number; dueDate?: string }> } };
-          __ff_store?: { getState(): { debts: Array<{ name: string; principal: number; currentBalance: number; minimumPayment: number; tenureMonths?: number; dueDate?: string }> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().debts.find(d => d.name === 'DEBT-FC-001 Loan') ?? null;
-      });
-
+      const created = (await storeState(page)).debts.find(d => d.name === 'DEBT-FC-001 Loan') ?? null;
       expect(created).toMatchObject({
-        principal: 3000,
-        currentBalance: 2400,
-        minimumPayment: 180,
-        tenureMonths: 18,
-        dueDate: '2026-06-15',
+        principal: 3000, currentBalance: 2400, minimumPayment: 180, tenureMonths: 18,
+        firstEmiDate: '2026-01-15', dueDate: '2026-06-15', instalmentsPaid: 5,
       });
     });
   });
 
-  test.describe('seeded debt payment flows', () => {
+  test.describe('seeded loan payment flows', () => {
     test.use({ seed });
 
-    test('CON-E2E-008 · [DEBT-FC-002] payment splits interest and principal at the configured APR', async ({
-      page, debts,
-    }) => {
-    // ── ARRANGE ─────────────────────────────────────────────────────────────
-    // Debt: $5,000 balance, 18.5% APR, $150 minimum payment.
-    // Expected at the configured APR with monthly compounding:
-    //   monthlyRate    = 0.185 / 12     = 0.01541666…
-    //   interestPortion = 5000 * monthlyRate = 77.0833…  → $77.08 (banker)
-    //   principalPortion = 150 - 77.08 = $72.92
-    //   balanceAfter   = 5000 - 72.92 = $4,927.08
-    //
-    // These numbers come from `react/src/lib/__tests__/amortization.test.ts`
-    // (vitest source of truth). NEVER recompute in this file — that puts
-    // test and implementation on the same logic.
-    const EXPECTED_INTEREST   = 77.08;
-    const EXPECTED_PRINCIPAL  = 72.92;
-    const EXPECTED_BALANCE    = 4_927.08;
+    test('CON-E2E-008 · [DEBT-FC-002] an EMI splits interest and principal at the configured APR', async ({ page, debts }) => {
+      const EXPECTED_INTEREST  = 77.08;
+      const EXPECTED_PRINCIPAL = 72.92;
 
-    await debts.goto();
-    await expect(debts.card(sampleCreditCardDebt.name)).toBeVisible();
+      await debts.goto();
+      await expect(debts.card(sampleLoanDebt.name)).toBeVisible();
+      await payFromSheet(page, sampleLoanDebt.name, 'EMI');      // prefilled with the EMI due: $150
 
-    // ── ACT ─────────────────────────────────────────────────────────────────
-    // TODO(junior): the Record Payment trigger is not yet wired in
-    // DebtsPage POM. Once `recordPaymentButton(name)` is confirmed
-    // against the real UI, replace this block with the modal-driven
-    // interaction. For now, we drive the store action directly via
-    // page.evaluate(). The assertion is identical either way — that
-    // is the point of using the store as our oracle.
-    await page.evaluate(({ debtId, amount }) => {
-      // Reach into the Zustand store via the well-known global hook —
-      // exposed by `src/store.ts` so DevTools can introspect.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const store = (window as any).__ff_store;
-      if (!store) throw new Error(
-        'window.__ff_store not exposed — add it to src/store.ts under a ' +
-        '`if (import.meta.env.MODE !== "production")` guard before running.',
-      );
-      return store.getState().recordDebtPayment(debtId, amount, '2026-05-22');
-    }, { debtId: sampleCreditCardDebt.id, amount: 150 });
-
-    // ── ASSERT ──────────────────────────────────────────────────────────────
-    // Inspect the debt's `paymentLog` directly. This is the strictest possible
-    // assertion: any drift between displayed and stored values gets caught.
-    const log = await page.evaluate(({ debtId }) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const debts = (window as any).__ff_store.getState().debts;
-      type LogEntry = { interest: number; principal: number; outstandingAfter: number };
-      type Debt = { id: string; paymentLog?: LogEntry[] };
-      const d = debts.find((d: Debt) => d.id === debtId);
-      return d?.paymentLog?.at(-1) ?? null;
-    }, { debtId: sampleCreditCardDebt.id });
-
-    expect(log).not.toBeNull();
-    // ±0.01 tolerance — banker's rounding at the cent.
-    expect(log!.interest).toBeCloseTo(EXPECTED_INTEREST,  2);
-    expect(log!.principal).toBeCloseTo(EXPECTED_PRINCIPAL, 2);
-    expect(log!.outstandingAfter).toBeCloseTo(EXPECTED_BALANCE, 2);
-
-    // UI assertion — the reduced balance ($4,927.08) renders on the Debts
-    // page. Kept separate from the store-oracle assertions above so a
-    // UI-formatting bug surfaces independently from a store-math bug.
-    // (debts.card() resolves to the debt's name node; the balance lives
-    // elsewhere in the card, so we assert at page level.)
+      const { debts: after, transactions } = await storeState(page);
+      const legs = transactions.filter(t => t.linkedDebtId === sampleLoanDebt.id);
+      expect(legs.find(t => t.type === 'expense')?.amount).toBe(EXPECTED_INTEREST);
+      expect(legs.find(t => t.type === 'transfer')?.amount).toBe(EXPECTED_PRINCIPAL);
+      expect(after.find(d => d.id === sampleLoanDebt.id)).toMatchObject({ currentBalance: 4927.08, instalmentsPaid: 1, dueDate: '2026-07-15' });
+      // The outstanding on the page is the loan account's ledger.
       await expect(page.getByText(/4,927/).first()).toBeVisible();
     });
 
-    test('DEBT-FC-003 · recording a payment writes linked debt transactions into the transaction list', async ({
-      page, debts, transactions,
-    }) => {
+    test('DEBT-FC-003 · a payment writes its two linked entries into the transaction list', async ({ page, debts, transactions }) => {
       await debts.goto();
-      await expect(debts.card(sampleCreditCardDebt.name)).toBeVisible();
-
-      await page.evaluate(({ debtId, amount }) => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<unknown> } };
-          __ff_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<unknown> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().recordDebtPayment(debtId, amount);
-      }, { debtId: sampleCreditCardDebt.id, amount: 150 });
+      await payFromSheet(page, sampleLoanDebt.name, 'EMI');
 
       await transactions.goto();
-      await expect(transactions.row('E2E Credit Card — interest')).toBeVisible();
-      await expect(transactions.row('E2E Credit Card — principal')).toBeVisible();
+      // loan_emi is a system split: the interest is a visible Loan / EMI expense; the principal moves
+      // money into the loan account.
+      await expect(transactions.row('E2E Personal Loan EMI - principal')).toBeVisible();
+      // Track E (v10.97.0): the principal leg now also reads "counted in Loan / EMI spending", so match
+      // the interest expense by its own category icon, not by the text both rows now share.
+      await expect(page.getByRole('button', { name: /^💳 E2E Personal Loan EMI/ })).toBeVisible();
 
-      const linkedRows = await page.evaluate((debtId: string) => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { transactions: Array<{ description: string; linkedDebtId?: string; linkedTxnId?: string; type: string }> } };
-          __ff_store?: { getState(): { transactions: Array<{ description: string; linkedDebtId?: string; linkedTxnId?: string; type: string }> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().transactions
-          .filter(t => t.linkedDebtId === debtId)
-          .map(t => ({ description: t.description, linkedTxnId: t.linkedTxnId ?? null, type: t.type }));
-      }, sampleCreditCardDebt.id);
-
-      expect(linkedRows).toHaveLength(2);
-      expect(new Set(linkedRows.map(t => t.linkedTxnId)).size).toBe(1);
-      expect(linkedRows.map(t => t.description).sort()).toEqual([
-        'E2E Credit Card — interest',
-        'E2E Credit Card — principal',
-      ]);
+      const linked = (await storeState(page)).transactions.filter(t => t.linkedDebtId === sampleLoanDebt.id);
+      expect(linked).toHaveLength(2);
+      const ids = new Set(linked.map(t => t.id));
+      expect(linked.filter(t => t.linkedTxnId && ids.has(t.linkedTxnId))).toHaveLength(1);
+      expect(linked.map(t => t.description).sort()).toEqual(['E2E Personal Loan EMI', 'E2E Personal Loan EMI - principal']);
     });
 
-    test('DEBT-FC-006 · part-payment reduce_tenure shortens remaining months while keeping EMI flat', async ({
-      page, debts,
-    }) => {
+    test('DEBT-FC-006 · a prepayment that finishes sooner keeps the EMI and is all principal', async ({ page, debts }) => {
       await debts.goto();
-      const before = await debtSnapshot(page, sampleCreditCardDebt.id);
-      expect(before).not.toBeNull();
-
-      const result = await page.evaluate(({ debtId, amount }) => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<{ message?: string }> } };
-          __ff_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<{ message?: string }> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().recordDebtPayment(debtId, amount, 'reduce_tenure');
-      }, { debtId: sampleCreditCardDebt.id, amount: 500 });
-
-      const after = await debtSnapshot(page, sampleCreditCardDebt.id);
-      expect(after).not.toBeNull();
-      expect(after!.remainingMonths).toBeLessThan(before!.remainingMonths ?? Number.MAX_SAFE_INTEGER);
-      expect(after!.minimumPayment).toBe(before!.minimumPayment);
-      expect(after!.lastPartChoice).toBe('reduce_tenure');
-      expect(result.message).toMatch(/Loan now ends in \d+ months/);
+      await payFromSheet(page, sampleLoanDebt.name, 'Prepay', '500', 'Finish sooner');
+      const { debts: after, transactions } = await storeState(page);
+      expect(after.find(d => d.id === sampleLoanDebt.id)).toMatchObject({ currentBalance: 4500, minimumPayment: 150, instalmentsPaid: 0 });
+      const legs = transactions.filter(t => t.linkedDebtId === sampleLoanDebt.id);
+      expect(legs.map(t => [t.type, t.amount])).toEqual([['transfer', 500]]);
     });
 
-    test('DEBT-FC-007 · part-payment reduce_emi lowers EMI while tenure ticks down by one month', async ({
-      page, debts,
-    }) => {
+    test('DEBT-FC-007 · a prepayment that lowers the EMI keeps the end date', async ({ page, debts }) => {
       await debts.goto();
-      const before = await debtSnapshot(page, sampleCreditCardDebt.id);
-      expect(before).not.toBeNull();
-
-      const result = await page.evaluate(({ debtId, amount }) => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<{ message?: string }> } };
-          __ff_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<{ message?: string }> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().recordDebtPayment(debtId, amount, 'reduce_emi');
-      }, { debtId: sampleCreditCardDebt.id, amount: 500 });
-
-      const after = await debtSnapshot(page, sampleCreditCardDebt.id);
-      expect(after).not.toBeNull();
-      expect(after!.minimumPayment).toBeLessThan(before!.minimumPayment);
-      expect(after!.remainingMonths).toBe((before!.remainingMonths ?? 0) - 1);
-      expect(after!.lastPartChoice).toBe('reduce_emi');
-      expect(result.message).toMatch(/EMI reduced to/);
-    });
-
-    test('DEBT-FC-009 · part-payment apply_advance covers future EMIs without changing the EMI amount', async ({
-      page, debts,
-    }) => {
-      await debts.goto();
-      const before = await debtSnapshot(page, sampleCreditCardDebt.id);
-      expect(before).not.toBeNull();
-
-      const result = await page.evaluate(({ debtId, amount }) => {
-        const win = window as typeof window & {
-          __vt_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<{ message?: string }> } };
-          __ff_store?: { getState(): { recordDebtPayment: (id: string, payment: number, choice?: string) => Promise<{ message?: string }> } };
-        };
-        const store = win.__vt_store ?? win.__ff_store;
-        if (!store) throw new Error('Store oracle unavailable');
-        return store.getState().recordDebtPayment(debtId, amount, 'apply_advance');
-      }, { debtId: sampleCreditCardDebt.id, amount: 500 });
-
-      const after = await debtSnapshot(page, sampleCreditCardDebt.id);
-      expect(after).not.toBeNull();
-      expect(after!.minimumPayment).toBe(before!.minimumPayment);
-      expect(after!.remainingMonths).toBeLessThan((before!.remainingMonths ?? 0) - 1);
-      expect(after!.lastPartChoice).toBe('apply_advance');
-      expect(result.message).toMatch(/EMIs covered in advance/);
+      await payFromSheet(page, sampleLoanDebt.name, 'Prepay', '500', 'Lower the EMI');
+      const after = (await storeState(page)).debts.find(d => d.id === sampleLoanDebt.id)!;
+      expect(after.currentBalance).toBe(4500);
+      expect(after.minimumPayment).toBeLessThan(150);
     });
   });
 });
