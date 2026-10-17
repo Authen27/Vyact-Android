@@ -34,10 +34,16 @@ ship updates without a Play key reset.**
 artifact, copy its contents into a new secret **`KEYSTORE_BASE64`**.
 
 **Step 4 — build the signed bundle:** Actions → **Android Release AAB** → Run
-(leave `versionCode` blank to use the run number). Download the
-`vyact-release-aab` artifact → `app-release.aab`. That's your upload file.
+(leave `versionCode` blank to use the run number). The finished run publishes
+`app-release.aab` (plus the R8 `mapping.txt`) as assets of a prerelease named
+`ci-<run id>` under the repo's **Releases** — GitHub's account-wide artifact
+quota can be full, so the bundle no longer depends on it. Download it from there,
+or: `gh release download ci-<run id> --repo Authen27/Vyact-Android`. That's your
+upload file. (The `vyact-release-aab` Actions artifact is still attached when the
+quota allows.) Each run deletes all but the newest four `ci-*` releases — keep a
+copy of anything you want to retain.
 
-> Versioning: `versionName` comes from `android-version.json` (currently **0.4**
+> Versioning: `versionName` comes from `android-version.json` (currently **0.5**
 > — the Android app has its own version line, independent of the React web
 > app's 9.x/10.x); `versionCode` is the CI run number and always increases.
 
@@ -130,6 +136,40 @@ Also in this release:
   don't belong, like your everyday spending or transfer pickers.
 - A cleaner circular time picker, a fixed "Add Schedule" sheet, and a batch of
   fit-and-finish fixes across the app.
+```
+
+---
+
+## 3c. "What's New" release notes — v0.5 (paste into the v0.5 release)
+
+0.5 brings the app up to Vyact web 10.107.1 (from 10.18.1). Everything below is visible in the
+app; nothing here involves SMS or any new permission.
+
+**Short version (release notes field, ≤500 chars):**
+```
+A fresh look and a simpler way around: Track, Plan and Analyze tabs with a
+big + to add anything, and Pip one tap away on the Ask tab. New Insights with
+quick highlight cards and a library of short money lessons, a redesigned
+Splits page, and a calmer dark theme by default (light is one tap away in
+Settings). Plus many fit-and-finish fixes across the app.
+```
+
+**Longer version (blog / social / changelog post):**
+```
+Vyact 0.5 — a new look, built around how you actually use it
+
+- Easier navigation: Track, Plan and Analyze along the bottom, a large + in
+  the middle to add an expense, income, transfer or investment, and Ask Pip
+  right beside them.
+- Pip, your money assistant, opens from the Ask tab without leaving the page
+  you're on.
+- Insights: "Play highlights" turns your month into a few swipeable cards, and
+  Learn is a library of short, plain-English money lessons.
+- Splits has a clearer net position: what you're owed, what you owe, and who.
+- A calmer dark theme (Nocturne) by default; switch to light in Settings →
+  Appearance.
+- Many fit-and-finish fixes, including better fit on small phones and with
+  the system bars.
 ```
 
 ---
