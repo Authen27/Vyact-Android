@@ -59,7 +59,9 @@ jobs:
           node scripts/inject-android-native.mjs
           node scripts/patch-android-manifest.mjs
 
-      - name: Enable R8 (code shrinking + obfuscation) for release
+      # Permanent release rules R1-R5 (ANDROID-BUILD-RULES.md): R8 full mode with the optimising rules,
+      # resource shrinking, optimised resource shrinking, repackaged classes, current AGP/Gradle.
+      - name: Apply the permanent release rules (R8, resource shrinking, AGP)
         run: node scripts/patch-build-gradle.mjs
 
       - name: Generate launcher icon + splash
@@ -113,6 +115,11 @@ jobs:
         if: steps.ks.outputs.signed == 'false'
         working-directory: android
         run: ./gradlew bundleRelease --no-daemon | tee "$RUNNER_TEMP/r8-build.log"
+
+      # Fails the run unless the BUILD'S OWN output shows every permanent rule took effect (no
+      # -dontoptimize, -repackageclasses merged in, resource shrinking, the intended AGP/Gradle).
+      - name: Verify the permanent release rules took effect
+        run: node scripts/verify-android-r8.mjs
 
       - name: R8 report — size + warnings
         if: always()

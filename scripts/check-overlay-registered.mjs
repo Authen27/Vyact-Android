@@ -70,6 +70,27 @@ for (const f of ['vite.config.js', 'vite.config.d.ts']) {
   if (existsSync(f)) problems.push(`${f} exists at the repo root — Vite would load it instead of vite.config.ts. Delete it.`);
 }
 
+// 6) Permanent release rules (ANDROID-BUILD-RULES.md): the text that enforces them must still be there.
+{
+  const patch = existsSync('scripts/patch-build-gradle.mjs') ? read('scripts/patch-build-gradle.mjs') : '';
+  for (const needle of ['proguard-android-optimize.txt', 'shrinkResources true', 'android.r8.optimizedResourceShrinking', 'android-toolchain.json']) {
+    if (!patch.includes(needle)) problems.push(`scripts/patch-build-gradle.mjs no longer contains "${needle}" — a permanent release rule (ANDROID-BUILD-RULES.md) was dropped.`);
+  }
+  const pro = existsSync('native/android/app/proguard-rules.pro') ? read('native/android/app/proguard-rules.pro') : '';
+  if (!/^\s*-repackageclasses\b/m.test(pro)) problems.push("native/android/app/proguard-rules.pro has no -repackageclasses — rule R4 (ANDROID-BUILD-RULES.md).");
+  if (/^\s*-(dontoptimize|dontshrink|dontobfuscate)\b/m.test(pro)) problems.push('native/android/app/proguard-rules.pro turns R8 shrinking/optimisation/obfuscation off — rule R1.');
+  const releaseWf = '.github/workflows/android-release.yml';
+  const wf = existsSync(releaseWf) ? read(releaseWf) : '';
+  for (const needle of ['scripts/patch-build-gradle.mjs', 'scripts/verify-android-r8.mjs']) {
+    if (!wf.includes(needle)) problems.push(`android-release.yml no longer runs ${needle} — a permanent release rule is no longer applied/proven.`);
+  }
+  const tc = existsSync('android-toolchain.json') ? JSON.parse(read('android-toolchain.json')) : null;
+  if (!tc) problems.push('android-toolchain.json is missing (rule R5).');
+  else if (Number(String(tc.agp).split('.')[0]) < 9 && !tc.blocked) {
+    problems.push(`android-toolchain.json has AGP ${tc.agp}; rule R5 needs 9.0+ — or a written "blocked" reason in that file.`);
+  }
+}
+
 if (problems.length) {
   console.error(`overlay check FAILED (${problems.length}):\n` + problems.map(p => `  - ${p}`).join('\n'));
   process.exit(1);

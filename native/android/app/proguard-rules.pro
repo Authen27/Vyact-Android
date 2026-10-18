@@ -30,3 +30,17 @@
 -keep class com.vyact.app.ExpenseWidgetProvider { *; }
 -keep class com.vyact.app.BudgetWidgetConfigActivity { *; }
 -keep class com.vyact.app.MainActivity { *; }
+
+# ── Permanent release rules (ANDROID-BUILD-RULES.md) ─────────────────────────────────────────
+# R4 — repackage classes: move every class R8 is free to rename into one package, which shrinks
+# the DEX name tables. Anything kept by name above (the plugin, widget and activity classes, which
+# the manifest and Capacitor's bridge look up reflectively) keeps its package, so this cannot break
+# them. -allowaccessmodification lets R8 widen access where that enables the move and inlining.
+-repackageclasses ''
+-allowaccessmodification
+
+# Capacitor creates each plugin with its no-argument constructor through reflection. AGP 9 treats
+# `-keep class X` more strictly than AGP 8 did, so name the constructor instead of relying on it.
+-keepclassmembers class * extends com.getcapacitor.Plugin {
+    public <init>();
+}
