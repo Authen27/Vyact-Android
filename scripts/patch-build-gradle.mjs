@@ -75,6 +75,11 @@ const read = (p) => { if (!existsSync(p)) die(`${p} not found — run cap add/sy
   let g = read(root);
   if (!/com\.android\.tools\.build:gradle:[0-9][^'"\s]*/.test(g)) die(`no AGP classpath line in ${root}`);
   g = g.replace(/(com\.android\.tools\.build:gradle:)[0-9][^'"\s]*/, `$1${toolchain.agp}`);
+  // The Google Services plugin (Firebase push, scripts/setup-native-push.mjs) is a build plugin on the
+  // same classpath, so it has to be a release that supports this AGP.
+  if (toolchain.googleServices && /com\.google\.gms:google-services:/.test(g)) {
+    g = g.replace(/(com\.google\.gms:google-services:)[0-9][^'"\s]*/, `$1${toolchain.googleServices}`);
+  }
   writeFileSync(root, g);
 
   const wrapper = 'android/gradle/wrapper/gradle-wrapper.properties';

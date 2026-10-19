@@ -37,8 +37,13 @@ jobs:
       - run: npm ci
 
       - name: Install Capacitor + plugins
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
         run: |
           npm install @capacitor/core@latest @capacitor/android@latest @capacitor/app@latest @capacitor/browser@latest @capacitor/splash-screen@latest @capacitor/local-notifications@latest @capacitor/preferences@latest
+          # Lock-screen notifications (upstream v10.127.0): the push plugin ships only with Firebase's config
+          # (scripts/setup-native-push.mjs); without it register() could crash the app.
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then npm install @capacitor/push-notifications@latest; fi
           npm install -D @capacitor/cli@latest
 
       - name: Build web bundle (production)
@@ -58,6 +63,14 @@ jobs:
         run: |
           node scripts/inject-android-native.mjs
           node scripts/patch-android-manifest.mjs
+
+      # Firebase's config + notification defaults when the secret is set; fails on a plugin without it.
+      - name: Lock-screen notifications (Firebase)
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          node --test scripts/setup-native-push.test.mjs
+          node scripts/setup-native-push.mjs
 
       # Permanent release rules R1-R5 (ANDROID-BUILD-RULES.md): R8 full mode with the optimising rules,
       # resource shrinking, optimised resource shrinking, repackaged classes, current AGP/Gradle.

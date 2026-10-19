@@ -114,8 +114,15 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     // notification that deep-links to its view (the Android WebView cannot receive
     // Web Push, so there is no double-delivery with the server push below).
     // On web it stays opt-in (webPushEnabled) and limited to action-required (P1) types.
+    // Upstream v10.127.0 (T4d; owner, 19 Oct 2026: "the server is the only source on a registered phone"):
+    // once this phone is registered for Firebase push (upstream lib/nativePush.ts, deviceHasServerPush()),
+    // the server sends its alerts with the app closed too, so the app stops raising its own. Until then (no
+    // push plugin in this APK, or not registered yet) it keeps the local notifications below.
+    // At the sync that brings upstream v10.126.0: pass each alert through deviceNotificationText(n,
+    // notificationPrefs) here too, so "Show details on the lock screen" applies to these.
     if (fresh.length && !isInQuietHours(notificationPrefs)) {
       if (isNative()) {
+        if (deviceHasServerPush()) return;
         // v10.107.0 — Pip's nudges (dedupe keys "pip:…") are bell-only by product decision: capped
         // and never pushed, so they stay out of the phone's notification shade too.
         void fireNativeNotifications(

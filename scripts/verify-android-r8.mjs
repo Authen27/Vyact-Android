@@ -45,6 +45,10 @@ check(/^android\.r8\.optimizedResourceShrinking=true$/m.test(props), 'R3 android
 check(!/^android\.enableR8\.fullMode=false$/m.test(props), 'R1 R8 full mode not disabled', 'R1 android.enableR8.fullMode=false is set');
 
 const rootGradle = read('android/build.gradle') ?? '';
+if (toolchain.googleServices && /com\.google\.gms:google-services:/.test(rootGradle)) {
+  const gs = (rootGradle.match(/com\.google\.gms:google-services:([0-9][^'"\s]*)/) ?? [])[1];
+  check(gs === toolchain.googleServices, `R5 Google Services plugin ${gs}`, `R5 Google Services plugin is ${gs}, android-toolchain.json says ${toolchain.googleServices}`);
+}
 const agp = (rootGradle.match(/com\.android\.tools\.build:gradle:([0-9][^'"\s]*)/) ?? [])[1];
 check(agp === toolchain.agp, `R5 AGP ${agp}`, `R5 AGP is ${agp}, android-toolchain.json says ${toolchain.agp}`);
 const wrapper = read('android/gradle/wrapper/gradle-wrapper.properties') ?? '';
