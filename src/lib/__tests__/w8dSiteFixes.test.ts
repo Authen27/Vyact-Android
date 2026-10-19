@@ -2,17 +2,14 @@
 // Each case is named after its finding. Config is pinned by reading the files the platform reads.
 import { describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import * as mw from '../../../middleware.js';
 import { demoRedirect } from '../../../api/_demo.js';
 import robots from '../../../api/robots.js';
-// @ts-expect-error — plain .mjs build scripts, no types
 import { isCloudBuild } from '../../../scripts/cloudMode.mjs';
-// @ts-expect-error — plain .mjs build script, no types
 import { findProdRef } from '../../../scripts/assert-preview-isolated.mjs';
-// @ts-expect-error — plain .mjs build script, no types
 import { entryScript, ENTRY_BUDGET_KB } from '../../../scripts/assert-bundle-budget.mjs';
 
 const repo = resolve(__dirname, '../../../..');
@@ -134,12 +131,19 @@ describe('W8d · site, platform and docs', () => {
   });
 
   it('W8d-PRV14-001 · no personal emails or phone numbers in tracked docs; screenshots are not tracked (XC-PRV-14)', () => {
-    for (const f of ['react/CHANGELOG.md', 'admin/CHANGELOG.md', 'docs/HANDOFF.md', 'docs/WHATSAPP_TEMPLATES.md', 'whatsapp-closure-runbook.md']) {
+    // T4b (v10.125.0): ANY address outside the placeholder and Vyact domains fails, not only webmail ones (a
+    // work address sat in the changelog and a migration comment, and so in db/schema.sql).
+    const OK_DOMAIN = /^(example\.(com|org|net)|vyact\.(app|test))$/;
+    const docs = ['react/CHANGELOG.md', 'admin/CHANGELOG.md', 'docs/HANDOFF.md', 'docs/WHATSAPP_TEMPLATES.md', 'whatsapp-closure-runbook.md',
+      'db/schema.sql', ...readdirSync(resolve(repo, 'supabase/migrations')).map(m => `supabase/migrations/${m}`)];
+    for (const f of docs) {
       const doc = read(f);
-      expect(doc, f).not.toMatch(/[A-Za-z0-9._%+-]+@(gmail|yahoo|outlook|hotmail|icloud|proton)\.[a-z]+/);
+      const foreign = [...doc.matchAll(/[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[a-z]{2,})/g)].map(m => m[1].toLowerCase()).filter(d => !OK_DOMAIN.test(d));
+      expect(foreign, f).toEqual([]);
       expect(doc, f).not.toMatch(/\+91[ -]?[6-9][0-9]{4}[ -]?[0-9]{5}/);
     }
     expect(read('.gitignore')).toMatch(/^Userback\/$/m);
+    expect(read('.gitignore')).toMatch(/^home\.html$/m);   // a saved page of the app, with real figures
     expect(existsSync(resolve(repo, '.gitignore'))).toBe(true);
   });
 });

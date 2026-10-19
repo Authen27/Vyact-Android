@@ -6,6 +6,7 @@ import { sb, APP_URL } from './supabase';
 import { POLICY_VERSION } from './policyVersion';
 import { disablePush } from './webPush';
 import { deviceTimeZone } from './householdTimezone';
+import { clearCacheOnSignOut } from './cacheInvalidation';
 import type { MyInvitation } from './invitations';
 import type { Session, User } from '@supabase/supabase-js';
 import { Capacitor } from '@capacitor/core'; // ANDROID-OVERLAY — native OAuth (in-app browser + vyact:// callback)
@@ -23,7 +24,9 @@ export async function signUp({ email, password, displayName }: SignUpInput) {
     email, password,
     options: {
       // W3a — the household made for this account starts in this device's zone (households trigger).
-      data: { display_name: displayName, timezone: deviceTimeZone() ?? undefined },
+      // T4b (v10.125.0, XC-PRV-09) — the policy version ticked on the form: the server records the
+      // acceptance with the account (handle_new_user, T4a), so it is never lost to a new tab.
+      data: { display_name: displayName, timezone: deviceTimeZone() ?? undefined, policy_version: POLICY_VERSION },
       emailRedirectTo: `${APP_URL}/auth/verified`,
     },
   });
@@ -71,6 +74,9 @@ export async function signOut() {
   await disablePush().catch(() => undefined);
   const { error } = await sb().auth.signOut();
   if (error) throw error;
+  // v10.110.0 (F1a, audit FE-SYN-04) — the session change starts the purge without waiting for it;
+  // an explicit sign-out waits until this person's cached ledger is actually gone from the device.
+  await clearCacheOnSignOut().catch(() => undefined);
 }
 
 export async function requestPasswordReset(email: string) {
@@ -156,8 +162,11 @@ export async function declineInvitation(invitationId: string): Promise<boolean> 
 }
 
 export async function listInvitations(householdId: string) {
+  // v10.114.0 (T2a, INT-HH-09): pending means not accepted AND not expired, as the database counts it
+  // (an expired invitation used to show as pending, and block a Couple household's invite).
   const { data, error } = await sb().from('invitations')
     .select('*').eq('household_id', householdId).is('accepted_at', null)
+    .gt('expires_at', new Date().toISOString())
     .order('created_at', { ascending: false });
   if (error) throw error;
   return data;

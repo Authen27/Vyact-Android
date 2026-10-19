@@ -25,6 +25,7 @@
 
 import type { RecurringSchedule, BudgetAllocation, Account, Budget } from '../types';
 import { localDayUTC } from './format';
+import { expected, failedWrite } from './faults';
 
 /** Fixed-cost chip key → real expense category id (constants.ts EXPENSE_CATEGORIES). */
 const CHIP_CATEGORY: Record<string, string> = {
@@ -122,13 +123,15 @@ export interface WireOnboardingInput {
  * Turn the onboarding inputs into real money-model objects. Best-effort per
  * step — a failure in one (e.g. a budget already exists for the join month)
  * never blocks the others or the flow completing.
+ * T5b (v10.121.0; audit XC-ARC-11) — each failed step is recorded (`failedWrite`); they used to vanish.
  */
+const failed = (step: string) => (e: unknown) => failedWrite(e, `onboarding.${step}`);
 export async function wireOnboardingToMoney(input: WireOnboardingInput): Promise<void> {
   const { monthlyIncome, bills, currency, memberId, fns } = input;
   const now = input.now ?? new Date();
 
   // 1 + 2 — Cash opening balance + the paycheck schedule.
-  await fns.ensureDefaultCashAccount().catch(() => {});
+  await fns.ensureDefaultCashAccount().catch(failed('cashAccount'));
   const cash = fns.getCashAccount();
   const cashRef = cash ? (cash.assetId ? `asset:${cash.assetId}` : cash.id) : 'cash';
 
@@ -139,7 +142,7 @@ export async function wireOnboardingToMoney(input: WireOnboardingInput): Promise
       confidence: 'estimated',
       source: 'onboarding',
       estimatedAt: now.toISOString(),
-    }).catch(() => {});
+    }).catch(failed('openingBalance'));
 
     // Paycheck — recurring income, 1st of month, into Cash, approval-gated.
     const payStart = nextMonthlyDate(1, now);
@@ -161,7 +164,7 @@ export async function wireOnboardingToMoney(input: WireOnboardingInput): Promise
         paymentMethod: cashRef,
         ...(memberId ? { memberId } : {}),
       } as RecurringSchedule['transactionTemplate'],
-    }).catch(() => {});
+    }).catch(failed('paycheck'));
   }
 
   // 3 — one recurring EXPENSE schedule per bill that carries an amount, on the
@@ -186,7 +189,7 @@ export async function wireOnboardingToMoney(input: WireOnboardingInput): Promise
         paymentMethod: cashRef,
         ...(memberId ? { memberId } : {}),
       } as RecurringSchedule['transactionTemplate'],
-    }).catch(() => {});
+    }).catch(failed('bill'));
   }
 
   // 4 — a budget for the JOIN month (created even if the month is already
@@ -213,6 +216,10 @@ export async function wireOnboardingToMoney(input: WireOnboardingInput): Promise
         source: 'onboarding',
       },
       allocs.map(a => ({ category: a.category, amount: a.amount })),
-    ).catch(() => {});
+    ).catch((e: unknown) => {
+      // A budget already set for the join month is kept as it is: expected, not a fault.
+      if (/BUDGET_EXISTS/.test(e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e))) expected(e, 'onboarding.budget');
+      else failedWrite(e, 'onboarding.budget');
+    });
   }
 }

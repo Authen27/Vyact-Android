@@ -1,3 +1,4 @@
+import { analyticsSnippet } from './api/_consent.js';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
@@ -50,6 +51,15 @@ export default defineConfig({
           fileName: 'version.json',
           source: JSON.stringify({ version: pkg.version }),
         });
+      },
+    },
+    {
+      // v10.125.0 (T4b, XC-PRV-03) — GA4, asked first: the one consent script (api/_consent.js) replaces
+      // the placeholder in index.html, so the app, the prerendered landing page and the Learn pages share it.
+      name: 'vyact-analytics',
+      transformIndexHtml(html) {
+        if (!html.includes('<!--vyact:analytics-->')) throw new Error('index.html lost its analytics placeholder');
+        return html.replace('<!--vyact:analytics-->', analyticsSnippet());
       },
     },
     {

@@ -20,12 +20,12 @@ export function readLocalEducationProgress(): EducationProgress {
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object') return parsed as EducationProgress;
-  } catch { /* noop */ }
+  } catch { /* fault-ok: unreadable progress counts as none; a tip may show again */ }
   return {};
 }
 
 export function writeLocalEducationProgress(p: EducationProgress): void {
-  try { localStorage.setItem(LOCAL_KEY, JSON.stringify(p)); } catch { /* quota / private mode */ }
+  try { localStorage.setItem(LOCAL_KEY, JSON.stringify(p)); } catch { /* fault-ok: device storage is optional (private mode, quota); a tip may show again */ }
 }
 
 function pruneToMax(p: EducationProgress): EducationProgress {

@@ -64,7 +64,8 @@ describe('turning push on for this device', () => {
     expect(b.pushManager.subscribe).toHaveBeenCalledWith(expect.objectContaining({ userVisibleOnly: true }));
     expect(rpc).toHaveBeenCalledWith('register_push_subscription', expect.objectContaining({
       p_endpoint: 'https://fcm.googleapis.com/fcm/send/dev1', p_household_id: 'h1', p_p256dh: 'P'.repeat(87), p_auth: 'A'.repeat(22),
-      p_prefs: { master: true, perType: {}, quietStart: '22:00', quietEnd: '07:00' },
+      // T4c (v10.126.0): prefs saved before the switch existed send details on.
+      p_prefs: { master: true, perType: {}, quietStart: '22:00', quietEnd: '07:00', lockScreenDetails: true },
     }));
     expect(deviceHasServerPush()).toBe(false);          // permission is still 'default' in this stub
   });
@@ -126,6 +127,28 @@ describe('turning push on for this device', () => {
     expect(rpc).not.toHaveBeenCalled();
     // No subscription in the browser → not registered, whatever the saved preference says.
     expect(await m.devicePushStatus()).toEqual({ registered: false });
+  });
+
+  it('CON-UNIT-WPD-006 · T4c (BE-FN-12): "Show details on the lock screen" off reaches the server with the switches', async () => {
+    browser({ permission: 'granted' });
+    const m = await import('../webPush');
+    await m.syncPush('h1', { ...PREFS, lockScreenDetails: false } as never);
+    expect(rpc).toHaveBeenCalledWith('register_push_subscription', expect.objectContaining({
+      p_prefs: { master: true, perType: {}, quietStart: '22:00', quietEnd: '07:00', lockScreenDetails: false },
+    }));
+  });
+
+  it('CON-UNIT-WPD-007 · T4c: the Android app (a WebView, no Web Push) says so and where push works, without asking for permission', async () => {
+    const b = browser();
+    (globalThis.window as unknown as { Capacitor: unknown }).Capacitor = { isNativePlatform: () => true };
+    const m = await import('../webPush');
+    expect(m.pushBlocker()).toBe('native_app');
+    expect(await m.enablePush('h1', PREFS as never)).toEqual({ ok: false, reason: 'native_app' });
+    expect(b.Notification.requestPermission).not.toHaveBeenCalled();
+    expect(m.pushRefusalMessage('native_app')).toBe(
+      "The Vyact Android app can't show notifications on your lock screen yet. To get them now, open vyact.app in Chrome, add it to your Home screen, and turn them on there.");
+    await m.syncPush('h1', PREFS as never);
+    expect(rpc).not.toHaveBeenCalled();
   });
 });
 

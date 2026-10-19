@@ -230,7 +230,7 @@ export default function BudgetFormModal(props: Props) {
       if ((e as Error)?.name === 'BudgetExistsError') {
         const label = form.scope === 'month' ? `${MONTHS[Number(form.periodMonth) - 1]} ${form.periodYear}` : `${form.periodYear}`;
         toast(`A budget for ${label} already exists in this household — refreshing to show it.`, 'info');
-        try { await manualRefresh(); } catch { /* best-effort */ }
+        try { await manualRefresh(); } catch { /* fault-ok: a refresh only re-reads; the next poll reads again */ }
         onClose();
       } else {
         toast(`Save failed: ${(e as Error).message}`, 'error');

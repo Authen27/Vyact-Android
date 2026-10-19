@@ -22,6 +22,7 @@ import { uid, fmt, today } from '../../lib/format';
 import { DEBT_TYPES } from '../../constants';
 import { loanEmi, loanOutstanding, loanAccountOf, nextInstalmentDate, LoanPaymentRefused, loanErrorMessage } from '../../lib/loanSchedule';
 import type { Debt } from '../../types';
+import type { LoanSeed } from '../../lib/askVyactResponses';
 import { askSheet } from '../../lib/confirmSheet';
 import { deleteLoanRequest } from '../../lib/confirmCopy';
 
@@ -29,6 +30,21 @@ interface Props {
   open?: boolean;
   initial?: Debt | null;
   onClose: () => void;
+  /**
+   * v10.109.0 (owner, 16 Oct 2026; R-1) — an EMI request from Pip or Recurring: a new loan pre-filled, or
+   * this loan, with "Record each EMI automatically" switched ON. Nothing is saved until the person saves.
+   */
+  seed?: LoanSeed | null;
+}
+
+/** "Car loan" → auto_loan, "Home loan" → mortgage; anything else keeps the default. */
+function loanTypeFor(name: string): string | undefined {
+  const n = name.toLowerCase();
+  return /\b(car|auto|vehicle|bike|scooter)\b/.test(n) ? 'auto_loan'
+    : /\b(home|house|housing|mortgage|flat)\b/.test(n) ? 'mortgage'
+    : /\b(student|education|study)\b/.test(n) ? 'student_loan'
+    : /\b(business)\b/.test(n) ? 'business_loan'
+    : undefined;
 }
 
 interface FormState {
@@ -83,6 +99,7 @@ export default function DebtFormModal(props: Props) {
   const open    = props.open ?? true;
   const initial = props.initial ?? null;
   const onClose = props.onClose;
+  const seed    = props.seed ?? null;
 
   const [form, setForm]     = useState<FormState>(blank());
   const [saving, setSaving] = useState(false);
@@ -109,12 +126,23 @@ export default function DebtFormModal(props: Props) {
         tenureMonths: initial.tenureMonths != null ? String(initial.tenureMonths) : '',
         firstEmiDate: initial.firstEmiDate ?? '',
         nextEmiDate: initial.dueDate ?? '',
-        autoRecord: !!initial.autoRecord,
+        autoRecord: seed?.mode === 'edit' ? true : !!initial.autoRecord,
         fundingAccountId: initial.fundingAccountId ?? '',
+      });
+    } else if (seed?.mode === 'new') {
+      setForm({
+        ...blank(),
+        type: loanTypeFor(seed.name) ?? blank().type,
+        name: seed.name === 'Loan' ? '' : seed.name,
+        emi: seed.emi != null ? String(seed.emi) : '',
+        nextEmiDate: seed.nextEmiDate ?? '',
+        autoRecord: true,
       });
     } else {
       setForm(blank());
     }
+    // The seed is read once, with the route (FormPages keeps it for the page's life).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initial]);
 
   const isLoan = form.direction === 'owed_by_me';

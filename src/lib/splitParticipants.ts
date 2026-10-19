@@ -2,11 +2,23 @@
 //
 //   1. a split is shared by EMAIL only (cloud mode): every other person is a valid address;
 //   2. never your own email: you are already in the split as "You";
-//   3. before saving, each newly added person is confirmed: an account holder by name
-//      ("Is the split shared with Priya Sharma?"), anyone else as an invitation
-//      ("… isn't on Vyact yet. Send them an invite?"). A "No" takes them out of the split.
+//   3. before saving, each newly added person is confirmed: someone you already share a split or a
+//      household with by name ("Is the split shared with Priya Sharma?"), anyone else by email ("Share
+//      this split with …? If they aren't on Vyact yet, the email invites them."). Since v10.114.0 (T2a,
+//      XC-PRV-12) names come back only for people already known to you. A "No" takes them out.
 //
 // Pure: the split form and the tests both use it.
+import { nameList } from './confirmCopy';
+
+/**
+ * F1c (v10.112.0, INT-TXN-11) — what the Split form says on save. Sharing is queued behind the
+ * transaction and sent by sync; offline, it says who it will be shared with once the device is back
+ * online, instead of the old "sharing failed".
+ */
+export function splitSavedNotice(editing: boolean, sharedOnceOnline: string[]): string {
+  if (sharedOnceOnline.length) return `Split saved. It's shared with ${nameList(sharedOnceOnline)} once you're online.`;
+  return editing ? 'Split updated' : 'Split added';
+}
 
 /** A plain address check: something@domain.tld, no spaces. The server is the real check. */
 export const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)*\.[^\s@.]{2,}$/;
@@ -52,9 +64,12 @@ export interface ConfirmItem {
 
 /** The question asked for one person before the split is saved. */
 export function confirmQuestion(item: ConfirmItem): string {
+  // v10.114.0 (T2a, XC-PRV-12; owner: "known emails only") — a name comes back only for someone you
+  // already share a split or a household with. No name no longer means "not on Vyact", so the
+  // question doesn't say so; the email itself invites them if they aren't.
   return item.name
     ? `Is the split shared with ${item.name} (${item.email})?`
-    : `${item.email} isn't on Vyact yet. Send them an invite to join and settle this split?`;
+    : `Share this split with ${item.email}? If they aren't on Vyact yet, the email invites them.`;
 }
 
 /** v10.59.0 (owner, item 6) — splits created, still open (someone hasn't settled) and settled. */

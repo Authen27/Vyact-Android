@@ -7,19 +7,13 @@
 //   • Asserts a derived value (a total, not just row presence)
 //   • Uses `parseMoney()` to read formatted figures back to a number
 //
-// ⚠️ STATUS: NWRT-FC-002 is BLOCKED until Auto-Linking Phase A.
+// STATUS: NWRT-FC-002 runs since T5b (v10.121.0; audit XC-ARC-08).
 //
-// Verified against the current build (store.ts:upsertTransaction and
-// lib/accounts.ts): recording a transaction against an account does NOT
-// mutate Asset.value — there is no transaction → asset reflection code path
-// at all. So "income to an account raises NetWorth total assets" cannot pass
-// today; it is exactly the behaviour Phase A introduces
-// (docs/ROADMAP_AUTO_LINKING.md).
-//
-// This test is therefore `fixme` (the inventory row stays 🟡/🟠), NOT a
-// weakened assertion that would green on today's no-op behaviour and give
-// false confidence. When Phase A ships, delete the `.fixme`, keep the test
-// ID, and update the Expected Result in TEST_CASE_INVENTORY.md.
+// It was `fixme` because the local-only build (Lane A) still picked the transaction form's accounts
+// through the retired Money Map flag, whose legacy list offered the "E2E Checking" ASSET: an entry there
+// moved no account, so Net Worth could not move. Every build now lists the household's ACCOUNTS, and an
+// account's live balance is in Net Worth (lib/accountBalance.ts liveAssetRows), so a deposit raises
+// total assets. The assertion is unchanged: it reads the delta, not a constant.
 //
 // The M-tier exemplar the junior should copy is NWRT-FC-003/004 (add an
 // asset/debt on the Net Worth page → the total moves) — those ARE implemented
@@ -35,7 +29,7 @@ const seed = seedWith({});
 test.describe('§4 NWRT-FC · NetWorth Module Impact', () => {
   test.use({ seed });
 
-  test.fixme('CON-E2E-009 · [NWRT-FC-002] income to a linked account moves NetWorth total assets', async ({
+  test('CON-E2E-009 · [NWRT-FC-002] income to a linked account moves NetWorth total assets', async ({
     page, transactions, txnModal, networth,
   }) => {
     // ── ARRANGE — capture the baseline total (assert the DELTA, not a constant)

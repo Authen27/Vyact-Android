@@ -104,6 +104,24 @@ export const SHORTS: { id: string; slug: string; title: string }[] = [
 ];
 export const YOUTUBE_CHANNEL = 'https://www.youtube.com/@askvyact';
 
+/** v10.108.0 — the 15-second promo (the Play Store promo video), right under the hero. A poster and a
+ *  play button until the visitor taps it: no YouTube player and nothing from YouTube loads with the page.
+ *  The poster is drawn in CSS (brand card), not a video frame: YouTube's only frame for this upload is
+ *  letterboxed `sddefault` (no `maxresdefault`), and its opening frame still carries the tagline retired
+ *  on 2 Oct 2026 (PUB-021). The thumbnail URL below is for the VideoObject only. */
+export const PROMO = {
+  id: 'NTGKS3WBjUg',
+  heading: 'See Vyact in 15 seconds.',
+  caption: 'A quick look inside the app.',
+  /** VideoObject facts (schema.org): ISO 8601 duration and YouTube's own upload time. */
+  name: 'Vyact in 15 seconds',
+  duration: 'PT15S',
+  uploadDate: '2026-10-17T11:26:15-07:00',
+};
+export const promoWatchUrl = (id: string) => `https://www.youtube.com/watch?v=${id}`;
+export const promoEmbedUrl = (id: string) => `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0&playsinline=1`;
+export const promoThumbnailUrl = (id: string) => `https://i.ytimg.com/vi/${id}/sddefault.jpg`;
+
 /** v10.57.0 (B20) — the guest demo: the app on a demo household, no account, nothing saved to one. */
 export const DEMO_URL = 'https://demo.vyact.app/dashboard';
 

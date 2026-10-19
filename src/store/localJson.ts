@@ -24,13 +24,13 @@ export function readLocalString(suffix: string, fallback: string | null = null):
 }
 
 export function setLocalJson(suffix: string, value: unknown): void {
-  try { ls.setJson(suffix, value); } catch { /* noop */ }
+  try { ls.setJson(suffix, value); } catch { /* fault-ok: device storage is optional (private mode, quota) */ }
 }
 
 export function setLocalString(suffix: string, value: string): void {
-  try { ls.setString(suffix, value); } catch { /* noop */ }
+  try { ls.setString(suffix, value); } catch { /* fault-ok: device storage is optional (private mode, quota) */ }
 }
 
 export function removeLocal(suffix: string): void {
-  try { ls.removeBoth(suffix); } catch { /* noop */ }
+  try { ls.removeBoth(suffix); } catch { /* fault-ok: storage unavailable: nothing was kept there */ }
 }

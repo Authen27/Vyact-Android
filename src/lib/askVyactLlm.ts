@@ -300,7 +300,7 @@ export async function classifyIntentViaModel(
  * `100` was here and has been REMOVED. In a finance assistant it is the single
  * most likely figure for a model to confabulate — "100% of your budget" — and it
  * almost never needs the exemption, because a genuine 100 arrives inside a
- * computed value ("Your Pulse Score is 85/100") and is therefore already
+ * computed value (a budget "used: 100%") and is therefore already
  * allowed. Exempting it bought nothing and cost the guard its most obvious case.
  */
 const HARMLESS = new Set(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10',
@@ -519,8 +519,9 @@ HOW TO ANSWER
   \`safety_floor_note\` says savings are below it (or would go below), say so LAST, in its
   own paragraph after a blank line, as a risk (for example, less of a cushion if income
   stopped) — never as the reason for the answer, and never turning a "yes" into a "no".
-- \`cushion_note\` outranks a good Pulse score: say the habits score well AND that the
-  cushion is thin. \`pulse_measures\` says what Pulse does and does not cover.
+- \`cushion_note\` outranks good news elsewhere: say what is going well AND that the cushion
+  is thin. There is no Pulse score: when \`pulse_score\` says it is retired, say so in one
+  short clause and answer with the position.
 - \`compared_with_same_point\` compares this month so far with the same days of last
   month (\`same_point_is\`): use it for "more or less than last month", never a full
   previous month against a part month.

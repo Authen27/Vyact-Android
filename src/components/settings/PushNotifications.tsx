@@ -11,11 +11,17 @@
 // saw alerts in the bell and none on the lock screen, and nothing said why.
 //
 // Local-only mode keeps the old behaviour: a popup from the open app only.
+//
+// v10.126.0 (T4c; audit BE-FN-12; owner, 19 Oct 2026: "show by default, and hide via settings") — "Show
+// details on the lock screen": on, a notification shows its amounts and names; off, only what kind of thing
+// needs a look ("A bill is due"), from the server and from the open app alike (lockScreenText). And the
+// Android app, a WebView with no Web Push, says so and where push does work, instead of "This browser
+// can't receive push notifications".
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { requestWebPushPermission } from '../../lib/notifications';
 import {
-  pushBlocker, enablePush, disablePush, sendTestPush, devicePushStatus, pushRefusalMessage,
+  pushBlocker, enablePush, disablePush, sendTestPush, devicePushStatus, pushRefusalMessage, pushWanted,
   type DeviceStatus,
 } from '../../lib/webPush';
 import { forceReloadForUpdate } from '../../lib/pwa';
@@ -54,7 +60,10 @@ export default function PushNotifications() {
   // Cloud: on only when this device is really registered. Local-only: the preference.
   const on = cloud ? registered : prefs.webPushEnabled;
   // The saved setting says on, but this phone never subscribed (or was unsubscribed).
-  const notSetUpHere = cloud && status !== null && prefs.webPushEnabled && !registered;
+  // T4d: in the Android app the default is on (pushWanted), so "not set up" also covers a phone that
+  // has not registered yet (the permission was refused, or the first registration failed).
+  const notSetUpHere = cloud && status !== null && pushWanted(prefs) && !registered && blocker !== 'native_app';
+  const details = prefs.lockScreenDetails !== false;
 
   async function turnOn() {
     setBusy(true);
@@ -79,7 +88,7 @@ export default function PushNotifications() {
   async function turnOff() {
     setBusy(true);
     try {
-      await disablePush();
+      await disablePush({ byChoice: true });
       updatePrefs({ webPushEnabled: false });
       setStatus({ registered: false });
       setTestNote(null);
@@ -131,7 +140,7 @@ export default function PushNotifications() {
         <input
           type="checkbox"
           checked={on}
-          disabled={busy || (cloud && status === null)}
+          disabled={busy || (cloud && status === null) || blocker === 'native_app'}
           onChange={e => void toggle(e.target.checked)}
           className="accent-coral w-[18px] h-[18px] flex-shrink-0"
           aria-label="Push notifications on this device"
@@ -151,6 +160,31 @@ export default function PushNotifications() {
 
       {cloud && blocker === 'ios_not_installed' && !on && (
         <p className="text-[0.76rem] text-ink-dim">{pushRefusalMessage('ios_not_installed')}</p>
+      )}
+
+      {blocker === 'native_app' && (
+        <p className="text-[0.76rem] text-ink-dim" data-testid="push-native-app">{pushRefusalMessage('native_app')}</p>
+      )}
+
+      {on && (
+        <label className="flex items-center justify-between gap-3 cursor-pointer pt-1">
+          <div>
+            <div className="text-sm font-semibold text-ink">Show details on the lock screen</div>
+            <div className="text-[0.76rem] text-ink-dim mt-0.5">
+              {details
+                ? 'Notifications show amounts and names. Turn this off to see only what needs a look, such as "A bill is due".'
+                : 'Notifications say only what needs a look, such as "A bill is due". Open Vyact to see the amounts and names.'}
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={details}
+            disabled={busy}
+            onChange={e => updatePrefs({ lockScreenDetails: e.target.checked })}
+            className="accent-coral w-[18px] h-[18px] flex-shrink-0"
+            aria-label="Show details on the lock screen"
+          />
+        </label>
       )}
 
       {problem && (

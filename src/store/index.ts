@@ -17,6 +17,7 @@ import { createCrudSlice, type CrudSlice } from './slices/crudSlice';
 import { createSharedSplitsSlice, type SharedSplitsSlice } from './slices/sharedSplitsSlice';
 import { createInvitationsSlice, type InvitationsSlice } from './slices/invitationsSlice';
 import { exposeStoreForE2E } from './testHooks';
+import { splitEmailNotice, type SplitEmailResult } from '../lib/splitEmail';
 
 export interface Store extends
   ModalSlice, ReconcileSlice, NotifySlice, RecurringSlice,
@@ -47,5 +48,16 @@ exposeStoreForE2E(useStore);
   adapter.onCacheChanged?.(() => {
     if (pending) clearTimeout(pending);
     pending = setTimeout(() => { pending = null; void useStore.getState().refresh(); }, 250);
+  });
+}
+
+// F1c (v10.112.0) — a queued split share landed: re-read the shared splits, and say so when the email
+// to the people added could not go out (v10.60.0; the split is shared either way).
+{
+  const adapter = useStore.getState().adapter as { onSplitShared?: (listener: (email: SplitEmailResult | null) => void) => () => void };
+  adapter.onSplitShared?.(email => {
+    const notice = email ? splitEmailNotice(email) : null;
+    if (notice) useStore.getState().toast(notice, 'info');
+    void useStore.getState().refreshSharedSplits();
   });
 }

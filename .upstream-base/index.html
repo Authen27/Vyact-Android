@@ -32,40 +32,12 @@
     </script>
     <title>Vyact — Family budget app</title>
 
-    <!-- Analytics: Google tag (GA4), loaded AFTER the page has painted (v10.52.0): injected on
-         window `load` + idle so it never blocks the first render. window.gtag still exists
-         immediately, so lib/analytics.ts can queue events from the first tick (dataLayer is
-         read when gtag.js arrives).
-         GA4 runs ONLY on the real site (v10.49.0, #3): localhost, CI, Vercel previews and
-         stage/dev never count; off vyact.app events go nowhere.
-         W0 (audit 2026-10-04, owner decision): Contentsquare session replay is removed. It
-         recorded the app's finance screens (balances, account names, descriptions) with no
-         masking and no consent (XC-PRV-03).
-         W0 (XC-PRV-02): GA gets a REDACTED page_location. An invite link carries its bearer
-         token in the path (/invite/<token>) and some links carry an email in the query, and
-         GA4 sends the full URL by default. The fragment (Supabase auth tokens) never goes. -->
-    <script>
-      (function () {
-        var h = location.hostname;
-        window.dataLayer = window.dataLayer || [];
-        window.gtag = function () { dataLayer.push(arguments); };
-        window.__vyGaOn = h === 'vyact.app' || h === 'www.vyact.app';
-        function cleanLocation() {
-          var path = location.pathname.replace(/^\/invite\/[^/]+/, '/invite/:token');
-          var q = new URLSearchParams(location.search);
-          ['email', 'token', 'code', 'next', 'access_token', 'refresh_token', 'token_hash'].forEach(function (k) { q.delete(k); });
-          var qs = q.toString();
-          return location.origin + path + (qs ? '?' + qs : '');
-        }
-        if (window.__vyGaOn) { gtag('js', new Date()); gtag('config', 'G-E3XKWZP850', { page_location: cleanLocation() }); }
-        function add(src) { var s = document.createElement('script'); s.async = true; s.src = src; document.head.appendChild(s); }
-        function late() {
-          if (window.__vyGaOn) add('https://www.googletagmanager.com/gtag/js?id=G-E3XKWZP850');
-        }
-        function idle() { 'requestIdleCallback' in window ? requestIdleCallback(late, { timeout: 3000 }) : setTimeout(late, 1500); }
-        if (document.readyState === 'complete') idle(); else window.addEventListener('load', idle, { once: true });
-      })();
-    </script>
+    <!-- Analytics: Google tag (GA4). Since v10.125.0 (T4b, audit XC-PRV-03; owner, 19 Oct 2026) it is ASKED FOR
+         first on the web (a banner; Settings and the Cookie Policy change the choice) and on in the Android
+         app (its own permissions). Only on vyact.app, never before consent, loaded after paint + idle, with
+         a redacted page_location. The build puts the script from api/_consent.js here (vite.config.ts,
+         `vyact-analytics`), the same one the public Learn pages carry. -->
+    <!--vyact:analytics-->
 
     <!-- Fonts (v10.52.0): fetched without blocking the first paint. The stylesheet used to be
          render-blocking (~780 ms on a throttled phone). Text now paints at once in the system

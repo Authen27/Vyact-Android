@@ -149,10 +149,14 @@ describe('what the scheduler sends', () => {
     expect(weeklySummary({ household: HH, today: '2026-09-27', member: MEMBERS[0], weekKey: 'W', txns: [] })).toBeNull();
 
     const now = new Date('2026-09-27T12:00:00Z');
+    // Whole rows (select *), counted by the app's staleAccounts (T5c, INT-PAR-05): an investment account and
+    // an archived one are not balances to check, so they don't count, however old.
     const nudge = staleBalanceNudge({ household: HH, now, member: { ...MEMBERS[0], first_name: 'Rohan' }, weekKey: 'W',
-      accounts: [{ id: 'a', created_at: '2026-01-01', last_reconciled_at: '2026-08-01T00:00:00Z' },
-        { id: 'b', created_at: '2026-01-01', last_reconciled_at: null },
-        { id: 'c', created_at: '2026-01-01', last_reconciled_at: '2026-09-20T00:00:00Z' }] });
+      accounts: [{ id: 'a', kind: 'bank', created_at: '2026-01-01', last_reconciled_at: '2026-08-01T00:00:00Z' },
+        { id: 'b', kind: 'cash', created_at: '2026-01-01', last_reconciled_at: null },
+        { id: 'c', kind: 'credit_card', created_at: '2026-01-01', last_reconciled_at: '2026-09-20T00:00:00Z' },
+        { id: 'd', kind: 'investment', created_at: '2026-01-01', last_reconciled_at: null },
+        { id: 'e', kind: 'bank', is_archived: true, created_at: '2026-01-01', last_reconciled_at: null }] });
     expect(nudge?.values).toEqual(['Rohan', 'two']);
   });
 

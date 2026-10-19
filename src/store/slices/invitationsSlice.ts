@@ -48,9 +48,11 @@ export const createInvitationsSlice: StateCreator<Store, [], [], InvitationsSlic
         ? listInvitations(currentHouseholdId).then(rows => (rows ?? []).map(r => toHouseholdInvitation(r as Record<string, unknown>))).catch(() => null)
         : Promise.resolve([] as HouseholdInvitation[]),
     ]);
+    // T5b (XC-ARC-10) — the household's invitations only while that household is still open.
+    const stillOpen = get().currentHouseholdId === currentHouseholdId;
     set({
       ...(mine ? { myInvitations: mine } : {}),
-      ...(theirs ? { householdInvitations: theirs } : {}),
+      ...(theirs && stillOpen ? { householdInvitations: theirs } : {}),
     });
   },
 

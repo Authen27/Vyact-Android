@@ -114,12 +114,7 @@ registerBacklogSuite('§12 RPT-FC · Reports backlog', [
   'RPT-FC-006 · print-friendly Reports render without the sidebar',
 ]);
 
-registerBacklogSuite('§13 PULSE-FC · Pulse backlog', [
-  'PULSE-FC-001 · composite score matches the documented weighted sum when all components have data',
-  'PULSE-FC-002 · Budget Compliance drops when over budget',
-  'PULSE-FC-003 · Debt Health improves after debt payoff',
-  'PULSE-FC-004 · Pulse score remains stable across reload',
-]);
+// §13 PULSE-FC retired in v10.109.0: the Pulse Score is archived (owner, 16 Oct 2026).
 
 registerBacklogSuite('§14 AUTH-FC · Auth backlog', [
   'AUTH-FC-001 · sign-up succeeds with a valid email and strong password @cloud',

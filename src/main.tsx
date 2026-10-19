@@ -41,7 +41,7 @@ function afterPaint(run: () => void) {
   const idle = () => { if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 4000 }); else setTimeout(run, 2000); };
   if (document.readyState === 'complete') idle(); else window.addEventListener('load', idle, { once: true });
 }
-const startUserback = () => { void Userback('A-7Q0Mz7gfB3ECVu6ZsOIUew97E').catch(() => { /* widget unavailable — app works without it */ }); };
+const startUserback = () => { void Userback('A-7Q0Mz7gfB3ECVu6ZsOIUew97E').catch(() => { /* fault-ok: the feedback widget is optional; the app works without it */ }); };
 
 // v10.52.1 (owner) — on the landing page the feedback widget waits for the
 // visitor's first interaction (tap, click, key, wheel). A visitor who only reads

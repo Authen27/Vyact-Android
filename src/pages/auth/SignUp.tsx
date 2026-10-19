@@ -36,7 +36,7 @@ export default function SignUp() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
-    if (!agreed) { setError('Please accept the Terms of Service and Privacy Policy to continue'); return; }
+    if (!agreed) { setError('Please confirm you are 18 or older and accept the Terms of Service and Privacy Policy to continue'); return; }
     setError(''); setSubmitting(true);
     const next = params.get('next');
     // Consumed by AuthGate on next session hydration — covers the email-verification-pending
@@ -103,7 +103,7 @@ export default function SignUp() {
       <label className="flex items-start gap-2 text-[0.82rem] text-ink-mid select-none cursor-pointer mb-4">
         <input type="checkbox" className="mt-0.5" checked={agreed} onChange={e => setAgreed(e.target.checked)} />
         <span>
-          I agree to the <Link to="/terms" target="_blank" className="text-coral hover:underline">Terms of Service</Link>,{' '}
+          I am 18 or older and agree to the <Link to="/terms" target="_blank" className="text-coral hover:underline">Terms of Service</Link>,{' '}
           <Link to="/privacy" target="_blank" className="text-coral hover:underline">Privacy Policy</Link>, and{' '}
           <Link to="/cookies" target="_blank" className="text-coral hover:underline">Cookie Policy</Link>.
         </span>

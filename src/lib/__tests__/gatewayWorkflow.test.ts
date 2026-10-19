@@ -266,7 +266,7 @@ describe('gateway pre-work (v10.106.3)', () => {
 
   it('PIP-LAT-006 · the enabled config is read once per isolate for 30 s, then read again', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
-    const answer = await provider();   // a Response body reads once: give each call its own
+    const answer = await (provider as unknown as () => Promise<Response>)();   // a Response body reads once: give each call its own
     provider.mockReset();
     provider.mockImplementation(async () => answer.clone());
     try {

@@ -22,7 +22,7 @@ describe('outbox IndexedDB transaction contract', () => {
     let resolveFirst!: (row: { id: string; updated_at: string }) => void;
     const upsert = vi.spyOn(adapter.cloud, 'upsert')
       .mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
-      .mockResolvedValue({ id: entityId, updated_at: 'server-second' });
+      .mockResolvedValue({ id: entityId, updated_at: 'server-second' } as { id: string });
     await enqueueOp({ ts: 1, op: 'upsert', entity: 'accounts', householdId, payload: { id: entityId } }, 'alice');
     const flushing = adapter.flushQueue();
     await vi.waitFor(() => expect(upsert).toHaveBeenCalledTimes(1));

@@ -70,17 +70,15 @@ describe('Pip turn timings (v10.106.3)', () => {
 
   it('PIP-LAT-013 · only what the database accepts is sent: finite numbers under short letter keys', async () => {
     await logAiUsage({ householdId: 'h1', text: 'q', stageMs: {
-      total: 10, 'how much on food': 1, phrase: Number.NaN, classify: Infinity, after: 3,
+      total: 10, 'how much on food': 1, phrase: Number.NaN, classify: Infinity, after: 3, classifyCalls: 1,
       ...({ note: 'text' } as unknown as Record<string, number>),
     } });
-    expect(db.insert.mock.calls[0][0].stage_ms).toEqual({ total: 10, after: 3 });
-    await logAiUsage({ householdId: 'h1', text: 'q' });
-    expect(db.insert.mock.calls[1][0].stage_ms).toBeNull();
+    expect(db.insert.mock.calls[0][0].stage_ms).toEqual({ total: 10, after: 3, classifyCalls: 1 });
   });
 
   it('PIP-LAT-014 · a database without the column yet still gets the row, without the timings', async () => {
     db.insert.mockResolvedValueOnce({ error: { code: 'PGRST204', message: "Could not find the 'stage_ms' column of 'ai_usage' in the schema cache" } });
-    await logAiUsage({ householdId: 'h1', text: 'q', latencyMs: 900, stageMs: { total: 900 } });
+    await logAiUsage({ householdId: 'h1', text: 'q', latencyMs: 900, stageMs: { total: 900, phraseCalls: 1 } });
     expect(db.insert).toHaveBeenCalledTimes(2);
     expect(db.insert.mock.calls[1][0]).not.toHaveProperty('stage_ms');
     expect(db.insert.mock.calls[1][0]).toMatchObject({ latency_ms: 900 });
@@ -88,9 +86,22 @@ describe('Pip turn timings (v10.106.3)', () => {
 
   it('PIP-LAT-015 · local-only mode writes nothing', async () => {
     db.cloud = false;
-    await logAiUsage({ householdId: 'h1', text: 'q', stageMs: { total: 1 } });
-    await logAiUsage({ householdId: 'local', text: 'q', stageMs: { total: 1 } });
+    await logAiUsage({ householdId: 'h1', text: 'q', stageMs: { total: 1, classifyCalls: 1 } });
+    await logAiUsage({ householdId: 'local', text: 'q', stageMs: { total: 1, classifyCalls: 1 } });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it('T5C-001 · only a turn that called the model writes a row (FE-PIP-09: the gateway meters every call)', async () => {
+    await logAiUsage({ householdId: 'h1', text: 'q' });                                   // no timings
+    await logAiUsage({ householdId: 'h1', text: 'q', stageMs: { total: 40 } });           // a quick reply / greeting
+    await logAiUsage({ householdId: 'h1', text: 'q', outcome: 'error', stageMs: { total: 5 } });   // failed before any call
+    expect(db.insert).not.toHaveBeenCalled();
+    await logAiUsage({ householdId: 'h1', text: 'q', outcome: 'error',
+      stageMs: { total: 30_000, before: 0, classify: 30_000, classifyCalls: 1, after: 0, failedCalls: 1 } });
+    await logAiUsage({ householdId: 'h1', text: 'q', stageMs: { total: 900, phrase: 800, phraseCalls: 1 } });
+    expect(db.insert).toHaveBeenCalledTimes(2);
+    const chat = readFileSync(resolve(__dirname, '../../pages/Chat.tsx'), 'utf8');
+    expect(chat.match(/logAiUsage\(\{/g)).toHaveLength(2);   // the answered turn and the failed one; the off path writes none
   });
 
   it('PIP-LAT-016 · the chat times every model call of the turn and logs the stages with each outcome', () => {

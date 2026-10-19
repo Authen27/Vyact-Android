@@ -10,10 +10,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   b64url, fromB64url, concat, encryptPayload, vapidAuthorization, generateVapidKeys, sendWebPush, isPushEndpoint,
-  RECORD_SIZE, type VapidKeys,
+  RECORD_SIZE, MAX_PAYLOAD_BYTES, type VapidKeys,
 } from '../../../../supabase/functions/_shared/web-push';
 import {
-  skipReason, inQuietHours, payloadFor, testPayload, type SubscriptionRow, type NotificationRow,
+  skipReason, inQuietHours, payloadFor, fitPayload, PAYLOAD_LIMIT_BYTES, testPayload, type SubscriptionRow, type NotificationRow,
 } from '../../../../supabase/functions/_shared/web-push-rules';
 import { notificationsOnServer, type HouseholdRows } from '../serverEngine';
 import { budgetThresholdNotifs, staleBalanceNotifs, DEFAULT_PREFS } from '../notifications';
@@ -22,23 +22,26 @@ import type { Budget, BudgetAllocation, Transaction, Account } from '../../types
 import { DEFAULT_RATES } from '../../constants';
 import * as bundle from '../../../../supabase/functions/_shared/agent/engine.generated.js';
 import { captureHandler, queryResult } from './helpers/edgeHarness';
+import { testServiceAccount, tokenReply } from './helpers/fcmAccount';
 
 const api = vi.hoisted(() => ({ from: vi.fn(), rpc: vi.fn(), auth: { getUser: vi.fn() } }));
 vi.mock('https://esm.sh/@supabase/supabase-js@2.45.0', () => ({ createClient: () => api }));
 const loader = vi.hoisted(() => ({ loadHouseholdRows: vi.fn() }));
 vi.mock('../../../../supabase/functions/_shared/agent/householdLoader.ts', () => ({ loadHouseholdRows: loader.loadHouseholdRows }));
 vi.mock('../../../../supabase/functions/_shared/agent/engine.ts', async () => {
-  const { notificationsOnServer: real } = await import('../serverEngine');
-  return { notificationsOnServer: real };
+  const { notificationsOnServer: real, lockScreenTextOnServer } = await import('../serverEngine');
+  return { notificationsOnServer: real, lockScreenTextOnServer };
 });
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 // ── An independent receiver (what the browser does) ──────────────────────────
+/** The bytes in an ArrayBuffer of their own: what WebCrypto is typed to take. */
+const buf = (u: Uint8Array): ArrayBuffer => u.slice().buffer as ArrayBuffer;
 async function hmac(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+  const k = await crypto.subtle.importKey('raw', buf(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, buf(data)));
 }
 /** RFC 5869, written out: extract, then ONE expand block (every length here is ≤ 32). */
 async function hkdfManual(salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, len: number): Promise<Uint8Array> {
@@ -62,8 +65,8 @@ async function receive(body: Uint8Array, sub: Awaited<ReturnType<typeof subscrib
   const ikm = await hkdfManual(sub.auth, ecdh, concat(enc.encode('WebPush: info\u0000'), sub.pub, asPublic), 32);
   const cek = await hkdfManual(salt, ikm, enc.encode('Content-Encoding: aes128gcm\u0000'), 16);
   const nonce = await hkdfManual(salt, ikm, enc.encode('Content-Encoding: nonce\u0000'), 12);
-  const aes = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['decrypt']);
-  const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, aes, record));
+  const aes = await crypto.subtle.importKey('raw', buf(cek), 'AES-GCM', false, ['decrypt']);
+  const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(nonce) }, aes, buf(record)));
   expect(plain[plain.length - 1]).toBe(2);           // the last-record delimiter (RFC 8188 §2)
   return { text: dec.decode(plain.slice(0, -1)), rs };
 }
@@ -97,8 +100,8 @@ describe('Web Push crypto (RFC 8291 / 8292)', () => {
     expect(JSON.parse(dec.decode(fromB64url(m[1])))).toEqual({ typ: 'JWT', alg: 'ES256' });
     const claims = JSON.parse(dec.decode(fromB64url(m[2])));
     expect(claims).toEqual({ aud: 'https://fcm.googleapis.com', exp: now + 12 * 3600, sub: 'https://vyact.app' });
-    const verifyKey = await crypto.subtle.importKey('raw', fromB64url(m[4]), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
-    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, fromB64url(m[3]), enc.encode(`${m[1]}.${m[2]}`));
+    const verifyKey = await crypto.subtle.importKey('raw', buf(fromB64url(m[4])), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verifyKey, buf(fromB64url(m[3])), enc.encode(`${m[1]}.${m[2]}`));
     expect(ok).toBe(true);
     // A pair round-tripped through JSON (as Vault stores it) still signs.
     const stored = JSON.parse(JSON.stringify(keys)) as VapidKeys;
@@ -107,9 +110,12 @@ describe('Web Push crypto (RFC 8291 / 8292)', () => {
 
   it('CON-UNIT-WP-003 · only real push services are contacted; 201 is accepted, 404/410 retire the device', async () => {
     for (const ok of ['https://fcm.googleapis.com/fcm/send/x', 'https://web.push.apple.com/QK', 'https://updates.push.services.mozilla.com/wpush/v2/x',
-      'https://wns2-par02p.notify.windows.com/w/?token=x', 'https://api.push.apple.com/x']) expect(isPushEndpoint(ok), ok).toBe(true);
+      'https://wns2-par02p.notify.windows.com/w/?token=x']) expect(isPushEndpoint(ok), ok).toBe(true);
+    // v10.116.0 (T2b-2, BE-FN-07): the wildcards are gone — api.push.apple.com is Apple's native APNs, not
+    // web push, and any *.notify.windows.com host (the audit's nx-0000) could be registered and never answer.
     for (const bad of ['http://fcm.googleapis.com/x', 'https://fcm.googleapis.com.evil.com/x', 'https://evil.com/fcm.googleapis.com',
-      'https://fcm.googleapis.com:8443/x', 'https://169.254.169.254/latest', 'not a url']) expect(isPushEndpoint(bad), bad).toBe(false);
+      'https://fcm.googleapis.com:8443/x', 'https://169.254.169.254/latest', 'not a url',
+      'https://api.push.apple.com/x', 'https://nx-0000.notify.windows.com/w/x']) expect(isPushEndpoint(bad), bad).toBe(false);
 
     const keys = await generateVapidKeys('https://vyact.app');
     const sub = await subscriber();
@@ -185,11 +191,27 @@ describe('push rules', () => {
 
   it('CON-UNIT-WP-005 · the payload opens inside the app only; the test message states the device\'s local time', () => {
     expect(payloadFor(NOTIF)).toEqual({ title: NOTIF.title, body: '₹300 left', url: '/budgets?budgetId=b1', tag: NOTIF.dedupe_key, type: 'budget_threshold' });
-    for (const link of ['https://evil.com', '//evil.com/x', 'javascript:alert(1)', null]) {
+    for (const link of ['https://evil.com', '//evil.com/x', '/\\evil.com/x', 'javascript:alert(1)', null]) {
       expect(payloadFor({ ...NOTIF, deep_link: link }).url, String(link)).toBe('/');
     }
+    expect(payloadFor({ ...NOTIF, deep_link: '/' }).url).toBe('/');
     expect(testPayload(DAY, 'Asia/Kolkata').body).toContain('sent at 11:00');
     expect(testPayload(DAY, 'Asia/Kolkata').url).toBe('/settings');
+  });
+
+  it('CON-UNIT-WP-005b · T2b-2 (BE-FN-07): a notification too long for a push is shortened to fit, never refused', async () => {
+    const long = { ...NOTIF, title: 'Bill due — '.repeat(60), body: '₹ and a very long body. '.repeat(400) };
+    const p = payloadFor(long);
+    expect(new TextEncoder().encode(JSON.stringify(p)).length).toBeLessThanOrEqual(PAYLOAD_LIMIT_BYTES);
+    expect(PAYLOAD_LIMIT_BYTES).toBe(MAX_PAYLOAD_BYTES);                   // the limit encryptPayload enforces
+    expect(p.body.endsWith('…')).toBe(true);
+    expect(p.title).toBe(long.title);                                     // the body gives way first
+    expect(p.url).toBe(NOTIF.deep_link);
+    // It encrypts (the old payload threw payload_too_large on every run for a day).
+    const sub = await subscriber();
+    await expect(encryptPayload(enc.encode(JSON.stringify(p)), sub.p256dh, sub.authB64)).resolves.toBeInstanceOf(Uint8Array);
+    // Short ones are untouched.
+    expect(fitPayload(payloadFor(NOTIF))).toEqual(payloadFor(NOTIF));
   });
 });
 
@@ -318,7 +340,7 @@ describe('web-push function', () => {
     expect((await post(handler, { mode: 'test' }, { Authorization: 'Bearer user-jwt' })).status).toBe(429);
   });
 
-  it('CON-UNIT-WP-008 · dispatch: raises the app\'s notifications, pushes new P1s to eligible devices, stamps them, retires a gone device', async () => {
+  it('CON-UNIT-WP-008 · dispatch: raises the app\'s notifications as the server\'s, pushes only the server\'s new P1s to eligible devices, stamps them, retires a gone device', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-09-27T05:30:00Z'));
     const fetchMock = vi.fn().mockImplementation(async (url: string) =>
@@ -326,9 +348,10 @@ describe('web-push function', () => {
     vi.stubGlobal('fetch', fetchMock);
     const handler = await load();
     loader.loadHouseholdRows.mockResolvedValue(rows());
-    api.rpc.mockImplementation(async (name: string, args: { p?: string }) => {
+    api.rpc.mockImplementation(async (name: string, args: { p?: string; p_rows?: unknown[] }) => {
       if (name === 'web_push_cron_ok') return { data: args.p === 'cron-secret-of-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', error: null };
       if (name === 'web_push_vapid') return { data: keys, error: null };
+      if (name === 'raise_server_notifications') return { data: args.p_rows?.length ?? 0, error: null };
       return { data: null, error: null };
     });
     const pending: NotificationRow[] = [
@@ -343,7 +366,7 @@ describe('web-push function', () => {
         subRow('s4', dev2, { household_id: HID, user_id: 'u4' }),     // no longer a member
       ]]],
       memberships: [[[{ household_id: HID, user_id: 'u1' }, { household_id: HID, user_id: 'u2' }, { household_id: HID, user_id: 'u3' }]]],
-      notifications: [[[]], [null], [pending], [null]],
+      notifications: [[[]], [pending], [null]],
       push_deliveries: [[null]],
     });
 
@@ -354,11 +377,17 @@ describe('web-push function', () => {
     const res = await post(handler, {}, { 'x-cron-secret': 'cron-secret-of-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }, '?mode=dispatch');
     expect(res.status).toBe(200);
     const out = await res.json();
-    // 1. Raised: the budget lines at 85% / 130% and the stale balance, as the app would.
-    const upsert = calls.notifications[1].upsert.mock.calls[0];
-    expect(upsert[1]).toEqual({ onConflict: 'household_id,dedupe_key', ignoreDuplicates: true });
-    expect(upsert[0].map((n: { type: string }) => n.type).sort()).toEqual(['budget_threshold', 'budget_threshold', 'stale_balance']);
+    // 1. Raised: the budget lines at 85% / 130% and the stale balance, as the app would — through the
+    //    server's own writer (T2b-2, DB-SEC-06), which takes over a device's row with the same key. Only the
+    //    server's rows count as already raised, so a device's copy never stops the server's.
+    expect(calls.notifications[0].eq).toHaveBeenCalledWith('source', 'server');
+    const raise = api.rpc.mock.calls.find(c => c[0] === 'raise_server_notifications')!;
+    expect((raise[1] as { p_rows: { type: string }[] }).p_rows.map(n => n.type).sort()).toEqual(['budget_threshold', 'budget_threshold', 'stale_balance']);
+    expect(calls.notifications.some(q => q.upsert.mock.calls.length || q.insert.mock.calls.length)).toBe(false);
     expect(out.raised).toBe(3);
+    expect(out.raiseDeferred).toBe(0);
+    // Only the server's rows are pushed: a device's row (even a viewer's) never reaches a lock screen.
+    expect(calls.notifications[1].eq).toHaveBeenCalledWith('source', 'server');
     // 2. Pushed: the P1 to u1 (accepted) and u2 (gone); u3 switched budgets off; u4 left; the P2 to nobody.
     expect(fetchMock.mock.calls.map(c => c[0])).toEqual(['https://fcm.googleapis.com/fcm/send/s1', 'https://fcm.googleapis.com/fcm/send/s2']);
     expect(JSON.parse((await receive(fetchMock.mock.calls[0][1].body, dev1)).text)).toEqual(payloadFor(pending[0]));
@@ -367,8 +396,39 @@ describe('web-push function', () => {
     expect(out.skipped).toEqual({ type_off: 1, not_a_member: 2, not_action_required: 2, device_disabled: 1 });
     expect(api.rpc).toHaveBeenCalledWith('web_push_mark_device', { p_id: 's2', p_status: 410, p_ok: false, p_gone: true });
     // 3. Stamped: both rows considered are done.
-    expect(calls.notifications[3].update).toHaveBeenCalledWith({ pushed_at: '2026-09-27T05:30:00.000Z' });
-    expect(calls.notifications[3].in).toHaveBeenCalledWith('id', ['n1', 'n2']);
+    expect(calls.notifications[2].update).toHaveBeenCalledWith({ pushed_at: '2026-09-27T05:30:00.000Z' });
+    expect(calls.notifications[2].in).toHaveBeenCalledWith('id', ['n1', 'n2']);
+    vi.useRealTimers();
+  });
+
+  it('CON-UNIT-WP-009 · T2b-2 (BE-FN-07): households take turns — at most 50 raised a run, and the next run starts where this one stopped', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const secret = 'cron-secret-of-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    api.rpc.mockImplementation(async (name: string, args: { p?: string }) =>
+      (name === 'web_push_cron_ok' ? { data: args.p === secret, error: null } : { data: null, error: null }));
+    loader.loadHouseholdRows.mockResolvedValue({ ...rows(), transactions: [], budgets: [], budgetAllocations: [], accounts: [], recurring: [] });
+    const hids = Array.from({ length: 52 }, (_, i) => `h${String(i).padStart(2, '0')}`);
+    const handler = await load();
+    const run = async (at: string) => {
+      vi.setSystemTime(new Date(at));
+      loader.loadHouseholdRows.mockClear();
+      tableSequence({
+        push_subscriptions: [[hids.map((h, i) => subRow(`s${i}`, dev1, { household_id: h, user_id: `u${i}` }))]],
+        memberships: [[[]]],
+        notifications: [[[]]],
+      });
+      const out = await (await post(handler, {}, { 'x-cron-secret': secret }, '?mode=dispatch')).json();
+      return { out, loaded: loader.loadHouseholdRows.mock.calls.map(c => c[2] as string) };
+    };
+    const first = await run('2026-09-27T05:30:00Z');
+    expect(first.loaded).toHaveLength(50);
+    expect(first.out).toEqual(expect.objectContaining({ households: 52, raiseDeferred: 2 }));
+    const second = await run('2026-09-27T05:45:00Z');
+    expect(second.loaded).toHaveLength(50);
+    // Every household is raised within two runs: the two left out of the first lead the second.
+    const left = hids.filter(h => !first.loaded.includes(h));
+    expect(left).toHaveLength(2);
+    expect(second.loaded.slice(0, 2)).toEqual(left);
     vi.useRealTimers();
   });
 
@@ -415,5 +475,129 @@ describe('web-push function', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(again.out.skipped).toEqual({ already_pushed: 1 });
     vi.useRealTimers();
+  });
+
+  it('CON-UNIT-WP-010 · T4c (BE-FN-12): a device with "Show details on the lock screen" off gets only what needs a look; the others get the details', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-27T05:30:00Z'));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    loader.loadHouseholdRows.mockResolvedValue({ ...rows(), transactions: [], budgets: [], budgetAllocations: [], accounts: [], recurring: [] });
+    const secret = 'cron-secret-of-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    api.rpc.mockImplementation(async (name: string, args: { p?: string }) => {
+      if (name === 'web_push_cron_ok') return { data: args.p === secret, error: null };
+      if (name === 'web_push_vapid') return { data: keys, error: null };
+      return { data: null, error: null };
+    });
+    const pending: NotificationRow[] = [{ ...NOTIF, id: 'n1', household_id: HID }];
+    tableSequence({
+      push_subscriptions: [[[
+        subRow('s1', dev1, { household_id: HID, user_id: 'u1', prefs: { ...SUB.prefs, lockScreenDetails: false } }),
+        subRow('s2', dev2, { household_id: HID, user_id: 'u2' }),    // saved before the switch existed: details on
+      ]]],
+      memberships: [[[{ household_id: HID, user_id: 'u1' }, { household_id: HID, user_id: 'u2' }]]],
+      notifications: [[[]], [pending], [null]],
+      push_deliveries: [[null]],
+    });
+    const handler = await load();
+    const out = await (await post(handler, {}, { 'x-cron-secret': secret }, '?mode=dispatch')).json();
+    expect(out.pushed).toBe(2);
+    const sent = Object.fromEntries(await Promise.all(fetchMock.mock.calls.map(async ([url, init]) =>
+      [String(url).split('/').pop(), JSON.parse((await receive(init.body, String(url).endsWith('/s1') ? dev1 : dev2)).text)])));
+    expect(sent.s1).toEqual({
+      title: 'A budget needs a look', body: 'Open Vyact to see which one.', url: NOTIF.deep_link, tag: NOTIF.dedupe_key, type: 'budget_threshold',
+    });
+    expect(JSON.stringify(sent.s1)).not.toMatch(/₹|300|Groceries|September/);
+    expect(sent.s2).toEqual(payloadFor(pending[0]));
+    expect(sent.s2.title).toBe('Groceries at 85% of the September budget');
+    vi.useRealTimers();
+  });
+
+  it('CON-UNIT-WP-011 · T4d: a phone in the Android app gets the alert through FCM under the same rules; a gone token retires it; our own FCM faults never do', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-27T05:30:00Z'));
+    const { json } = await testServiceAccount();
+    const secret = 'cron-secret-of-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    api.rpc.mockImplementation(async (name: string, args: { p?: string }) => {
+      if (name === 'web_push_cron_ok') return { data: args.p === secret, error: null };
+      if (name === 'web_push_vapid') return { data: keys, error: null };
+      return { data: null, error: null };
+    });
+    loader.loadHouseholdRows.mockResolvedValue({ ...rows(), transactions: [], budgets: [], budgetAllocations: [], accounts: [], recurring: [] });
+    const pending: NotificationRow[] = [{ ...NOTIF, id: 'n1', household_id: HID }];
+    const phone = (id: string, token: string, prefs: SubscriptionRow['prefs'] = SUB.prefs) => ({
+      ...SUB, id, kind: 'fcm', fcm_token: token, endpoint: null, p256dh: null, auth: null, household_id: HID, user_id: 'u1',
+      prefs, user_agent: 'Mozilla/5.0 (Linux; Android 14; wv) Chrome/129.0',
+    });
+    const run = async (subs: unknown[], fcmAnswer: (token: string) => Response, env: Record<string, string> = { FCM_SERVICE_ACCOUNT_JSON: json }) => {
+      vi.resetModules();
+      const fetchMock = vi.fn(async (url: string, init: { body: string }) => {
+        if (url === 'https://oauth2.googleapis.com/token') return tokenReply();
+        if (url.startsWith('https://fcm.googleapis.com/v1/')) return fcmAnswer(JSON.parse(init.body).message.token);
+        return new Response(null, { status: 201 });                    // Web Push
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      tableSequence({
+        push_subscriptions: [[subs]],
+        memberships: [[[{ household_id: HID, user_id: 'u1' }, { household_id: HID, user_id: 'u2' }]]],
+        notifications: [[[]], [pending], [null]],
+        push_deliveries: [[null]],
+      });
+      api.rpc.mockClear();
+      const handler = await captureHandler(() => import('../../../../supabase/functions/web-push/index'), env);
+      const out = await (await post(handler, {}, { 'x-cron-secret': secret }, '?mode=dispatch')).json();
+      const fcmCalls = fetchMock.mock.calls.filter(c => String(c[0]).startsWith('https://fcm.googleapis.com/v1/'));
+      return { out, fetchMock, fcmCalls, marks: api.rpc.mock.calls.filter(c => c[0] === 'web_push_mark_device').map(c => c[1]) };
+    };
+
+    // A phone with details off and a browser: the phone through FCM (the private line), the browser through Web Push.
+    const ok = await run([phone('p1', 'tok-phone', { ...SUB.prefs, lockScreenDetails: false }), subRow('s2', dev2, { household_id: HID, user_id: 'u2' })],
+      () => new Response(JSON.stringify({ name: 'projects/vyact-app/messages/1' }), { status: 200 }));
+    expect(ok.out.pushed).toBe(2);
+    expect(ok.fcmCalls).toHaveLength(1);
+    expect(String(ok.fcmCalls[0][0])).toBe('https://fcm.googleapis.com/v1/projects/vyact-app/messages:send');
+    expect(JSON.parse(ok.fcmCalls[0][1].body).message).toMatchObject({
+      token: 'tok-phone', notification: { title: 'A budget needs a look', body: 'Open Vyact to see which one.' },
+      data: { url: NOTIF.deep_link, tag: NOTIF.dedupe_key, type: 'budget_threshold' },
+    });
+    expect(ok.fetchMock.mock.calls.some(c => String(c[0]) === 'https://fcm.googleapis.com/fcm/send/s2')).toBe(true);
+    expect(ok.marks).toEqual(expect.arrayContaining([{ p_id: 'p1', p_status: 200, p_ok: true, p_gone: false }]));
+
+    // The same rules: a phone outside the household, or with budgets switched off, is not sent to.
+    const ruled = await run([phone('p1', 'tok-a', { ...SUB.prefs, perType: { budget_threshold: false } })], () => new Response('{}', { status: 200 }));
+    expect(ruled.fcmCalls).toHaveLength(0);
+    expect(ruled.out.skipped).toEqual({ type_off: 1 });
+
+    // No service account: the phone is skipped as not configured, never an error, and the browser still goes.
+    const off = await run([phone('p1', 'tok-a'), subRow('s2', dev2, { household_id: HID, user_id: 'u2' })], () => new Response('{}', { status: 200 }), {});
+    expect(off.fcmCalls).toHaveLength(0);
+    expect(off.out).toMatchObject({ pushed: 1, skipped: { fcm_not_configured: 1 } });
+
+    // FCM says the token is gone: the phone is retired. FCM down (ours): logged, the phone is not marked.
+    const gone = await run([phone('p1', 'tok-gone'), phone('p2', 'tok-down')], (token) => (token === 'tok-gone'
+      ? new Response(JSON.stringify({ error: { code: 404, status: 'NOT_FOUND', details: [{ errorCode: 'UNREGISTERED' }] } }), { status: 404 })
+      : new Response(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE' } }), { status: 503 })));
+    expect(gone.marks).toEqual([{ p_id: 'p1', p_status: 404, p_ok: false, p_gone: true }]);
+    expect(gone.out.pushed).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it('CON-UNIT-WP-012 · T4d: "Send a test notification" from the Android app reaches that phone through FCM', async () => {
+    const { json } = await testServiceAccount();
+    const fetchMock = vi.fn(async (url: string, _init?: { body: string }) => (url === 'https://oauth2.googleapis.com/token' ? tokenReply()
+      : new Response(JSON.stringify({ name: 'm' }), { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    const handler = await captureHandler(() => import('../../../../supabase/functions/web-push/index'), { FCM_SERVICE_ACCOUNT_JSON: json });
+    api.auth.getUser.mockResolvedValue({ data: { user: { id: 'u1' } }, error: null });
+    api.rpc.mockResolvedValue({ data: null, error: null });
+    const calls = tableSequence({ push_deliveries: [[null, null, 0], [null]], push_subscriptions: [[[{
+      ...SUB, id: 'p1', kind: 'fcm', fcm_token: 'tok-phone', endpoint: null, p256dh: null, auth: null, user_agent: 'wv',
+    }]]] });
+    const res = await post(handler, { mode: 'test', fcmToken: 'tok-phone' }, { Authorization: 'Bearer user-jwt' });
+    expect(await res.json()).toEqual({ sent: 1, results: [{ device: 'Vyact app on Android', status: 200, accepted: true, gone: false }] });
+    expect(calls.push_subscriptions[0].eq).toHaveBeenCalledWith('fcm_token', 'tok-phone');
+    const fcm = fetchMock.mock.calls.find(c => String(c[0]).startsWith('https://fcm.googleapis.com/v1/'))!;
+    expect(JSON.parse((fcm[1] as { body: string }).body).message).toMatchObject({ token: 'tok-phone', notification: { title: 'Vyact notifications are on' } });
+    expect(api.rpc).not.toHaveBeenCalledWith('web_push_vapid');        // no VAPID keys needed for a phone
   });
 });

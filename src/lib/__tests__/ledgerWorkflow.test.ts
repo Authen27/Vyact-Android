@@ -5,7 +5,7 @@ import { LocalStorageAdapter } from '../dataAdapter';
 import { computeAccountBalance, computeAssetValue } from '../accountBalance';
 import { computeNetWorth } from '../netWorth';
 import { budgetLinesForMonth, computePulseScore, monthlyData } from '../calculations';
-import type { Transaction } from '../../types';
+import type { Account, Transaction } from '../../types';
 import { buildSafeSummary } from '../aiSummary';
 
 vi.mock('../supabase', () => ({ isCloudEnabled: () => false, supabase: null }));
@@ -225,7 +225,7 @@ describe('Accounts R1 — one Cash in Hand per household, currency from the hous
     const hid = useStore.getState().currentHouseholdId;
     const bank = await useStore.getState().upsertAccount({ id: crypto.randomUUID(), kind: 'bank', name: 'HDFC', isDefault: true });
     await useStore.getState().ensureDefaultCashAccount();
-    const stored = await useStore.getState().adapter.list('accounts', hid);
+    const stored = await useStore.getState().adapter.list<Account>('accounts', hid);
     expect(stored.filter(a => a.isDefault).map(a => a.id)).toEqual([bank.id]);
     expect(useStore.getState().accounts.find(a => a.kind === 'cash')?.isDefault).toBe(false);
   });
@@ -235,7 +235,7 @@ describe('Accounts R1 — one Cash in Hand per household, currency from the hous
     const first = await useStore.getState().upsertAccount({ id: crypto.randomUUID(), kind: 'bank', name: 'HDFC', isDefault: true, openingBalance: 500 });
     const second = await useStore.getState().upsertAccount({ id: crypto.randomUUID(), kind: 'bank', name: 'ICICI', isDefault: true });
     expect(useStore.getState().accounts.filter(a => a.isDefault).map(a => a.id)).toEqual([second.id]);
-    const stored = await useStore.getState().adapter.list('accounts', hid);
+    const stored = await useStore.getState().adapter.list<Account>('accounts', hid);
     expect(stored.filter(a => a.isDefault).map(a => a.id)).toEqual([second.id]);
     // Demoting touches only the flag — the old default keeps its money.
     expect(stored.find(a => a.id === first.id)?.openingBalance).toBe(500);

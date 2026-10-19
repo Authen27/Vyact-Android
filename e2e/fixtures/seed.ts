@@ -103,10 +103,8 @@ export const defaultSeed: SeedData = {
   ],
   debts: [],
   assets: [
-    // type 'checking' (not 'cash') so it surfaces as its OWN selectable
-    // account in the transaction form. A 'cash'-type asset is folded into
-    // the generic "Cash" option (see lib/accounts.ts:buildAccounts) and would
-    // not be selectable by name.
+    // A Net Worth asset of the same name. Since T5b (v10.121.0) the transaction form lists ACCOUNTS
+    // only, so "E2E Checking" in a test is the bank account above, whose balance an entry moves.
     { id: '00000000-0000-4000-8000-0000000000d1', type: 'checking', name: 'E2E Checking', value: 8000, currency: 'USD', liquidity: 'liquid' },
   ],
 };

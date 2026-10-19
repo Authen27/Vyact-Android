@@ -90,7 +90,8 @@ describe('Loan EMIs in Recurring (Track E, E6a)', () => {
     const page = readFileSync(resolvePath(ROOT, 'react/src/pages/Recurring.tsx'), 'utf8');
     expect(page).toMatch(/loanEmiRows\(debts, accounts, transactions, baseCur\)/);
     expect(page).toMatch(/await upsertDebt\(\{ \.\.\.row\.debt, autoRecord: !row\.autoRecord \}\)/);
-    expect(page).toMatch(/if \(!row\.autoRecord && row\.needs\.length\) \{[\s\S]*?openEditDebt\(row\.debt\);/);
+    // v10.109.0 (R-1): the loan opens with Record automatically already on.
+    expect(page).toMatch(/if \(!row\.autoRecord && row\.needs\.length\) \{[\s\S]*?openEditDebt\(row\.debt, \{ mode: \x27edit\x27, debtId: row\.debt\.id, autoRecord: true \}\);/);
     expect(page).toMatch(/schedules\.filter\(s => !isLoanEmiSchedule\(s\)\)/);
     expect(page).toMatch(/navigate\(`\/debts\?pay=\$\{row\.debt\.id\}`\)/);
     expect(page).not.toMatch(/this schedule no longer posts/);

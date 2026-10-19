@@ -17,11 +17,11 @@ export const FEATURES = {
   // plugin in the Android wrapper; a no-op without it).
   playStore: {
     live: false,
-    packageId: 'com.vyact.consumer',
+    // v10.108.0 — the published app is com.vyact.app (assetlinks.json, Play Console); com.vyact.consumer was the prototype.
+    packageId: 'com.vyact.app',
     reviewAfterEntries: 10,
   },
   dashboard: {
-    showPulse: false,
     showDebtSummary: false,
   },
   onboarding: {

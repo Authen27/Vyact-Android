@@ -20,36 +20,29 @@ test.describe('§18 BACKUP-FC · Backup and data portability', () => {
     const backup = JSON.parse(raw) as {
       version: string;
       exported: string;
-      profile: { name: string; email: string; baseCurrency: string };
+      household: { name: string; type: string; currency: string; members: unknown[] } | null;
       transactions: unknown[];
-      budgets: unknown[];
-      goals: unknown[];
-      members: unknown[];
+      splits: { sharedByYou: unknown[]; sharedWithYou: unknown[] };
       debts: unknown[];
-      assets: unknown[];
       accounts: unknown[];
-      budgetAllocations: unknown[];
+      netWorth: { assets: unknown[]; monthlyHistory: unknown[] };
       recurringSchedules: unknown[];
-      netWorthSnapshots: unknown[];
     };
 
-    expect(backup.version).toBe('6.4.9');
-    // W7a (audit FE-MNY-15): the rest of the household's data travels too.
-    for (const key of ['accounts', 'budgetAllocations', 'recurringSchedules', 'netWorthSnapshots'] as const) {
-      expect(Array.isArray(backup[key])).toBe(true);
-    }
+    // T4b (v10.125.0; audit XC-PRV-08; owner, 19 Oct 2026): exactly the owner's list, nothing else.
+    expect(backup.version).toBe('10.125.0');
+    expect(Object.keys(backup)).toEqual(['version', 'appVersion', 'exported', 'household', 'transactions', 'splits',
+      'debts', 'accounts', 'netWorth', 'recurringSchedules']);
     expect(backup.exported).toBe('2026-05-22');
-    expect(backup.profile).toMatchObject({
-      name: 'Test User',
-      email: 'test@example.com',
-      baseCurrency: 'USD',
-    });
+    expect(backup.household).toMatchObject({ currency: 'USD', members: [] });
     expect(backup.transactions).toHaveLength(3);
-    expect(backup.budgets).toHaveLength(1);
-    expect(backup.goals).toHaveLength(1);
-    expect(backup.members).toHaveLength(0);
     expect(backup.debts).toHaveLength(0);
-    expect(backup.assets).toHaveLength(1);
+    expect(backup.netWorth.assets).toHaveLength(1);
+    for (const list of [backup.accounts, backup.recurringSchedules, backup.netWorth.monthlyHistory,
+      backup.splits.sharedByYou, backup.splits.sharedWithYou]) expect(Array.isArray(list)).toBe(true);
+    // No budgets, goals or profile (the seed has one budget and one goal, and the profile's email).
+    expect(raw).not.toMatch(/"(budgets|budgetAllocations|goals|profile)"/);
+    expect(raw).not.toContain('test@example.com');
     // W3b (owner decision D14): one currency per household — a backup carries no exchange rates.
     expect(backup).not.toHaveProperty('exchangeRates');
   });
@@ -93,11 +86,11 @@ test.describe('§18 BACKUP-FC · Backup and data portability', () => {
 
     const copied = await page.evaluate(() => (window as unknown as Window & { __copiedBackup: string }).__copiedBackup);
     const backup = JSON.parse(copied) as {
-      profile: { name: string };
+      household: { currency: string } | null;
       transactions: unknown[];
     };
 
-    expect(backup.profile.name).toBe('Test User');
+    expect(backup.household?.currency).toBe('USD');
     expect(backup.transactions).toHaveLength(3);
     expect(backup).not.toHaveProperty('exchangeRates');
   });

@@ -202,7 +202,7 @@ describe('INV-7 locally — a loan payment is one event (Track E, E7)', () => {
   function failWrites(fails: (entity: string, row: { type?: string }) => boolean) {
     const adapter = useStore.getState().adapter;
     const real = adapter.upsert.bind(adapter);
-    vi.spyOn(adapter, 'upsert').mockImplementation(((entity: string, hid: string, row: { type?: string }, at?: string) =>
+    vi.spyOn(adapter, 'upsert').mockImplementation(((entity: string, hid: string, row: { id?: string; type?: string }, at?: string) =>
       fails(entity, row) ? Promise.reject(new Error('storage write failed')) : real(entity as never, hid, row, at)) as typeof adapter.upsert);
   }
   const snapshot = async () => {

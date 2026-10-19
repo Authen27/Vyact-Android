@@ -42,5 +42,5 @@ export async function saveFeedback(input: FeedbackInput): Promise<void> {
     await supabase.from('ai_feedback')
       .upsert({ ...feedbackRow({ ...input, rating: input.rating }), updated_at: new Date().toISOString() },
         { onConflict: 'user_id,turn_id' });
-  } catch { /* feedback is best-effort */ }
+  } catch { /* fault-ok: a rating is optional metadata, never the household's data */ }
 }

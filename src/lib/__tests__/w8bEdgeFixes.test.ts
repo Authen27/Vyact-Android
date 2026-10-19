@@ -61,7 +61,8 @@ describe('W8b · Edge robustness', () => {
   it('W8b-WA11-001 · a refused send frees its slot; the daily cap counts sends in flight (BE-WA-11)', () => {
     const send = fn('_shared/whatsapp-send.ts');
     expect(send).toMatch(/\.in\('status', \['sent', 'sending'\]\)/);
-    expect(send).toMatch(/update\(\{ wa_message_id: `\$\{slot\}:failed:\$\{crypto\.randomUUID\(\)\}`, status: 'failed',/);
+    // v10.118.0 (T2d, BE-WA-09): the same patch, now written through settleSlot (checked, tried twice).
+    expect(send).toMatch(/settleSlot\(admin, slot, \{ wa_message_id: `\$\{slot\}:failed:\$\{crypto\.randomUUID\(\)\}`, status: 'failed',/);
   });
 
   it('W8b-PIP07-001 · gateway failures are logged; the config hint goes to admins only (BE-PIP-07)', () => {

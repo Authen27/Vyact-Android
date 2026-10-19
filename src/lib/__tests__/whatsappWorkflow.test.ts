@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { captureHandler, queryResult } from './helpers/edgeHarness';
 
@@ -318,21 +319,30 @@ describe('whatsapp-notify guards (W0)', () => {
 
   it('CON-UNIT-WA-W0-012 · a forged service-role claim is refused: the claim alone is never trusted', async () => {
     const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-notify/index'), ENABLED);
-    api.auth.getUser.mockResolvedValue({ data: { user: null }, error: { message: 'invalid JWT' } });
     tables();
     withProbe(false);
     const res = await call(handler, jwt({ role: 'service_role' }), { event: 'split_settled', params: ['Priya', '₹600', 'Dinner'] });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'service_only' });
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('CON-UNIT-WA-W0-007 · a viewer cannot message other members', async () => {
+  // v10.118.0 (T2d, audit BE-WA-07): members never send. A write-role member used to be able to send any
+  // template with any text, including a "bill overdue" whose "Already paid" approved a real bill.
+  it('CON-UNIT-WA-W0-007 · no member can message other members, whatever their role (BE-WA-07)', async () => {
     const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-notify/index'), ENABLED);
     api.auth.getUser.mockResolvedValue({ data: { user: { id: 'u1' } }, error: null });
-    tables({ role: 'viewer' });
-    const res = await call(handler, 'user-jwt', { event: 'bill_due', params: ['Rohan', '₹3,200', 'Tuesday', 'BESCOM'] });
-    expect(res.status).toBe(403);
+    for (const role of ['owner', 'admin', 'member', 'viewer']) {
+      tables({ role });
+      const res = await call(handler, 'user-jwt', { event: 'bill_due', params: ['Rohan', '₹3,200', 'Tuesday', 'BESCOM'] });
+      expect(res.status, role).toBe(403);
+      expect(await res.json(), role).toEqual({ error: 'service_only' });
+    }
+    const forged = await call(handler, 'user-jwt', { event: 'bill_overdue_reminder', dedupeKey: 'bill:rent:2026-10-01',
+      params: ['Rent', '₹10', '1 Oct'] });
+    expect(forged.status).toBe(403);
     expect(fetch).not.toHaveBeenCalled();
+    expect(api.from).not.toHaveBeenCalledWith('whatsapp_inbound_messages');   // no slot claimed, no audit row
   });
 
   it('CON-UNIT-WA-W0-008 · marketing is refused until the recipient has opted in', async () => {
@@ -1341,5 +1351,224 @@ describe('W8b · webhook and OTP robustness', () => {
     const r2 = await handler(request('000000'));
     expect(await r2.json()).toEqual({ error: 'incorrect_code', attemptsLeft: 2 });
     expect(won.update).toHaveBeenCalledOnce();
+  });
+});
+
+// ── v10.118.0 (Track T2, part d) — every WhatsApp write is checked; the sweep runs on its own ───────────
+describe('T2d · WhatsApp writes and the replay sweep (BE-WA-09, BE-WA-12)', () => {
+  const SECRET = 'cron-secret-of-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+  const RESEND = "Sorry, I couldn't process that. Please send it again.";
+  type Q = ReturnType<typeof queryResult>;
+  type Answer = { data?: unknown; error?: unknown; count?: number | null };
+  const eqOf = (q: Q, col: string) => q.eq.mock.calls.find(([c]) => c === col)?.[1];
+  const patchOf = (q: Q) => q.update.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+  /** The inbox answers each query from what was asked of it (read when it is awaited). */
+  function routedInbox(answer: (q: Q) => Answer) {
+    const routed = api.from.getMockImplementation()!;
+    const made: Q[] = [];
+    api.from.mockImplementation((table: string) => {
+      if (table !== 'whatsapp_inbound_messages') return routed(table);
+      const q = queryResult(null);
+      q.then = ((resolve: (r: { data: unknown; error: unknown; count: number | null }) => unknown) => {
+        const a = answer(q);
+        return Promise.resolve({ data: a.data ?? null, error: a.error ?? null, count: a.count ?? null }).then(resolve);
+      }) as typeof q.then;
+      made.push(q);
+      return q;
+    });
+    return made;
+  }
+  const logged = { error: null, data: { status: 'success', amount: 80, currency: 'INR', type: 'expense', category_id: 'food_dining', account_name: 'Bank' } };
+  const sweep = (handler: (r: Request) => Promise<Response>, headers: Record<string, string>) =>
+    handler(new Request('https://edge.example.com/webhook?mode=sweep', { method: 'POST', headers }));
+  const withCron = () => api.rpc.mockImplementation(async (name: string, args: { p?: string }) =>
+    (name === 'whatsapp_sweep_cron_ok' ? { data: args.p === SECRET, error: null } : logged));
+  const textsTo = () => vi.mocked(fetch).mock.calls.map(([, o]) => JSON.parse(String(o?.body)))
+    .filter((b: { type?: string }) => b.type === 'text').map((b: { to: string; text: { body: string } }) => [b.to, b.text.body]);
+  let errors: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => { errors = vi.spyOn(console, 'error').mockImplementation(() => undefined); });
+  afterEach(() => errors.mockRestore());
+
+  it('T2D-001 · a Meta opt-out that can\'t be stored is answered 503, so Meta sends it again; a stored one is 200 (BE-WA-09)', async () => {
+    const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-webhook/index'));
+    const body = JSON.stringify({ entry: [{ changes: [{ value: { user_preferences: [{ wa_id: '111', category: 'marketing_messages', value: 'stop' }] } }] }] });
+    const post = () => handler(new Request('https://edge.example.com/webhook', { method: 'POST', headers: { 'x-hub-signature-256': sign(body) }, body }));
+    webhookTables(0);
+    let refuse = true;
+    const routed = api.from.getMockImplementation()!;
+    const writes: Record<string, unknown>[] = [];
+    api.from.mockImplementation((table: string) => {
+      if (table !== 'whatsapp_preferences') return routed(table);
+      const q = queryResult(null);
+      q.upsert.mockImplementation((row: Record<string, unknown>) => { writes.push(row); return queryResult(null, refuse ? { message: 'permission denied' } : null); });
+      return q;
+    });
+    const res = await post();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ status: 'retry', recorded: 0, notStored: 0, optOutFailed: true });
+    refuse = false;
+    expect((await post()).status).toBe(200);
+    expect(writes.at(-1)).toEqual(expect.objectContaining({ profile_id: 'alice', marketing_opt_in: false, marketing_source: 'meta_opt_out' }));
+  });
+
+  it('T2D-002 · a claim that fails leaves its message for the sweep; a "done" that can\'t be stored is tried twice and never stops the next message (BE-WA-09)', async () => {
+    const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-webhook/index'));
+    webhookTables(0);
+    api.rpc.mockResolvedValue(logged);
+    const inbox = routedInbox((q) => {
+      if (q.upsert.mock.calls.length) return {};
+      const patch = patchOf(q);
+      if (patch?.status === 'claimed') {
+        return eqOf(q, 'wa_message_id') === 'm-1' ? { error: { message: 'deadlock detected' } } : { data: [{ wa_message_id: 'm-2', attempts: 0 }] };
+      }
+      if (patch?.status === 'done') return { error: { message: 'connection reset' } };
+      return { data: [] };
+    });
+    const body = JSON.stringify({ entry: [{ changes: [{ value: { messages: [
+      { id: 'm-1', from: '111', text: { body: '450 lunch' } }, { id: 'm-2', from: '111', text: { body: '80 coffee' } }] } }] }] });
+    const res = await handler(new Request('https://edge.example.com/webhook', { method: 'POST', headers: { 'x-hub-signature-256': sign(body) }, body }));
+    expect(res.status).toBe(200);
+    // m-1 was never processed (its claim failed), and stays pending for the sweep; m-2 was.
+    expect(api.rpc.mock.calls.map(([, a]) => (a as { p_wa_message_id: string }).p_wa_message_id)).toEqual(['m-2']);
+    const doneTries = inbox.filter(q => patchOf(q)?.status === 'done');
+    expect(doneTries.map(q => eqOf(q, 'wa_message_id'))).toEqual(['m-2', 'm-2']);
+    expect(inbox.some(q => patchOf(q)?.status === 'failed')).toBe(false);
+    expect(errors.mock.calls.map((c: unknown[]) => String(c[0]))).toEqual(expect.arrayContaining([
+      expect.stringMatching(/claim failed; left for the sweep/), expect.stringMatching(/inbox status not stored; the sweep will replay it/)]));
+  });
+
+  it('T2D-003 · the sweep takes the cron secret (checked in the database) or the service key; anything else is 403 (BE-WA-12)', async () => {
+    const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-webhook/index'));
+    webhookTables(0);
+    withCron();
+    routedInbox(() => ({ data: [] }));
+    expect((await sweep(handler, { 'x-cron-secret': 'wrong-secret' })).status).toBe(403);
+    expect((await sweep(handler, {})).status).toBe(403);
+    expect(api.rpc).toHaveBeenCalledWith('whatsapp_sweep_cron_ok', { p: 'wrong-secret' });
+    const ok = await sweep(handler, { 'x-cron-secret': SECRET });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ status: 'ok', replayed: 0 });
+    expect((await sweep(handler, { Authorization: 'Bearer test-service-key' })).status).toBe(200);
+  });
+
+  it('T2D-004 · the sweep claims a message nobody claimed (older than 2 minutes, inside the 24-hour window) and logs it (BE-WA-12)', async () => {
+    const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-webhook/index'));
+    webhookTables(0);
+    withCron();
+    const inbox = routedInbox((q) => {
+      const patch = patchOf(q);
+      if (!patch) {
+        return eqOf(q, 'status') === 'pending'
+          ? { data: [{ wa_message_id: 'u-1', payload: { id: 'u-1', from: '111', text: { body: '80 coffee' } } }] } : { data: [] };
+      }
+      if (patch.status === 'claimed') return { data: [{ wa_message_id: 'u-1', attempts: 0 }] };
+      return {};
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-19T06:00:00Z'));
+    const res = await sweep(handler, { 'x-cron-secret': SECRET });
+    vi.useRealTimers();
+    expect(await res.json()).toEqual({ status: 'ok', replayed: 1 });
+    expect(api.rpc).toHaveBeenCalledWith('whatsapp_log_transaction', expect.objectContaining({ p_wa_message_id: 'u-1', p_amount: 80 }));
+    const pending = inbox.find(q => !patchOf(q) && eqOf(q, 'status') === 'pending')!;
+    expect(pending.lt).toHaveBeenCalledWith('created_at', '2026-10-19T05:58:00.000Z');
+    expect(pending.gt).toHaveBeenCalledWith('created_at', '2026-10-18T06:00:00.000Z');
+    expect(inbox.some(q => patchOf(q)?.status === 'done' && eqOf(q, 'wa_message_id') === 'u-1')).toBe(true);
+  });
+
+  it('T2D-005 · a message whose worker died on every attempt gets one "please send it again", only from the sweep that closed it, only within 24 hours (BE-WA-12)', async () => {
+    const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-webhook/index'));
+    const run = async (createdAgoMs: number, won: boolean) => {
+      vi.mocked(fetch).mockClear();
+      webhookTables(0);
+      withCron();
+      const inbox = routedInbox((q) => {
+        const patch = patchOf(q);
+        if (!patch) {
+          return eqOf(q, 'status') === 'claimed' && q.lt.mock.calls.some(([c]) => c === 'claimed_at')
+            ? { data: [{ wa_message_id: 's-1', attempts: 2, created_at: new Date(Date.now() - createdAgoMs).toISOString(),
+              payload: { id: 's-1', from: '111', text: { body: '450 lunch' } } }] }
+            : { data: [] };
+        }
+        return { data: won ? [{ wa_message_id: 's-1' }] : [] };
+      });
+      await sweep(handler, { 'x-cron-secret': SECRET });
+      return inbox;
+    };
+    const closed = await run(30 * 60_000, true);
+    expect(closed.map(patchOf)).toContainEqual(expect.objectContaining({ status: 'failed', attempts: 3, last_error: expect.stringMatching(/stale claim/) }));
+    expect(textsTo()).toEqual([['111', RESEND]]);
+    expect(api.rpc).not.toHaveBeenCalledWith('whatsapp_log_transaction', expect.anything());   // not replayed again
+    await run(30 * 60_000, false);          // another sweep closed it first: it told them, not this one
+    expect(textsTo()).toEqual([]);
+    await run(25 * 3600_000, true);         // outside the window, a session message can't reach them
+    expect(textsTo()).toEqual([]);
+  });
+
+  it('T2D-006 · a "sent" that can\'t be stored is tried again; the answer stays "sent" (BE-WA-09)', async () => {
+    const ENABLED = { WHATSAPP_OUTBOUND_ENABLED: 'true', WHATSAPP_APPROVED_TEMPLATES: 'split_settled' };
+    const handler = await captureHandler(() => import('../../../../supabase/functions/whatsapp-notify/index'), ENABLED);
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ messages: [{ id: 'wamid.T2D' }] })));
+    let failSent = 1;
+    const settles: Record<string, unknown>[] = [];
+    api.from.mockImplementation((table: string) => {
+      if (table === 'memberships') return queryResult({ id: 'membership' });
+      if (table === 'whatsapp_identities') return queryResult({ phone_number: '222', household_id: 'h' });
+      if (table === 'whatsapp_preferences') return queryResult(null);
+      const q = queryResult(null, null, 0);
+      q.update.mockImplementation((patch: Record<string, unknown>) => {
+        settles.push(patch);
+        return queryResult(null, patch.status === 'sent' && failSent-- > 0 ? { message: 'connection reset' } : null);
+      });
+      return q;
+    });
+    const res = await handler(new Request('https://edge.example.com/notify', { method: 'POST', headers: { Authorization: 'Bearer test-service-key' },
+      body: JSON.stringify({ event: 'split_settled', householdId: 'h', toProfileId: 'p2', params: ['Priya', '₹600', 'Dinner'] }) }));
+    expect(await res.json()).toEqual({ status: 'sent', template: 'split_settled' });
+    expect(settles.filter(p => p.status === 'sent')).toHaveLength(2);
+    expect(settles.at(-1)).toEqual(expect.objectContaining({ status: 'sent', provider_message_id: 'wamid.T2D' }));
+    expect(errors).not.toHaveBeenCalled();   // the retry landed
+  });
+
+  it('T2D-008 · a delivery receipt or a refusal\'s audit row that can\'t be stored is logged, never hidden (BE-WA-09)', async () => {
+    // Meta's delivery report: the outbound row's update fails → logged, and Meta still gets its 200.
+    const hook = await captureHandler(() => import('../../../../supabase/functions/whatsapp-webhook/index'));
+    webhookTables(0);
+    routedInbox((q) => (patchOf(q) ? { error: { message: 'connection reset' } }
+      : { data: { wa_message_id: 'out:1', delivery_status: 'accepted' } }));
+    const body = JSON.stringify({ entry: [{ changes: [{ value: { statuses: [{ id: 'wamid.1', status: 'delivered' }] } }] }] });
+    const res = await hook(new Request('https://edge.example.com/webhook', { method: 'POST', headers: { 'x-hub-signature-256': sign(body) }, body }));
+    expect(res.status).toBe(200);
+    expect(errors.mock.calls.map((c: unknown[]) => String(c[0]))).toContainEqual(expect.stringMatching(/delivery status not recorded/));
+    // A send refused for consent whose audit row can't be written: still answered "skipped", and logged.
+    vi.resetModules();
+    errors.mockClear();
+    const ENABLED = { WHATSAPP_OUTBOUND_ENABLED: 'true', WHATSAPP_APPROVED_TEMPLATES: 'reengagement_nudge' };
+    const notify = await captureHandler(() => import('../../../../supabase/functions/whatsapp-notify/index'), ENABLED);
+    api.from.mockImplementation((table: string) => {
+      if (table === 'memberships') return queryResult({ id: 'membership' });
+      if (table === 'whatsapp_identities') return queryResult({ phone_number: '222', household_id: 'h' });
+      if (table === 'whatsapp_preferences') return queryResult(null);
+      return queryResult(null, { message: 'disk full' }, 0);
+    });
+    const refused = await notify(new Request('https://edge.example.com/notify', { method: 'POST', headers: { Authorization: 'Bearer test-service-key' },
+      body: JSON.stringify({ event: 'reengagement', householdId: 'h', toProfileId: 'p2', params: ['Rohan', '6,850', 'four'] }) }));
+    expect(await refused.json()).toEqual(expect.objectContaining({ status: 'skipped', reason: 'marketing_consent_required' }));
+    expect(errors.mock.calls.map((c: unknown[]) => String(c[0]))).toContainEqual(expect.stringMatching(/refusal not audited/));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('T2D-007 · pg_cron runs the sweep every 5 minutes with a secret generated into Vault; the check is the service\'s alone (BE-WA-12)', () => {
+    const sql = readFileSync(new URL('../../../../supabase/migrations/20261103120000_t2d_whatsapp_sweep_cron.sql', import.meta.url), 'utf8');
+    expect(sql).toMatch(/cron\.schedule\('whatsapp-inbox-sweep', '\*\/5 \* \* \* \*'/);
+    expect(sql).toMatch(/functions\/v1\/whatsapp-webhook\?mode=sweep/);
+    expect(sql).toMatch(/'x-cron-secret', s\.decrypted_secret/);
+    expect(sql).toMatch(/vault\.create_secret\(encode\(extensions\.gen_random_bytes\(32\), 'hex'\), 'whatsapp_sweep_cron_secret'/);
+    expect(sql).toMatch(/revoke all on function public\.whatsapp_sweep_cron_ok\(text\) from public, anon, authenticated;/);
+    expect(sql).toMatch(/grant execute on function public\.whatsapp_sweep_cron_ok\(text\) to service_role;/);
+    expect(sql).toMatch(/length\(coalesce\(p, ''\)\) >= 32/);
+    // The webhook asks the database, and only for the sweep.
+    const webhook = readFileSync(new URL('../../../../supabase/functions/whatsapp-webhook/index.ts', import.meta.url), 'utf8');
+    expect(webhook).toMatch(/rpc\('whatsapp_sweep_cron_ok', \{ p: given \}\)/);
   });
 });

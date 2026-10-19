@@ -67,7 +67,7 @@ describe('lesson pages (#11, #12, #20)', () => {
     expect(ld[1].itemListElement[1].item).toBe('https://vyact.app/learn/topic/saving');
     expect(ld.map(o => o['@type'])).toEqual([['Article', 'LearningResource'], 'BreadcrumbList', 'FAQPage']);   // quick answer → FAQPage; no video → no VideoObject
     const related = relatedLessons(ALL[0], ALL);
-    expect(related.map(c => c.slug)).toEqual(['ev-002-pay-yourself-first', 'ev-010-emergency-fund', 'ev-030-net-worth']);
+    expect(related.map((c: { slug: string }) => c.slug)).toEqual(['ev-002-pay-yourself-first', 'ev-010-emergency-fund', 'ev-030-net-worth']);
     for (const r of related) expect(html).toContain(`/learn/${r.slug}`);
     expect(html).toContain('href="/auth/sign-up?ref=learn_ev-001-the-500-a-day-idea&amp;next=%2Freports"');
     expect(html).toContain('See your savings rate in Vyact');
@@ -145,21 +145,27 @@ describe('library, hubs, sitemap, llms.txt (#10, #25)', () => {
 });
 
 describe('analytics gating and deep links (#3, #4, #20)', () => {
-  it('CON-UNIT-PUB-009 · GA loads only on vyact.app / www.vyact.app; elsewhere events go nowhere', () => {
-    const run = (host: string) => {
+  it('CON-UNIT-PUB-009 · GA can run only on vyact.app / www.vyact.app, and only once the visitor allows it (T4b); elsewhere nothing is queued', () => {
+    const run = (host: string, stored: string | null = null) => {
       const appended: string[] = [];
+      const store = new Map<string, string>(stored ? [['vt_analytics_consent', stored]] : []);
+      const el = () => ({ style: {}, setAttribute() {}, appendChild() {}, addEventListener() {} });
       // v10.53.0: gtag.js waits for load + idle; this page has loaded and is idle.
-      const win: Record<string, unknown> = { matchMedia: () => ({ matches: false }), requestIdleCallback: (fn: () => void) => fn() };
-      const doc = { readyState: 'complete', createElement: () => ({}), head: { appendChild: (s: { src: string }) => appended.push(s.src) } };
+      const win: Record<string, unknown> = { matchMedia: () => ({ matches: false }), requestIdleCallback: (fn: () => void) => fn(), addEventListener() {} };
+      const doc = { readyState: 'complete', cookie: '', createElement: el, createTextNode: () => ({}), addEventListener() {},
+        head: { appendChild: (s: { src: string }) => appended.push(s.src) }, body: { appendChild() {} } };
+      const ls = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
       const code = analyticsSnippet().replace(/<\/?script>/g, '');
-      new Function('window', 'location', 'document', code)(win, { hostname: host }, doc);
+      new Function('window', 'location', 'document', 'localStorage', code)(win, { hostname: host, pathname: '/learn', search: '', origin: `https://${host}` }, doc, ls);
       (win.vyTrack as (n: string) => void)('learn_card_view');
       return { appended, layer: (win.dataLayer as unknown[]).length };
     };
-    expect(run('vyact.app').appended[0]).toContain('googletagmanager.com/gtag/js?id=G-E3XKWZP850');
-    expect(run('www.vyact.app').appended).toHaveLength(1);
+    expect(run('vyact.app', 'granted').appended[0]).toContain('googletagmanager.com/gtag/js?id=G-E3XKWZP850');
+    expect(run('www.vyact.app', 'granted').appended).toHaveLength(1);
+    expect(run('vyact.app').appended).toHaveLength(0);              // not chosen yet: the banner asks, nothing loads
+    expect(run('vyact.app', 'denied').appended).toHaveLength(0);
     for (const h of ['localhost', 'vyact-git-main-authen27.vercel.app', 'stage.vyact.app', 'admin.vyact.app']) {
-      const r = run(h);
+      const r = run(h, 'granted');
       expect(r.appended, h).toHaveLength(0);
       expect(r.layer, h).toBe(0);
     }
@@ -187,12 +193,12 @@ const INDEX_FIXTURE = `<!DOCTYPE html><html lang="en"><head>
 <link rel="stylesheet" crossorigin href="/assets/index-AbC123.css">
 </head><body><div id="root"></div><script type="module" src="/assets/index-XyZ.js"></script></body></html>`;
 
-async function renderedLanding(cloudMode = true) {
+async function renderedLanding(cloudMode = true, promoPlaying = false) {
   const React = await import('react');
   const { renderToString } = await import('react-dom/server');
   const { MemoryRouter } = await import('react-router-dom');
   const { default: LandingView } = await import('../../pages/LandingView');
-  return renderToString(React.createElement(MemoryRouter, null, React.createElement(LandingView, { cloudMode, signedIn: false })));
+  return renderToString(React.createElement(MemoryRouter, null, React.createElement(LandingView, { cloudMode, signedIn: false, promoPlaying })));
 }
 
 describe('the landing page (#9, #12, #19)', () => {
@@ -206,6 +212,9 @@ describe('the landing page (#9, #12, #19)', () => {
     expect(markup).toContain('Your household deserves to understand its money.');
     // The v10.49 content sits BELOW the brand sections, in the same theme.
     const at = (s: string) => markup.indexOf(s);
+    // v10.108.0 — the promo sits between the hero and "Sound familiar?".
+    expect(at('Your household deserves to understand its money.')).toBeLessThan(at(copy.PROMO.heading));
+    expect(at(copy.PROMO.heading)).toBeLessThan(at('Sound familiar?'));
     expect(at('Sound familiar?')).toBeLessThan(at('Made for the way households actually run.'));
     for (const s of ['Everything in one place.', 'Learn money in 60 seconds.', 'Questions, answered.']) expect(at(s)).toBeGreaterThan(at('Your money, explained back to you.'));
     for (const l of copy.LESSONS) expect(markup).toContain(`href="/learn/${l.slug}"`);
@@ -253,9 +262,9 @@ describe('the landing page (#9, #12, #19)', () => {
     // The landing page carries the same entity; its app node is published by it.
     const copy = await import('../../content/landingCopy');
     const { landingJsonLd } = await import('../../../scripts/landingHtml.mjs');
-    const landing = landingJsonLd(copy);
-    expect(landing.find((o: { '@type': string }) => o['@type'] === 'Organization')['@id']).toBe(brand.ORG_ID);
-    expect(landing.find((o: { '@type': string }) => o['@type'] === 'SoftwareApplication').publisher['@id']).toBe(brand.ORG_ID);
+    const landing = landingJsonLd(copy) as { '@type': string; '@id'?: string; publisher?: { '@id'?: string } }[];
+    expect(landing.find(o => o['@type'] === 'Organization')?.['@id']).toBe(brand.ORG_ID);
+    expect(landing.find(o => o['@type'] === 'SoftwareApplication')?.publisher?.['@id']).toBe(brand.ORG_ID);
     expect(copy.STANDARD_DESCRIPTION).toMatch(/^Vyact is the family budget app/);
     // Owner rule: never "Vyact Finance"; the tagline is "Family budget app", not "Family Finance OS".
     const { readFileSync, readdirSync } = await import('node:fs');
@@ -390,7 +399,7 @@ describe('keywords, answers and AI crawlers (#7, #21, #25)', () => {
 
   it('CON-UNIT-PUB-015 · the use-case pages (couples, families, splitwise-users, money-owed, /private): one H1, a quick answer, a FAQPage that matches the visible FAQ, links to each other; unknown → 404', async () => {
     const { audiencePage, audiencePath, AUDIENCES, default: forHandler } = await import('../../../api/for.js');
-    const keys = ['couples', 'families', 'splitwise-users', 'money-owed', 'private'];
+    const keys = ['couples', 'families', 'splitwise-users', 'money-owed', 'private'] as (keyof typeof AUDIENCES)[];
     expect(Object.keys(AUDIENCES)).toEqual(keys);
     expect(audiencePath('private')).toBe('/private');
     for (const key of keys) {
@@ -465,6 +474,12 @@ describe('first paint is not blocked by third parties', () => {
     expect(html).toMatch(/\/\^sb-\.\+-auth-token\$\//);
     expect(html).toContain("'landing_cta_click'");
     expect(html).toContain('if(window.__vyLandingLive)return;');
+    // v10.108.0 — a promo tap before boot stays on the page: counted, marked for Landing.tsx, and the
+    // player swapped in by the script only if the app has not come up after 5 s.
+    expect(html).toContain("t.closest('[data-promo]')");
+    expect(html).toContain("window.__vyPromo='play'");
+    expect(html).toContain("'landing_video_play'");
+    expect(html).toContain(`f.src=${JSON.stringify(copy.promoEmbedUrl(copy.PROMO.id))}`);
     // Every CTA the app tracks is marked for the boot script, with the same placement.
     // v10.57.0 — plus the guest demo link and the three Shorts.
     expect([...markup.matchAll(/data-cta="([a-z0-9_]+)"/g)].map(m => m[1])).toEqual(['nav', 'hero', 'demo', 'short_003', 'short_021', 'short_027', 'footer', 'footer_link']);
@@ -482,18 +497,13 @@ describe('first paint is not blocked by third parties', () => {
     expect(head).toMatch(/<link\s+rel="preload" as="style"[^>]*fonts\.googleapis\.com/);
     // W0 (audit 2026-10-04, XC-PRV-03) — Contentsquare session replay is removed everywhere.
     expect(head).not.toMatch(/contentsquare\.net/i);
-    expect(head).toMatch(/addEventListener\('load'/);
-    // W0 (XC-PRV-02) — GA's page_location is redacted: no invite token, no email/token/code.
-    expect(head).toMatch(/gtag\('config', 'G-E3XKWZP850', \{ page_location: cleanLocation\(\) \}\)/);
-    const cleanSrc = head.match(/function cleanLocation\(\) \{[\s\S]*?\n {8}\}/)?.[0];
-    expect(cleanSrc).toBeTruthy();
-    const clean = new Function('location', `${cleanSrc}; return cleanLocation();`) as
-      (loc: { origin: string; pathname: string; search: string }) => string;
-    expect(clean({ origin: 'https://vyact.app', pathname: '/invite/3f9a-secret', search: '?email=a%40b.com&utm_source=mail' }))
-      .toBe('https://vyact.app/invite/:token?utm_source=mail');
-    expect(clean({ origin: 'https://vyact.app', pathname: '/auth/sign-up', search: '?email=a%40b.com&token=x&code=y&next=%2Fsplits' }))
-      .toBe('https://vyact.app/auth/sign-up');
-    expect(clean({ origin: 'https://vyact.app', pathname: '/transactions', search: '' })).toBe('https://vyact.app/transactions');
+    // T4b (v10.125.0, XC-PRV-03) — the analytics script is api/_consent.js, put in place at build time (one
+    // source with the Learn pages). It loads gtag.js after load + idle, only after consent, with a redacted
+    // page_location: T4B-001..003 run it.
+    expect(head).toMatch(/<!--vyact:analytics-->/);
+    expect(head).not.toMatch(/googletagmanager\.com/);
+    const viteConfig = readFileSync(resolve(__dirname, '../../../vite.config.ts'), 'utf8');
+    expect(viteConfig).toMatch(/html\.replace\('<!--vyact:analytics-->', analyticsSnippet\(\)\)/);
 
     // v10.52.1 — on "/" the feedback widget waits for the first interaction.
     const mainTsx = readFileSync(resolve(__dirname, '../../main.tsx'), 'utf8');
@@ -505,8 +515,9 @@ describe('first paint is not blocked by third parties', () => {
     expect(lessonHead.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')).not.toMatch(/<link[^>]*rel="stylesheet"[^>]*fonts\.googleapis\.com/);
     expect(lessonHead).toMatch(/rel="preload" as="style"[^>]*fonts\.googleapis\.com/);
     // v10.53.0 — gtag.js on Learn / for pages is fetched after load + idle, not during parse.
-    expect(lessonHead).toMatch(/window\.requestIdleCallback\(late,\{timeout:3000\}\)/);
-    expect(lessonHead).toMatch(/addEventListener\('load',idle/);
+    // T4b: the shared consent script (api/_consent.js), still after load + idle, and only after consent.
+    expect(lessonHead).toMatch(/window\.requestIdleCallback\(load, \{ timeout: 3000 \}\)/);
+    expect(lessonHead).toMatch(/addEventListener\('load', idle/);
   });
 });
 
@@ -601,6 +612,36 @@ describe('video short links, Start here paths, the Shorts strip and the guest de
     expect((strip.match(/loading="lazy"/g) || []).length).toBe(3);
     expect(strip).not.toContain('<iframe');               // no YouTube player on the landing page
     expect(strip).toContain('@askvyact');
+  });
+
+  it('CON-UNIT-PUB-029 · the landing promo: a CSS poster in a 16:9 box linking to the video, nothing from YouTube until tapped, then one no-cookie player; VideoObject matches', async () => {
+    const copy = await import('../../content/landingCopy');
+    const { landingHtml } = await import('../../../scripts/landingHtml.mjs');
+    const markup = await renderedLanding();
+    const promo = /data-testid="landing-promo"[\s\S]*?<\/section>/.exec(markup)?.[0] ?? '';
+    expect(promo).toContain(copy.PROMO.heading);
+    expect(promo).toContain('aspect-ratio:16 / 9');                       // the box has its size before anything loads
+    expect(promo).toContain(`href="https://www.youtube.com/watch?v=${copy.PROMO.id}"`);  // works with no script at all
+    expect(promo).toContain(`data-promo="${copy.PROMO.id}"`);
+    expect(promo).toContain('Family budget app');                          // the brand card, never the retired tagline
+    expect(promo).not.toMatch(/family finance os/i);
+    expect(promo).not.toContain('<img');                                   // the poster is CSS: no image, no LCP candidate
+    expect(promo).not.toContain('ytimg.com');
+    expect(promo).not.toContain('<iframe');                                // nothing from YouTube loads with the page
+    expect(promo).not.toContain('data-cta');                               // a play is not a sign-up CTA
+
+    const playing = /data-testid="landing-promo"[\s\S]*?<\/section>/.exec(await renderedLanding(true, true))?.[0] ?? '';
+    expect((playing.match(/<iframe/g) || []).length).toBe(1);
+    expect(playing).toContain('src="https://www.youtube-nocookie.com/embed/NTGKS3WBjUg?autoplay=1&amp;rel=0&amp;playsinline=1"');
+    expect(playing).not.toContain('data-promo');
+
+    const video = jsonLdOf(landingHtml(INDEX_FIXTURE, markup, copy)).find(o => o['@type'] === 'VideoObject');
+    expect(video).toMatchObject({
+      name: copy.PROMO.name, duration: 'PT15S', uploadDate: copy.PROMO.uploadDate,
+      thumbnailUrl: [`https://i.ytimg.com/vi/${copy.PROMO.id}/sddefault.jpg`],
+      contentUrl: `https://www.youtube.com/watch?v=${copy.PROMO.id}`, embedUrl: `https://www.youtube.com/embed/${copy.PROMO.id}`,
+      publisher: { '@id': 'https://vyact.app/#organization' },
+    });
   });
 
   it('CON-UNIT-PUB-026 · the guest demo: local-only build, never production data, noindex on its own host, and linked from the landing and lessons', async () => {

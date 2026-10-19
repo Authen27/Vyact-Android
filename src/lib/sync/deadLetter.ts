@@ -1,7 +1,13 @@
 // Vyact — dead-letter buckets for ops the cloud rejected (TD-26 extraction).
 //   • sync_conflicts — TD-03 optimistic-concurrency conflicts (terminal).
-//   • sync_failed    — TD-10 retry-exhausted ops.
-// Storage keys and behaviour are unchanged from hybridAdapter.ts.
+//   • sync_failed    — writes the database refused for good (W3c), and, from apps before v10.110.0,
+//                      ops that ran out of retries. Since F1a a network failure is never set aside.
+// Storage keys are unchanged from hybridAdapter.ts.
+//
+// v10.110.0 (F1a, audit FE-SYN-05; owner decision) — every entry belongs to the person whose write
+// it was (`ownerUid`, stamped by the outbox). Counts, Dismiss and the rows Dismiss re-reads only ever
+// see the signed-in person's entries: before this, the next person on a shared device was told
+// "4 changes failed to sync" about someone else's writes, and Dismiss deleted them.
 import ls from '../localStorageCompat';
 import { expected, unexpected } from '../faults';
 import type { QueueOp } from './types';
@@ -9,6 +15,20 @@ import { requeueOp } from './outbox';
 
 const CONFLICTS_KEY = 'sync_conflicts';
 const FAILED_KEY = 'sync_failed';
+export type DeadLetterBucket = typeof CONFLICTS_KEY | typeof FAILED_KEY;
+
+type Entry = QueueOp & { ownerUid?: string | null; error?: string };
+
+function read(bucket: DeadLetterBucket): Entry[] {
+  try { return ls.readJson<Entry[]>(bucket) || []; } catch { return []; }
+}
+function write(bucket: DeadLetterBucket, list: Entry[]): void {
+  try {
+    if (list.length) ls.setJson(bucket, list);
+    else ls.removeBoth(bucket);
+  } catch (e) { expected(e, `sync.deadLetter:persist:${bucket}`); }
+}
+const isOwners = (ownerUid: string | null) => (entry: Entry) => !!ownerUid && entry.ownerUid === ownerUid;
 
 export function recordConflict(op: QueueOp): void {
   // A concurrency conflict is a normal, surfaced outcome (the banner reads
@@ -21,11 +41,11 @@ export function recordConflict(op: QueueOp): void {
 }
 
 export function recordFailed(op: QueueOp, error: unknown): void {
-  // TD-24: a write that exhausted its retries failed to reach the cloud — an
-  // unexpected fault, in addition to the dead-letter bucket the UI surfaces.
-  unexpected(error, `sync.flushQueue:exhausted-retries:${op.op}:${op.entity ?? ''}`);
+  // TD-24: a write that will never reach the cloud — an unexpected fault, in addition to the
+  // dead-letter bucket the UI surfaces.
+  unexpected(error, `sync.flushQueue:set-aside:${op.op}:${op.entity ?? ''}`);
   try {
-    const list = ls.readJson<Array<QueueOp & { error?: string }>>(FAILED_KEY) || [];
+    const list = ls.readJson<Entry[]>(FAILED_KEY) || [];
     list.push({ ...op, error: describeError(error) });
     try { ls.setJson(FAILED_KEY, list); } catch (e) { expected(e, 'sync.recordFailed:persist'); }
   } catch (e) { expected(e, 'sync.recordFailed'); }
@@ -42,40 +62,51 @@ function describeError(error: unknown): string {
   return String(error);
 }
 
-/** W3c — the households and entities the conflict bucket refers to (Dismiss re-reads them). */
-export function conflictTargets(): { householdId: string; entity: string }[] {
-  try {
-    const list = ls.readJson<QueueOp[]>(CONFLICTS_KEY) || [];
-    const seen = new Set<string>();
-    return list.filter(op => op.entity).filter(op => {
-      const key = `${op.householdId}:${op.entity}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    }).map(op => ({ householdId: op.householdId, entity: op.entity as string }));
-  } catch { return []; }
+/** The households and entities a person's entries in a bucket refer to (Dismiss re-reads them). */
+export function deadLetterTargets(bucket: DeadLetterBucket, ownerUid: string | null): { householdId: string; entity: string }[] {
+  const seen = new Set<string>();
+  return read(bucket).filter(isOwners(ownerUid)).filter(op => op.entity).filter(op => {
+    const key = `${op.householdId}:${op.entity}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(op => ({ householdId: op.householdId, entity: op.entity as string }));
 }
 
-export function pendingConflictCount(): number {
-  try {
-    const list = ls.readJson<QueueOp[]>(CONFLICTS_KEY) || [];
-    return list.length;
-  } catch { return 0; }
+/** W3c — the households and entities the person's conflicts refer to (Dismiss re-reads them). */
+export function conflictTargets(ownerUid: string | null): { householdId: string; entity: string }[] {
+  return deadLetterTargets(CONFLICTS_KEY, ownerUid);
 }
 
-export function clearConflicts(): void {
-  try { ls.removeBoth(CONFLICTS_KEY); } catch { /* noop */ }
+export function pendingConflictCount(ownerUid: string | null): number {
+  return read(CONFLICTS_KEY).filter(isOwners(ownerUid)).length;
 }
 
-export function pendingFailedCount(): number {
-  try {
-    const list = ls.readJson<QueueOp[]>(FAILED_KEY) || [];
-    return list.length;
-  } catch { return 0; }
+/** Drop the person's conflicts; anyone else's stay. */
+export function clearConflicts(ownerUid: string | null): void {
+  write(CONFLICTS_KEY, read(CONFLICTS_KEY).filter(entry => !isOwners(ownerUid)(entry)));
 }
 
-export function clearFailed(): void {
-  try { ls.removeBoth(FAILED_KEY); } catch { /* noop */ }
+export function pendingFailedCount(ownerUid: string | null): number {
+  return read(FAILED_KEY).filter(isOwners(ownerUid)).length;
+}
+
+/** Drop the person's set-aside writes; anyone else's stay. */
+export function clearFailed(ownerUid: string | null): void {
+  write(FAILED_KEY, read(FAILED_KEY).filter(entry => !isOwners(ownerUid)(entry)));
+}
+
+/**
+ * F1a — entries recorded before the outbox stamped an owner (audit F6) carry none. They are given to
+ * the device's cache owner at the same two points as ownerless queued writes (`adoptOwnerless`): that
+ * person signing back in, or leaving. Never to whoever happens to sign in next.
+ */
+export function adoptOwnerlessDeadLetters(ownerUid: string): void {
+  for (const bucket of [CONFLICTS_KEY, FAILED_KEY] as const) {
+    const list = read(bucket);
+    if (!list.some(entry => !entry.ownerUid)) continue;
+    write(bucket, list.map(entry => (entry.ownerUid ? entry : { ...entry, ownerUid })));
+  }
 }
 
 /**
@@ -86,21 +117,20 @@ export function clearFailed(): void {
  * kicks the flush once this resolves.
  */
 export async function retryDeadLettered(
-  bucket: 'sync_conflicts' | 'sync_failed',
+  bucket: DeadLetterBucket,
   ownerUid: string | null,
 ): Promise<void> {
   try {
-    const list = ls.readJson<Array<QueueOp & { ownerUid?: string | null }>>(bucket) || [];
+    const list = read(bucket);
     if (!list.length) return;
     const retained: typeof list = [];
     for (const op of list) {
-      if (!ownerUid || op.ownerUid !== ownerUid) { retained.push(op); continue; }
+      if (!isOwners(ownerUid)(op)) { retained.push(op); continue; }
       await requeueOp(
         { ...op, attempts: 0, nextRetryAt: undefined, expectedUpdatedAt: undefined },
         ownerUid,
       );
     }
-    if (retained.length) ls.setJson(bucket, retained);
-    else ls.removeBoth(bucket);
-  } catch { /* storage error — non-fatal */ }
+    write(bucket, retained);
+  } catch (e) { unexpected(e, 'deadLetter.retryAll'); }
 }

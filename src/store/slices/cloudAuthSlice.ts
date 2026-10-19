@@ -14,6 +14,8 @@ import { setLocalString } from '../localJson';
 import { invalidateCacheForSession, clearCacheOnSignOut } from '../../lib/cacheInvalidation';
 import { forgetPushOnDevice } from '../../lib/webPush';
 import { stampHouseholdTimezone } from '../../lib/householdTimezone';
+import { unexpected } from '../../lib/faults';
+import { defaultProfile } from './dataSlice';
 
 export interface CloudAuthSlice {
   cloudEnabled: boolean;
@@ -32,6 +34,8 @@ export const SIGNED_OUT_STATE = {
   budgetAllocations: [], recurringSchedules: [], notifications: [],
   sharedSplitsOwned: [], sharedSplitsWithMe: [],
   myInvitations: [], householdInvitations: [],
+  // v10.110.0 (F1a, audit FE-SYN-04) — the profile and the net-worth history went with nothing.
+  profile: defaultProfile, netWorthSnapshots: [], lastSyncedAt: null,
 } satisfies Partial<Store>;
 
 export const createCloudAuthSlice: StateCreator<Store, [], [], CloudAuthSlice> = (set, get) => ({
@@ -75,7 +79,7 @@ export const createCloudAuthSlice: StateCreator<Store, [], [], CloudAuthSlice> =
       const uid = session?.user?.id;
       if (uid) {
         void invalidateCacheForSession(uid)
-          .catch(() => { /* a device with storage disabled must still sign in */ })
+          .catch(() => { /* fault-ok: a device with storage disabled must still sign in */ })
           .then(() => { get().init(); });
       } else {
         get().init();
@@ -88,7 +92,7 @@ export const createCloudAuthSlice: StateCreator<Store, [], [], CloudAuthSlice> =
       // HybridAdapter "transient empty" path would kick in needlessly.
       const cur = get().currentHouseholdId;
       if (cur && cur !== 'local') {
-        try { setLocalString('last_cloud_hid', cur); } catch { /* noop */ }
+        try { setLocalString('last_cloud_hid', cur); } catch { /* fault-ok: device storage is optional (private mode, quota); the household is picked again at the next sign-in */ }
       }
       // And drop the cached ledger from the device. Leaving a signed-out
       // machine holding the last user's transactions is the same privacy
@@ -98,7 +102,8 @@ export const createCloudAuthSlice: StateCreator<Store, [], [], CloudAuthSlice> =
       // Async now that it clears IndexedDB. Not awaited: the in-memory state is
       // cleared synchronously below, and the next sign-in awaits its own purge
       // before hydrating — so a slow disk cannot leave stale rows visible.
-      void clearCacheOnSignOut().catch(() => { /* storage disabled */ });
+      // T5b — a cache that couldn't be cleared is a signed-out device still holding a ledger: recorded loudly.
+      void clearCacheOnSignOut().catch(e => unexpected(e, 'signOut.clearCache'));
       // W7a (FE-PLT-08): an expired/revoked session never ran signOut()'s push unregister — drop the
       // device's subscription locally (a no-op after an explicit sign-out, which already did).
       void forgetPushOnDevice();
@@ -135,10 +140,11 @@ export const createCloudAuthSlice: StateCreator<Store, [], [], CloudAuthSlice> =
       const myRole = resolveMyRole({
         cloudEnabled, hasSession, membershipRole: data?.role as AppRole | null,
       });
-      set({ myRole });
+      // T5b (XC-ARC-10) — the role is for the household it was read for; a switch meanwhile reads again.
+      if (get().currentHouseholdId === currentHouseholdId) set({ myRole });
       // W3a — the server reads "today" in the household's zone; the owner's device supplies it once.
       if (myRole === 'owner') void stampHouseholdTimezone(currentHouseholdId);
-    } catch { /* offline — keep last known */ }
+    } catch { /* fault-ok: offline: the last known role is kept */ }
     // v10.95.0 (#9) — the bell's invitation cards follow the household list and the role in it.
     void get().refreshInvitations();
     void highestRole; // suppress unused

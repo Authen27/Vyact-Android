@@ -12,7 +12,7 @@
 
 export const BASE = 'https://vyact.app';
 export const OG_IMAGE = `${BASE}/og-vyact.png`;
-export const GA_ID = 'G-E3XKWZP850';
+export { GA_ID } from './_consent.js';
 
 export const esc = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -72,25 +72,12 @@ export function youtubeId(url) {
 }
 
 /**
- * #3/#4 — GA only on the real site. localhost, CI, Vercel previews, stage/dev and the
- * admin app are never counted. `vyTrack(name, params)` queues events either way (a no-op
- * off vyact.app) so page scripts don't need to know. `platform` is on every event (#5).
- * v10.53.0 (#66) — gtag.js itself is fetched after `load` + idle, as on the landing page
- * (index.html), so it never competes with the lesson for the first paint. Events queue in
- * dataLayer until it arrives.
+ * #3/#4 — GA only on the real site; since v10.125.0 (T4b, XC-PRV-03) only after the visitor allows it,
+ * with the same banner and stored choice as the app. The script is api/_consent.js (one source for these
+ * pages and index.html). `vyTrack(name, params)` sends nothing until analytics is on.
  */
-export function analyticsSnippet() {
-  return `<script>
-(function(){var h=location.hostname;var on=h==='vyact.app'||h==='www.vyact.app';
-window.dataLayer=window.dataLayer||[];window.gtag=function(){window.dataLayer.push(arguments);};
-var plat=(window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)?'pwa':'web';
-window.vyTrack=function(n,p){if(on){var o=p||{};o.platform=plat;window.gtag('event',n,o);}};
-if(!on)return;window.gtag('js',new Date());window.gtag('config','${GA_ID}');
-function late(){var s=document.createElement('script');s.async=true;s.src='https://www.googletagmanager.com/gtag/js?id=${GA_ID}';document.head.appendChild(s);}
-function idle(){if('requestIdleCallback' in window)window.requestIdleCallback(late,{timeout:3000});else window.setTimeout(late,1500);}
-if(document.readyState==='complete')idle();else window.addEventListener('load',idle,{once:true});})();
-</script>`;
-}
+import { analyticsSnippet } from './_consent.js';
+export { analyticsSnippet };
 
 // The visitor's saved app theme, applied before first paint (same key as the app; see
 // scripts/landingHtml.mjs). Without one, the stylesheet's :root default (Nocturne) applies.

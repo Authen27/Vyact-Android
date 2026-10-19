@@ -52,7 +52,7 @@ function dismissed(id: string): boolean {
 
 export function dismissNudge(id: string): void {
   if (typeof localStorage === 'undefined') return;
-  try { localStorage.setItem(DISMISS_PREFIX + id, new Date().toISOString()); } catch { /* ignore */ }
+  try { localStorage.setItem(DISMISS_PREFIX + id, new Date().toISOString()); } catch { /* fault-ok: device storage is optional (private mode, quota); the nudge may show again */ }
 }
 
 /** Has a capture nudge already shown this session? (rate-limit, §6.3) */
@@ -63,7 +63,7 @@ export function nudgeShownThisSession(): boolean {
 
 export function markNudgeShownThisSession(): void {
   if (typeof sessionStorage === 'undefined') return;
-  try { sessionStorage.setItem(SESSION_FLAG, '1'); } catch { /* ignore */ }
+  try { sessionStorage.setItem(SESSION_FLAG, '1'); } catch { /* fault-ok: device storage is optional (private mode, quota); the nudge may show again */ }
 }
 
 function daysBetween(fromIso: string, now: number): number {

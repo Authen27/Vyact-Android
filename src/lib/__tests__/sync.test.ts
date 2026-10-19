@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { backoffMs, MAX_RETRIES } from '../sync/backoff';
+import { backoffMs, BACKOFF_CAP_MS } from '../sync/backoff';
 import { isQueueOpIdValid, readQueue, writeQueue, enqueue } from '../sync/syncQueue';
 import { classifyFlushError } from '../sync/conflict';
 import {
@@ -33,11 +33,14 @@ const op = (over: Partial<QueueOp> = {}): QueueOp =>
 beforeEach(() => { (globalThis as unknown as { localStorage: MemStorage }).localStorage = new MemStorage(); });
 
 describe('sync/backoff — TD-26', () => {
-  it('CON-UNIT-072 · exponential backoff 2/4/8/16/32s capped at 60s; MAX_RETRIES=5', () => {
-    expect(MAX_RETRIES).toBe(5);
+  // v10.110.0 (F1a, FE-SYN-05; owner "retry until it lands"): the backoff tops out at 5 minutes and
+  // there is no retry cap (it was 60 s and 5 tries, so ~30 s of failures set a write aside).
+  it('CON-UNIT-072 · exponential backoff 2/4/8/16/32s … capped at 5 minutes; no retry cap', () => {
+    expect(BACKOFF_CAP_MS).toBe(300_000);
     expect([backoffMs(1), backoffMs(2), backoffMs(3), backoffMs(4), backoffMs(5)]).toEqual([2000, 4000, 8000, 16000, 32000]);
-    expect(backoffMs(6)).toBe(60000);   // cap kicks in
-    expect(backoffMs(12)).toBe(60000);
+    expect(backoffMs(8)).toBe(256_000);
+    expect(backoffMs(9)).toBe(300_000);   // cap kicks in
+    expect(backoffMs(40)).toBe(300_000);
   });
 });
 
@@ -46,15 +49,19 @@ describe('sync/conflict — TD-26', () => {
     const e = new ConcurrencyConflictError('budgets', UUID, '2026-01-01T00:00:00Z');
     expect(classifyFlushError(e, op())).toEqual({ kind: 'conflict' });
   });
-  it('CON-UNIT-074 · a transient error retries with incremented attempts + backoff, then dead-letters at the cap', () => {
+  it('CON-UNIT-074 · a transient error retries with incremented attempts + backoff, and never runs out (F1a)', () => {
     const r = classifyFlushError(new Error('network'), op({ attempts: 0 }));
     expect(r.kind).toBe('retry');
     if (r.kind === 'retry') {
       expect(r.op.attempts).toBe(1);
       expect(r.op.nextRetryAt).toBeGreaterThan(Date.now() - 1);
     }
-    // attempts 4 → 5 == MAX_RETRIES → failed
-    expect(classifyFlushError(new Error('network'), op({ attempts: 4 }))).toEqual({ kind: 'failed' });
+    // The fifth failure used to set the write aside ('failed'); now it is tried again, every 5 minutes.
+    const fifth = classifyFlushError(new TypeError('Failed to fetch'), op({ attempts: 4 }));
+    expect(fifth.kind).toBe('retry');
+    const fiftieth = classifyFlushError({ code: '503' }, op({ attempts: 49 }));
+    expect(fiftieth.kind).toBe('retry');
+    if (fiftieth.kind === 'retry') expect(fiftieth.op.nextRetryAt! - Date.now()).toBeLessThanOrEqual(300_000);
   });
 });
 
@@ -90,21 +97,21 @@ describe('sync/deadLetter — TD-26', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {}); // recordFailed → unexpected → console.error
     outbox.setDriverForTests(new MemoryDriver());
     recordConflict({ ...op({ ts: 9, expectedUpdatedAt: '2026-01-01T00:00:00Z' }), ownerUid: 'user-1' } as QueueOp);
-    expect(pendingConflictCount()).toBe(1);
-    recordFailed(op({ ts: 10 }), new Error('boom'));
-    expect(pendingFailedCount()).toBe(1);
+    expect(pendingConflictCount('user-1')).toBe(1);
+    recordFailed({ ...op({ ts: 10 }), ownerUid: 'user-1' } as QueueOp, new Error('boom'));
+    expect(pendingFailedCount('user-1')).toBe(1);
 
     await retryDeadLettered('sync_conflicts', 'user-1');
-    expect(pendingConflictCount()).toBe(0);
+    expect(pendingConflictCount('user-1')).toBe(0);
     const requeued = (await outbox.claimDue('w', Date.now(), 'user-1')).find(o => o.ts === 9);
     expect(requeued).toBeTruthy();
     expect(requeued!.expectedUpdatedAt).toBeUndefined();  // stripped → unconditional LWW retry
     expect(requeued!.attempts).toBe(0);
     expect(requeued!.ownerUid).toBe('user-1');            // stamped to the retrying user
 
-    clearFailed();
-    expect(pendingFailedCount()).toBe(0);
-    clearConflicts();
+    clearFailed('user-1');
+    expect(pendingFailedCount('user-1')).toBe(0);
+    clearConflicts('user-1');
     outbox.setDriverForTests(null);
     vi.restoreAllMocks();
   });

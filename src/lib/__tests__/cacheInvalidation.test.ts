@@ -181,7 +181,10 @@ describe('cache generation · an in-flight read cannot repopulate a purged cache
 
     const g0 = cacheGeneration();
     await purgeCachedCloudData();
+    const g1 = cacheGeneration();
     await purgeCachedCloudData();
-    expect(cacheGeneration()).toBe(g0 + 2);
+    // v10.110.0 (F1a): each purge bumps before and after its deletes.
+    expect(g1).toBeGreaterThan(g0);
+    expect(cacheGeneration()).toBeGreaterThan(g1);
   });
 });

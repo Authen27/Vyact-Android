@@ -2,7 +2,7 @@ import { vi } from 'vitest';
 
 export function queryResult(data: unknown, error: unknown = null, count: number | null = null) {
   const query = { select: vi.fn(), eq: vi.fn(), neq: vi.fn(), gt: vi.fn(), lt: vi.fn(), gte: vi.fn(), lte: vi.fn(), like: vi.fn(), order: vi.fn(), limit: vi.fn(), range: vi.fn(),
-    maybeSingle: vi.fn(), single: vi.fn(), update: vi.fn(), insert: vi.fn(), upsert: vi.fn(), delete: vi.fn(), in: vi.fn(), is: vi.fn(), not: vi.fn(),
+    maybeSingle: vi.fn(), single: vi.fn(), update: vi.fn(), insert: vi.fn(), upsert: vi.fn(), delete: vi.fn(), in: vi.fn(), is: vi.fn(), not: vi.fn(), or: vi.fn(),
     then: (resolve: (result: { data: unknown; error: unknown; count: number | null }) => unknown) =>
       Promise.resolve({ data, error, count }).then(resolve) };
   for (const value of Object.values(query)) if ('mockReturnValue' in value) value.mockReturnValue(query);

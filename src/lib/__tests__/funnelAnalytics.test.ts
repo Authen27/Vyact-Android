@@ -14,9 +14,10 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-function browser(standalone = false) {
+// T4b (v10.125.0): the consent script sets __vyGaOn once analytics is allowed (or in the Android app).
+function browser(standalone = false, analyticsOn = true) {
   const gtag = vi.fn();
-  vi.stubGlobal('window', { gtag, matchMedia: () => ({ matches: standalone }), navigator: {} });
+  vi.stubGlobal('window', { gtag, matchMedia: () => ({ matches: standalone }), navigator: {}, __vyGaOn: analyticsOn });
   return gtag;
 }
 
@@ -72,5 +73,13 @@ describe('funnel events', () => {
     expect(JSON.stringify(set)).not.toContain('0b6c1d9e');
     await a.setAnalyticsUser(null);
     expect(gtag.mock.calls.at(-1)).toEqual(['set', { user_id: null }]);
+  });
+
+  it('CON-UNIT-FUN-005 · nothing goes to Google before analytics is on (T4b, XC-PRV-03)', async () => {
+    const gtag = browser(false, false);
+    const a = await import('../analytics');
+    a.track('budget_created', { surface: 'budgets' });
+    await a.setAnalyticsUser('0b6c1d9e-1111-4222-8333-444455556666');
+    expect(gtag).not.toHaveBeenCalled();
   });
 });

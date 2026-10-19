@@ -36,8 +36,8 @@ import { resolve } from './askVyactBackend';
 import { spendByCategory } from './calculations';
 import { getCat } from '../constants';
 import {
-  DEFAULT_PREFS, recurringDueNotifs, recurringReminderNotifs, budgetThresholdNotifs, debtDueNotifs,
-  incomeLandedNotifs, staleBalanceNotifs,
+  DEFAULT_PREFS, recurringDueNotifs, recurringReminderNotifs, budgetThresholdNotifs, budgetThresholdLines, debtDueNotifs,
+  incomeLandedNotifs, staleBalanceNotifs, lockScreenText, type BudgetThresholdLine,
 } from './notifications';
 import { toInsertRow, type NotifInsertRow } from './notificationRows';
 import { wallClock } from './format';
@@ -337,6 +337,46 @@ export function notificationsOnServer(rows: HouseholdRows, existingKeys: readonl
   ].map(toInsertRow);
 }
 
+/**
+ * v10.126.0 (T4c; audit BE-FN-12) — what a push says on a device whose "Show details on the lock screen" is
+ * off: the app's own private line for the type (`lockScreenText`), so the server and the open app never differ.
+ */
+export function lockScreenTextOnServer(type: string): { title: string; body: string } {
+  return lockScreenText(type);
+}
+
+// ── T5c (v10.122.0) — WhatsApp's scheduled nudges read the app's own rules ──────────────────────────
+
+export type { BudgetThresholdLine };
+
+/**
+ * Audit XC-ARC-06 — the budget lines at or past a threshold today, by the app's rule
+ * (`budgetThresholdLines`, the one the bell and push raise from), over `budgets`, `budget_allocations`
+ * and `transactions` rows mapped by the app's adapter. WhatsApp's budget alert kept its own 80% rule
+ * until v10.122.0. A household's amounts are read at face value (one currency, D14).
+ */
+export function budgetLinesOnServer(
+  rows: { budgets: readonly unknown[]; budgetAllocations: readonly unknown[]; transactions: readonly unknown[] },
+  baseCurrency: string, today: string,
+): BudgetThresholdLine[] {
+  return budgetThresholdLines(
+    rows.budgets.map((r) => mapCloudRow('budgets', r) as Budget),
+    rows.budgetAllocations.map((r) => mapCloudRow('budgetAllocations', r) as BudgetAllocation),
+    txnsFromRows(rows.transactions),
+    { baseCurrency, rates: { ...DEFAULT_RATES } }, today,
+  );
+}
+
+/**
+ * Audit INT-PAR-05 — how many of these `accounts` rows the app calls stale (`staleAccounts`: bank, card
+ * and cash, not archived, last checked STALE_AFTER_DAYS ago or more, by the last reconcile, else the last
+ * log entry, else creation). The WhatsApp nudge counted with its own rule until v10.122.0, and could
+ * say "2 balances" while the bell said 1.
+ */
+export function staleAccountCount(accountRows: readonly unknown[], nowMs: number): number {
+  return staleAccounts(accountRows.map((r) => mapCloudRow('accounts', r) as Account), new Date(nowMs)).length;
+}
+
 /** One question, answered by the app's own pipeline with the given model call. */
 export function answerOnServer(
   utterance: string, ctx: AssistantContext, call: ModelCall, prevAllowed: readonly string[] = [],
@@ -361,6 +401,13 @@ export function renderForWhatsApp(turn: AssistantTurn, appUrl: string): WhatsApp
   // In the app these open a pre-filled form; WhatsApp has none. Say what works here.
   if (turn.recurringSeed) {
     return { text: `Recurring bills are set up in the app, so you can check the schedule before it starts: ${appUrl}/recurring`, chipPrompts: [] };
+  }
+  // v10.109.0 (R-1): an EMI is set up on its loan, in the app (Debts), with Record automatically on.
+  if (turn.loanSeed) {
+    return { text: turn.loanSeed.mode === 'new'
+      ? `A loan's EMI is set up on the loan, in the app: Debts › Add loan, with Record automatically on. Vyact then records each EMI on its date: ${appUrl}/debts`
+      : `Turn on Record automatically on the loan, in the app: Recurring › Loan EMIs. Vyact then records each EMI on its date: ${appUrl}/recurring`,
+      chipPrompts: [] };
   }
   if (turn.seed) {
     return { text: 'To record it here, send it as one line, like 450 lunch hdfc.', chipPrompts: [] };

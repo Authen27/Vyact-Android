@@ -4,12 +4,9 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v10.107.1`** (consumer)
+> **Current production version: `v10.127.0`** (consumer)
 > **Live URL:** https://vyact.app
-> **Money Map mode:** `'shadow'` by default on cloud builds — dual-writes
-> the new FK columns; reads still prefer the legacy `linkedAssetId` so v7.1
-> clients viewing the same household stay consistent. Promotes to `'on'` in
-> v7.2.1 once parity dashboards confirm.
+> **Money Map mode:** retired in v10.121.0. Every build's account pickers read the household's accounts.
 > **Next planned: see Roadmap at the bottom.**
 
 ## Version provenance & gaps
@@ -24,6 +21,671 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v10.127.0 — The Android app can get lock-screen notifications (server side) *(2026-10-19)*
+
+One migration (`20261108120000_t4d_native_push.sql`), the web-push Edge Function, and the app. Track T4d.
+Owner decisions, 19 Oct 2026:
+- one device list;
+- the server is the only source on a registered phone;
+- on by default in the app;
+- a tap opens the app.
+
+The Play Store app is a WebView, which has no Web Push. It showed alerts only while it was running, so with the
+app closed nothing reached the lock screen. This release is the server side of real push for it.
+
+- **A phone registers by its Firebase Cloud Messaging token.** `register_native_push` stores it as a
+  `push_subscriptions` row of kind `fcm`, beside the browsers' rows. It is held to the same rules: members only,
+  a well-formed token, a household switch starts it afresh, and 10 live devices a person counting browsers and
+  phones together. `native_push_status` and `unregister_native_push` act on the caller's own phone only.
+- **The dispatcher sends phones the same alerts, through FCM.** Same rules (action-required only, the device's
+  switches, quiet hours in its zone, never a backlog, members only) and the same payload ("Show details on the
+  lock screen" applies). It is a notification message, so Android shows it with the app closed; a tap opens
+  the alert's page. The service account lives in the Edge secret `FCM_SERVICE_ACCOUNT_JSON`. Without it, phones
+  are skipped and browsers are unaffected. A token FCM reports gone retires the phone, but a fault of ours
+  (credentials, quota, an outage) never counts against it. "Send a test notification" works from the app too.
+- **In the app (once its APK carries the push plugin):**
+  - it asks Android's permission once and registers itself;
+  - Settings → Notifications can turn it off on that phone (signing out is not that choice);
+  - a rotated token replaces the old one;
+  - the app's own local notifications stop on a registered phone.
+
+  The bell's "get these on your phone" card is now for browsers only; since v10.126.0 it could appear in the
+  Android app with a button that could only refuse.
+- **What is left:** the Vyact-Android build (the plugin, `google-services.json`, the notification icon) and the
+  owner's Firebase setup (`docs/PUSH_TROUBLESHOOTING.md`). The Privacy Policy now names Google's Firebase Cloud
+  Messaging for the Android app, and says notifications are on there unless turned off.
+
+## v10.126.0 — Notifications can keep amounts off the lock screen; the Android app says where push works *(2026-10-19)*
+
+App, the web-push Edge Function and the Deploy workflow; no migration. Track T4 (privacy and compliance), part c:
+audit BE-FN-12 and BE-FN-11. Owner decisions, 19 Oct 2026: lock-screen details "show by default, and hide via
+settings"; auth settings "snapshot + drift check", warn first.
+
+- **"Show details on the lock screen" (Settings → Notifications, with push on).** On by default. Turned off on a
+  phone, its notifications say only what needs a look ("A bill is due", "A budget needs a look"), with no
+  amount, payee, account or name, both pushed ones and the open app's own popups. The words come from one table
+  the app and the server share.
+- **The Android app says why it has no lock-screen notifications.** The Play Store app is a WebView, which
+  cannot receive web push. Its switch used to say "This browser can't receive push notifications". Now it is
+  disabled, and the app says to open vyact.app in Chrome, add it to the Home screen and turn them on there.
+  Native push for the Android app is a separate piece of work.
+- **Why pushes may not have arrived: `docs/PUSH_TROUBLESHOOTING.md`.** It explains how a push travels and what
+  the review found. It lists the known reasons a push isn't sent: not registered, another household, not
+  action-required, quiet hours, already read, retired by the push service, the job, and Android settings. It
+  gives read-only queries that find which one applies to a phone.
+- **Production's sign-in settings have a record.** `supabase/auth-config.json` lists the Supabase Auth settings
+  that matter (redirect URLs, sign-up, email confirmation, providers, sessions, passwords, rate limits). After
+  the migrations, each Deploy compares them with the live project (`scripts/auth-config-check.mjs`, read-only,
+  never a secret) and warns on any difference. The values start unrecorded: the first Deploy prints the live
+  ones to copy in, or run the script with `--write`.
+
+## v10.125.0 — Analytics asks first; the policies say what is true, and you're asked to accept them *(2026-10-19)*
+
+App, the public pages and one Edge change (Pip's model router); no migration. Track T4 (privacy and compliance),
+part b: audit XC-PRV-03, XC-PRV-08, XC-PRV-09, XC-PRV-10, XC-PRV-11, XC-PRV-14 and FE-PLT-04. Owner decisions,
+19 Oct 2026.
+
+- **Google Analytics asks first on the web.** On vyact.app (in a browser or the installed app), nothing reaches
+  Google until you choose "Allow analytics" on the banner. "No thanks" keeps it off and clears Google's cookies.
+  You can change it any time in Settings → About → Usage analytics, or on the Cookie Policy. The Learn pages use the
+  same choice. In the Vyact Android app, analytics is part of the app's permissions, so it is on there and Settings
+  says so. Previews, test sites and the admin app never count anything. Before this, Google Analytics loaded for
+  every visitor while the Cookie Policy said it ran only if you opted in.
+- **When the policies change, you're asked to accept them.** Anyone whose accepted version is older than today's
+  (19 Oct 2026) sees "We've updated our policies" once, with what changed, and can accept or sign out. A new account
+  now sends the version it accepted, and the server records it with the account (v10.124.0). Google sign-ins,
+  which had no record, are asked the same way.
+- **Vyact is for people 18 or older.** Sign-up, the Google button, the Terms and the Privacy Policy say so. The Terms
+  no longer mention a child profile, which the app has not had since v10.62.0.
+- **The Privacy Policy names who processes your data and where.** That covers Supabase, Vercel, Amazon Web Services
+  (Pip's language model, Amazon Nova Lite in Sydney, Australia), OpenRouter (Pip's fallback, USA), Google
+  Analytics (only if you allow it), Userback, Meta (WhatsApp), the email senders and the push services. It adds
+  your rights under India's Digital Personal Data Protection Act, how to raise a grievance, and what Vyact does if
+  data is breached. The company's legal name, address, Grievance Officer and database region are marked "to be
+  published"; until then, write to support@vyact.app.
+- **Pip's fallback through OpenRouter asks for providers that keep no data.** Every request through OpenRouter
+  carries `provider.data_collection: deny`, so it goes only to model providers that do not keep or train on it.
+  A model configuration row cannot change that.
+- **"Download my data" holds exactly your household's records:** transactions, splits (shared by you and with you),
+  debts, accounts, net worth (assets and the monthly history), recurring bills, and the household's name, type,
+  currency and members' names and roles. Budgets, goals and your profile are no longer in it.
+- **Content-Security-Policy reports are collected.** The policy is still report-only. Browsers now send each
+  violation to `/api/csp-report`, which logs the directive, the blocked host and the page path, nothing else.
+  After about a week with nothing unexpected, the policy will be enforced.
+- **No personal email addresses in the repository.** A work address in this changelog and a migration comment
+  became `manu@example.com`, and the docs check now fails on any address outside the example and Vyact domains.
+  `SECURITY.md` names Vyact (not FinFlow) and adds the breach runbook.
+
+## v10.124.0 — Your consent is kept by the server; splits find you by your confirmed email *(2026-10-19)*
+
+One migration (`20261107120000_t4a_consent_and_confirmed_email.sql`); no app change yet. Track T4 (privacy and
+compliance), part a: audit XC-PRV-09 and DB-INT-15. Owner decisions, 19 Oct 2026: consent recorded by the server
+and asked again when the policy changes; splits match confirmed emails only.
+
+- **Your acceptance of the Terms and Privacy Policy is recorded with your account, by the server.** The app used to
+  record it from the browser after sign-up, and lost it when an email sign-up's confirmation link opened in a new
+  tab. From the next app release (T4b) the sign-up form sends the version you accepted, and the account is
+  created with it.
+- **A shared split finds you only by your confirmed email.** Someone who registered your address without
+  confirming it could have seen, or settled, splits sent to you. Until you confirm your email, the splits shared
+  with you stay hidden, and settling one says to confirm first. Google sign-ins are confirmed already.
+
+## v10.123.0 — Each project's scheduled jobs call that project *(2026-10-19)*
+
+One migration (`20261106120000_t5d_cron_project_url.sql`) and the two deploy workflows; no change to the app.
+Track T5 (engineering guardrails), part d: audit DB-OPS-07 and the cron half of BE-FN-11. Owner decision,
+19 Oct 2026: the Deploy workflow stores each project's own URL.
+
+- **Scheduled jobs call their own project.** Eight jobs call Edge Functions:
+  - the five WhatsApp dispatches;
+  - web push;
+  - posting due bills;
+  - the WhatsApp inbox sweep.
+
+  Each named the production address, so the test database, which builds the same jobs from the same
+  migrations, called production every few minutes. Production refused those calls, so nothing ran twice,
+  but the test project's own jobs never ran.
+- **How:** each job now reads its project's address from Vault (`project_url`), and a database without one calls
+  nothing. Each project's deploy stores it right after its migrations:
+  - production's Deploy fails if it can't, because its jobs would otherwise stop;
+  - vyact-test's warns, because its migrations come from the non-production pipeline.
+- **For developers:**
+  - `set_project_url` accepts only `https://<ref>.supabase.co` and can't be called from the app.
+  - `scripts/store-project-url.mjs` calls it through the Management API, with the access token the workflows
+    already hold.
+  - A new gate, Deploy tooling, tests it. T5D-004 fails if a later migration names the production host.
+
+## v10.122.0 — WhatsApp and the bell say the same thing; Pip's usage is counted once *(2026-10-19)*
+
+One migration (`20261105120000_t5c_ai_usage_summary_sources.sql`, an admin report only) and Edge Function changes.
+Track T5 (engineering guardrails), part c: audit XC-ARC-06, INT-PAR-05 and FE-PIP-09. Owner decision, 19 Oct 2026:
+Pip's usage rows are written for timed turns only, and admin counts read the server's rows.
+
+- **A WhatsApp budget alert names the lines the bell names, at the same percentage.** WhatsApp had its own copy
+  of the 80% rule, which never checked a single-category budget (the kind made before budgets held several
+  categories). It now reads the app's rule through the bundled engine. It still alerts in the 80% band only,
+  because its message says how much is left. A line already alerted this period is not alerted again.
+- **The weekly "balances may be out of date" nudge counts what the bell counts.** It had its own 30-day rule, so
+  an account checked only through its reconcile log still counted, and it could say "two" where the bell said one.
+- **Pip's usage is counted once.** The app wrote a usage row for every turn, quick replies included, beside the
+  server's row for each model call, so the admin figures ran two to three times over. The app now writes one
+  only for a turn that called the model (the one its timings explain). The admin report reads calls, cost and
+  tokens from the server's rows and intent and sentiment from the app's (admin v1.4.7 relabels the counts
+  "Model calls").
+- **For developers:**
+  - `budgetThresholdLines` (lib/notifications.ts) is the one budget-threshold rule; the bell maps it to
+    notifications.
+  - `serverEngine` gains `budgetLinesOnServer` and `staleAccountCount`; the bundle is rebuilt.
+  - The dispatcher reads whole budget, allocation and account rows.
+  - A single-category budget's period now ends on its month's real last day.
+
+## v10.121.0 — Nothing a save needs is dropped without a word *(2026-10-19)*
+
+No change to the database. Track T5 (engineering guardrails), part b: audit XC-ARC-11, XC-ARC-10, XC-ARC-08 and
+BE-FN-09. Owner decision, 19 Oct 2026: marking a split paid goes through the split's queued sharing ("queue it").
+
+- **Marking someone paid on a split reaches the other household, even offline.** It used to call the cloud from
+  the Splits page and ignore a failure, so offline the person who paid kept seeing the money as owed. It now goes
+  through the split's queued sharing step (v10.112.0), behind the transaction, and is retried until it lands.
+  - A person ticked as paid in the Split form is settled too; before, that tick never reached the cloud.
+  - A settled share is never un-settled.
+- **Settling your share, or closing a split, says when its email didn't go out**, as sharing already did. The
+  split action stands either way; the people on it see it when they open Vyact.
+- **A failed self-settle says so** ("Settle failed: …"); it used to fail without a word.
+- **Switching household while something saves no longer shows the old household's row in the new one.** A save,
+  a delete, a payment or a read that finishes after the switch lands only in its own household. This covers
+  entries, budgets, goals, accounts, loans, schedules, notifications, the role and the household's invitations.
+  Nothing was written to the wrong household before; the screen showed it until the next refresh.
+- **Every account picker lists your accounts, in every build.** The retired "Money Map" switch still chose the
+  list in the guest demo and other local-only builds, where it offered Net Worth bank assets that moved no
+  account. Those builds now offer the accounts on the Accounts screen, as the live app always has.
+- **A write that fails is recorded instead of vanishing.** This covers:
+  - the default Cash account;
+  - Learn progress;
+  - onboarding's opening balance, paycheck, bills and budget;
+  - clearing this device's cache at sign-out;
+  - retrying writes that were set aside.
+  - **The pre-cloud recurring list:** a schedule that failed to copy used to be deleted from the device with the
+    rest. It is now kept and copied on the next load.
+- **For developers:**
+  - A new gate, No silent catches (`scripts/silent-catch-check.mjs`): every catch that does nothing must say why
+    (`fault-ok: <reason>`) or report the failure. All 134 existing ones were reviewed: 113 now say why ignoring
+    the failure is safe, and 21 report it or were replaced.
+  - `store/landIn.ts` is the household guard, and a test fails on a new post-await store write that skips it.
+  - CON-E2E-009, a Net Worth deposit test parked since it was written, now runs and passes.
+
+## v10.120.0 — The server code and the tests are checked too *(2026-10-19)*
+
+No change to the app or the database. Track T5 (engineering guardrails), part a: audit XC-ARC-09, GATE-04 and
+INT-PAR-11. Owner decision, 19 Oct 2026: check the Edge code both ways, with TypeScript (local and CI) and with
+Deno itself in CI.
+
+- **The Edge Functions (about 12,000 lines that run WhatsApp, push, Pip and the scheduled jobs) are now
+  type-checked.** Nothing checked them before. TypeScript found 12 errors and Deno one more. All are fixed, and
+  none changes behaviour:
+  - byte arrays reach WebCrypto and `fetch` as buffers they own, as their types require;
+  - a model-config row type;
+  - two casts.
+
+  In CI, a new Deno job runs:
+  - `deno check` and `deno lint`. Lint found four real problems: three unused names, and an async function
+    that returned without awaiting. Two style rules and the generated bundle are left out, with the reasons in
+    the workflow.
+  - A smoke test that loads the bundled engine the way the server does, so a bundle that only breaks under
+    Deno fails before it ships.
+- **The unit tests are type-checked.** Vitest only translates them, so 121 errors had built up unseen. Some were
+  fixtures that no longer matched the app, such as a payment mode that no longer exists and a schedule missing
+  two fields. All are fixed without changing what any test checks.
+- **Date rules are tested in five time zones**, from New York (UTC−5) to Kiritimati (UTC+14), the first place a
+  day begins. Ten suites run in each: "today", months, recurrence, the bill calendar and loan EMIs. Before, they
+  ran only in the one zone of the machine running them. All pass.
+
+Gates added to the CI run: Consumer · type-check (unit tests), Edge Functions · type-check, Consumer · date
+suites in 5 time zones, and the Edge workflow (Deno).
+
+## v10.119.0 — A loan that records its EMIs always has an account to pay from *(2026-10-19)*
+
+One migration (`20261104120000_loan_paying_account.sql`) and the app. Follow-up to T2c (v10.117.0). Owner
+decisions, 19 Oct 2026:
+- deleting an account such a loan pays from is refused, and "Move and delete" carries the loan;
+- archiving it is refused until the loan pays from another account;
+- loans whose paying account is already gone are kept, with "Record automatically" switched off.
+
+- **An EMI no longer goes unrecorded without a word.** Vyact records a loan's EMI on its day from the loan's
+  paying account. A payment refuses an account that is deleted, archived, a card, or missing, so a loan whose
+  paying account had been deleted or archived simply stopped recording, every 30 minutes, with nobody told.
+  The EMI-day reminder still said "Vyact records this EMI on the day".
+- **Your existing loans.** Any loan in that state now has "Record automatically" switched off, so its EMI
+  shows as Pay on its day. Turn it back on from Recurring or the loan's form with a paying account. No loan,
+  balance or entry changes.
+- **Deleting an account a loan records from** is refused. The delete sheet names the loan. "Move, then delete"
+  carries the loan to the other account with the rest of the history.
+- **Archiving it** is refused too, saying which loan. Change the loan's paying account in Debts first.
+- **A loan can only be set to record automatically from a live bank or cash account of its own household.**
+  The database checks it, as the loan form already did.
+- **A loan you pay by hand** keeps its paying account only as the form's default. Deleting that account clears
+  the default; it no longer blocks the delete.
+
+**Correction to v10.117.0's note:** it said such EMIs had landed on the deleted account. They had not; they
+were never recorded (see the first point). That entry now says so.
+
+Tests:
+- loanPayingAccountSql.test.ts (new, 6, PGlite over the real T2c and v10.119.0 migrations);
+- loanPayingAccount.test.ts (new, 4, the store in local-only mode).
+Each rule was broken in turn (19 changes), and every one made a test fail.
+
+**Before merging (owner, optional, SQL editor):** the loans this release switches off.
+```sql
+select d.household_id, d.name, a.name as paying_account, a.deleted_at is not null as deleted, a.is_archived
+  from debts d left join accounts a on a.id = d.funding_account_id
+ where d.deleted_at is null and d.auto_record and d.paid_off_at is null and coalesce(d.direction, 'owed_by_me') = 'owed_by_me'
+   and (a.id is null or a.household_id <> d.household_id or a.kind not in ('bank', 'cash') or a.deleted_at is not null or a.is_archived);
+```
+
+## v10.118.0 — WhatsApp messages from Vyact are Vyact's, and none is left waiting *(2026-10-19)*
+
+One migration (`20261103120000_t2d_whatsapp_sweep_cron.sql`) and three Edge Functions (`whatsapp-notify`,
+`whatsapp-webhook`, and `_shared/whatsapp-send.ts`, which `whatsapp-dispatch` also uses); no app change.
+Track T2 (security hardening), part d: audit BE-WA-07, BE-WA-09 and BE-WA-12. Owner decisions, 18–19 Oct 2026:
+the sweep runs every 5 minutes, and the wording "Sorry, I couldn't process that. Please send it again."
+
+- **Only Vyact's own jobs can send a WhatsApp template.** Any household member could ask Vyact's server to
+  send any template, with any text and any button, from Vyact's number. That made a fake "call this number"
+  alert possible. So was a "bill overdue" message whose "Already paid" button approved a real bill under the
+  partner's name. The app never used this path. Now only the server can (the welcome after linking a
+  number is the one caller), and a member's request is refused.
+- **A message to Vyact is never left waiting for someone else's.** A message whose processing failed, or
+  whose worker stopped mid-way, was retried only when another WhatsApp message arrived. A quiet household
+  could wait for hours. Now a scheduled job retries every 5 minutes. It also picks up a message that was
+  stored but never started, which nothing retried before.
+- **"Please send it again", once.** When a message's worker stopped on every attempt, the sender was never
+  told, and thought it had been logged. They now get one "Sorry, I couldn't process that. Please send it
+  again." within 24 hours. A message that failed outright already said so.
+- **No write is assumed to have worked.** Some inbox writes ignored their errors, so a database blip went
+  unnoticed:
+  - **Inbox status writes** are now checked, retried once, and logged if still refused. The message then
+    stays where the retry job finds it, and one bad write no longer stops the rest of the batch.
+  - **A "sent" that wasn't stored** left the reminder unfindable by "paid X". It is retried too.
+  - **A marketing opt-out from Meta that couldn't be stored** was dropped. It is now answered with an error,
+    so Meta sends it again.
+
+**Changes you may notice:** none in the app. On WhatsApp, a message that had been stuck gets its reply
+within about 5 minutes.
+
+Tests (whatsappWorkflow.test.ts):
+- Updated on purpose: W0-007 (now no member of any role can send) and W0-012 (a forged service claim is now
+  refused as `service_only`).
+- New: T2D-001..008.
+- Each rule was broken in turn (20 changes), and every one made a test fail.
+- The changed Edge files were type-checked against `main` with TypeScript (Deno's globals stubbed): no new
+  errors.
+
+**Before merging (owner, optional, SQL editor):** what the first scheduled sweep will pick up. Rows still
+retryable today are replayed; a message whose entry already landed comes back as a duplicate, silently.
+```sql
+select status, count(*), min(created_at) as oldest from whatsapp_inbound_messages
+ where direction = 'inbound' and (status in ('pending', 'claimed') or (status = 'failed' and attempts < 3))
+ group by 1;
+```
+
+## v10.117.0 — Money can't land on a deleted account, or in another household *(2026-10-18)*
+
+One migration (`20261102120000_t2c_ledger_integrity.sql`); no app change. Track T2 (security hardening), part c:
+audit DB-INT-09 and DB-SEC-09. Owner decisions, 18 Oct 2026: T2 reopens Batch E, and DB-INT-09 takes "all three
+guards".
+
+- **An entry can't land on a deleted account or investment.** One phone could save an expense offline while
+  another deleted its account. When the first phone came back online, the database accepted the expense.
+  It counted in spending, but it took money out of no account you could see, so net worth read too high by
+  its amount. Now the database refuses any new link to a deleted account or investment. A new link is a new entry,
+  an entry moved onto that account, or a deleted entry brought back. The refused save shows in the
+  failed-changes banner instead of landing out of sight. Old entries on a deleted account can still be
+  edited and deleted.
+- **A delete and a save at the same moment can't both win.** A save locks its account while it is written,
+  so a delete running alongside either waits and then refuses (the account is in use), or the save sees the
+  delete and is refused.
+- **Cash in Hand stays.** It could be archived or deleted by a direct database write, which skipped the
+  delete checks. WhatsApp then had nowhere to log cash, and the household couldn't get a new Cash in Hand.
+  The database now refuses to archive, delete or convert Cash in Hand. A Cash in Hand that had been
+  archived is restored, by this release and whenever the app asks for it.
+- **An account is deleted only through Delete or Move and delete.** Those check that nothing still uses
+  the account. A direct write used to skip them. A delete is now final. A hard delete is no longer
+  possible from the app; it had cleared every entry's account. The app never used either path.
+- **Every link stays inside its household.** A member who learnt another household's investment id could
+  record a buy into it. That household then couldn't be erased or deleted, and couldn't see why. The
+  database now checks every link an entry, an account or a schedule makes, as it already did for accounts,
+  members and loans. It covers:
+  - an entry's investment, the person who made it, and the schedule it came from;
+  - an account's investment and loan;
+  - a schedule's owner, and the accounts and investment in its template.
+
+**Changes you may notice:**
+- None in normal use: the app offers no deleted account, and no way to archive or delete Cash in Hand.
+- *(Corrected in v10.119.0.)* A loan set to "Record automatically" from an account that has since been deleted
+  does not record its EMIs. This was already so before this release: a loan payment has always refused a
+  deleted or archived paying account. This note first said such EMIs had landed on the deleted account; they
+  had not, they were never recorded. v10.119.0 closes the gap.
+
+Tests: ledgerIntegritySql.test.ts (new, 9, PGlite over the real migrations). Each rule was broken in turn
+(33 changes), and every one made a test fail.
+
+**What this changes in your data (owner, optional, SQL editor).** Only new writes are checked; rows already
+in place stay as they are. Two read-only checks:
+- Any archived or extra Cash in Hand. This release restores an archived one; extra live ones can't exist.
+  ```sql
+  select household_id, count(*) filter (where deleted_at is null and not is_archived) as live,
+         count(*) filter (where is_archived) as archived from accounts where kind = 'cash' group by 1
+   having count(*) filter (where is_archived) > 0 or count(*) filter (where deleted_at is null and not is_archived) <> 1;
+  ```
+- Live entries that already sit on a deleted account. They are left as they are, and are the money
+  the old gap hid.
+  ```sql
+  select count(*) from transactions t join accounts a on a.id in (t.account_id, t.to_account_id)
+   where t.deleted_at is null and a.deleted_at is not null;
+  ```
+
+## v10.116.0 — Only Vyact's own alerts reach a lock screen *(2026-10-18)*
+
+One migration (`20261101120000_t2b_server_notifications_push.sql`) and the `web-push` Edge Function. Track T2
+(security hardening), part b-2: audit DB-SEC-06 and BE-FN-07. Owner decision, 18 Oct 2026: "push only the
+server's". Needs v10.115.0 first (a viewer's device stops writing cards before the database refuses it).
+
+- **Only the alerts Vyact raises reach a lock screen.** Any member, a viewer included, could write a
+  notification into the household, and the server pushed it to every member's phone: a fake "security alert,
+  call this number" looked exactly like Vyact. Each card now records who raised it, and the server pushes only
+  its own. Devices still write cards for the bell. When the server raises a card a device already wrote (same
+  bill, same budget line), it takes that card over with its own words, so genuine alerts arrive as before.
+- **A device writes only its own kind of card.** Not as a viewer, never marked as the server's or as already
+  pushed, and its link stays inside Vyact. From the app only a card's read state changes; its words, link and
+  priority can't be edited. Viewers can mark cards read but can no longer delete the household's.
+- **Push goes only to the real push services.** Apple's web push host and Windows' notification hosts are named
+  exactly; the old wildcards let anyone register a host that never answers. A person keeps at most 10 devices:
+  registering an 11th retires the one least recently used.
+- **A long alert is shortened to fit, never dropped.** One over the push size limit failed every run for a day.
+  Now its body, then its title, is cut with "…".
+- **Households take turns.** The job raises at most 50 households a run, carrying on where the last run
+  stopped, so a large run can't time out before any push goes out.
+
+**Changes you may notice:**
+- "A split was shared with you" was a lock-screen alert only because the device that saw it wrote it. It now
+  shows in the bell only, like Pip's nudges.
+- A card is raised at the database's time, never the sender's.
+
+Tests: notificationsPushSql.test.ts (new, 6, PGlite over the real migrations) and webPush.test.ts (WP-003,
+WP-005, the new WP-005b and WP-009, WP-008 rewritten). The database rules, the takeover, the host list, the
+device cap, payload fitting and paging were each broken in turn (32 changes); every one made a test fail.
+
+**Before merging (owner):** confirm no registered device uses another push host. Run this in the SQL editor:
+`select substring(endpoint from '^https://([^/]+)') as host, count(*) from push_subscriptions group by 1;`.
+Every host must be `fcm.googleapis.com`, `android.googleapis.com`, a Mozilla push host, `web.push.apple.com`
+or `wns2-….notify.windows.com`. A device on any other host would stop receiving pushes, and could not
+register again.
+
+## v10.115.0 — A viewer's device no longer writes the household's alerts *(2026-10-18)*
+
+App only. Track T2 (security hardening), part b-1: the app side of audit DB-SEC-06 (owner decision, 18 Oct 2026:
+the lock screen gets only what the server raised). It ships before T2b-2, whose database rules refuse a
+viewer's write, so no device is caught mid-refresh by them.
+
+- **A viewer's device reads the household's notifications but never writes them.** Every device used to
+  raise the household's cards (bills due, budgets passed) into the shared table, viewers' included.
+- **A refused write never stops the bell from loading.** A failed insert used to skip the read that follows,
+  so the bell kept showing an old list.
+
+Tests: notificationWrites.test.ts (new, 2): a viewer's device writes nothing and still reads; a member's
+writes; a refused write still loads the bell. Each was checked to fail with its fix undone.
+
+## v10.114.0 — Joining a household only by invitation, once *(2026-10-18)*
+
+App and one migration (`20261031120000_t2a_memberships_invitations.sql`). Track T2 (security hardening), part a:
+audit INT-HH-07, INT-HH-09, DB-INT-11, INT-HH-06, INT-CON-07 and XC-PRV-12. Owner decisions, 18 Oct 2026:
+T2 reopens Batch E, and the name lookup answers for "known emails only".
+
+- **People join a household only by accepting an invitation.** An owner or admin could add any user to their
+  household directly, with no consent, and then read that person's profile: a user id was enough, and one
+  shows up when someone settles your split. The app never did this, so nothing changes in it; the database
+  now refuses it. A membership can no longer be moved to another person or household, either.
+- **One membership per person per household.** Nothing stopped two (a double tap on Accept was enough). Any
+  duplicate is merged into one, keeping the highest role, and the entries and schedules that pointed at the
+  other move with it. WhatsApp stays linked through the merge.
+- **An invitation is used once, into a household with room.** Two people opening one link at the same moment
+  could both get in, giving a Couple household three members. Accepting now locks the invitation and the
+  household, and claims the invitation only while it is still unused. Someone already in the household
+  opening a link no longer uses it up. The two old accept functions, unused by the app, are gone.
+- **The invite link is followed once.** Signed out, the link was remembered in the browser tab and never
+  forgotten, so every later sign-in in that tab (another person's on a shared tablet included) was sent to it.
+- **Pending invitations are the ones that can still be used.** An expired invitation showed as pending, and
+  counted against a Couple household's one place.
+- **Names come back only for people you already know** (owner: "known emails only"). The Split form's name
+  lookup let anyone signed in check thousands of emails and learn which belong to Vyact users, and their
+  names. It now answers only for people on a split you share or in one of your households, at most 200 at a
+  time.
+  - A new person is confirmed by email: "Share this split with priya@example.com? If they aren't on Vyact
+    yet, the email invites them." The old "isn't on Vyact yet" would be untrue for someone with an account.
+- **Smaller.** Leaving a household reads your role null-safely (nothing changed for real members). The old
+  phone copies on profiles, read by nothing since the WhatsApp identity move, are cleared (dropped next
+  release).
+
+Tests:
+- householdJoinSql.test.ts (new, 8; PGlite running the member-limit, invitation-inbox and T2a migrations over
+  today's membership RLS): a direct add refused and roles still changing; a re-point refused; a duplicate
+  merged with its references and WhatsApp kept; the phone copies cleared; a link used once; an existing member
+  leaving it usable; a second partner refused HOUSEHOLD_FULL with the link left unused; the locks present;
+  the legacy accepts gone; leaving null-safe; names for known emails only, and the 200 cap. Each guard was
+  checked to fail with its fix undone.
+- updated deliberately: splitParticipants CON-UNIT-SPL-002 (the neutral wording).
+
+## v10.113.0 — Your name shows as your name *(2026-10-18)*
+
+App and one migration (`20261030120000_names_follow_the_person.sql`). Owner report, 18 Oct 2026: "why does
+the name of the account go empty or prefilled by email IDs".
+
+- **The name box in Settings is no longer empty.** It copied your name once, when Settings opened. Opened
+  before your profile had loaded (just after sign-in, a cold start, a household switch), it stayed empty.
+  It now shows your loaded name until you start typing. The extra-payment box had the same fault, and worse:
+  it showed 0, and "Save Preferences" wrote that 0 over the real amount. It now follows the loaded value too.
+- **Signing in with Google gives you your Google name.** Sign-up read the name only from the sign-up form,
+  else used the part of your email before "@", so every Google account was named after its email
+  ("uday.kr27"). It now takes the form's name, else the provider's (`full_name` / `name`), else the email.
+  - Existing accounts still named after their email take the name their provider sent. A name you chose
+    yourself is never replaced.
+- **Your name follows you into every household.** A member's name in a household is a copy taken when they
+  joined, and a rename never reached it, so members lists, "who paid" and splits kept the old, email-style
+  name. A rename now updates every household copy that showed the old name (a blank name never does), and
+  copies already out of step were brought up to date. No screen sets a household-specific name today; if one
+  is ever added, the rename leaves it alone.
+
+Tests: namesFollowPerson.test.ts (new, 5; PGlite with the baseline sign-up triggers and the WhatsApp column
+guard): existing accounts corrected, sign-up order (form, provider, email), a rename reaching only the copies
+that showed the old name, idempotent, and the Settings fields following the loaded profile. Each was checked
+to fail with its fix undone.
+
+## v10.112.0 — A split is shared even when it's saved offline *(2026-10-18)*
+
+App only, no migration. Track F1, part c (audit INT-TXN-11; owner decisions 18 Oct 2026: the share is queued
+behind its transaction and sent by sync; "today's calls, repeat-safe").
+
+- **The bug.** Saving a split queued its transaction (that works offline), then shared it with the others
+  straight away. Offline, or before the transaction had reached the cloud, the cloud refused the share (it
+  must point at a transaction it has), the form said "Split saved, but sharing failed", and nothing tried
+  again: the others never saw what they owed and no email went.
+- **Now sharing is a queued step of its own.**
+  - Create, edit and delete each queue it right behind the transaction. It waits until its transaction has
+    landed, and is then retried until it lands too, like every save since v10.110.0.
+  - It has its own place in the queue, so a share that keeps failing never holds up the household's
+    transactions.
+  - Each run makes the cloud match the split, from whatever is there: it creates the shared split, or for an
+    edit adds new people, removes unpaid shares no longer wanted and changes unpaid amounts (a paid share is
+    never touched), or removes it when the split is deleted. A run cut off half-way is finished by the next,
+    and a repeat changes nothing.
+  - The people added are emailed once the step lands (only them, once). The Splits page re-reads its shared
+    splits then.
+  - If the database refuses the transaction itself, its share is set aside with it and both show in the
+    failed-changes banner.
+- **What the form says.** Online: "Split added" / "Split updated", as before. Offline: "Split saved. It's
+  shared with Ravi and Meera once you're online." The "sharing failed" message is gone.
+- The one-shot create / update / delete calls this replaces are removed (`syncSharedSplit` in
+  `lib/sharedSplits.ts` is the one writer).
+
+Tests:
+- splitShareQueue.test.ts (new, 7; an in-memory cloud that enforces the transaction's foreign key): the
+  step converges (a run cut off half-way, a repeat with no writes, an edit around a paid share, delete); it
+  waits for its transaction and wakes the queue only through it; a failing share never holds up
+  transactions; offline to online end to end (the transaction's first send fails, the share waits, then
+  both land, emailed once, and a resend changes nothing); a refused transaction sets its share aside; the
+  store and the form queue it. Each guard was checked to fail with its fix undone.
+- updated deliberately: sharedSplitsWorkflow (create and edit go through `syncSharedSplit`).
+
+## v10.111.0 — A save stays on screen until it lands; a pull never misses a late row *(2026-10-18)*
+
+App only. Track F1, part b (audit FE-SYN-06, INT-TXN-10, FE-SYN-07, DB-OPS-10; owner decisions 18 Oct 2026:
+"row-level merge" and "a 2-minute overlap and every page").
+
+- **A save made while a refresh is running stays on screen (FE-SYN-06).**
+  - A refresh reads the device's copy, then waits for the cloud's profile, a network round trip. A save, an
+    edit or a delete made in that gap used to be undone when the refresh landed: the old list came back, and
+    a person who thought the save had failed could enter it twice.
+  - Now the refresh is merged row by row. Rows changed, added or deleted on this device meanwhile keep their
+    on-screen state; every other row takes the refresh.
+  - Every save, edit and delete now writes its own row into the current list. Each used to write back the
+    list it had read before its await, undoing a refresh or another save that landed in between.
+- **A cloud pull never replaces a row whose write is still queued (INT-TXN-10).**
+  - An edit made offline keeps its value, a row created offline is no longer dropped by a full pull (first
+    sync, Force resync, Dismiss), and a row deleted offline does not come back. Once the write lands, the
+    server's row replaces the device's.
+  - If someone else changed the same row meanwhile, the write still meets the database's version check and
+    shows as "changed elsewhere", as before. Nothing is overwritten silently either way.
+- **Two writers to the device's copy no longer drop each other's rows.** A save, a cloud pull and a write's
+  fold-back each read the whole list and wrote it back, so two at once kept only one change. Each list now
+  takes one writer at a time, and a save writes its row and queues its write together, so a pull sees both
+  or neither.
+- **A delta pull re-reads 2 minutes back and reads every page (FE-SYN-07, DB-OPS-10).**
+  - A row is stamped when its database transaction starts, so a slower one (a WhatsApp entry, a loan
+    payment) could commit after this device had already pulled newer rows, and was then never fetched until
+    a full resync. Each pull now starts 2 minutes before its cursor; rows it already holds are skipped, so
+    nothing is rewritten.
+  - A pull reads page after page (500 rows each) until the last one. Only then does the data count as fresh:
+    after a big import elsewhere, one page used to count, and a Net Worth snapshot could be recorded from
+    half the rows. A pull also writes the device's copy once per page instead of once per row.
+
+Tests:
+- syncMerge.test.ts (new, 11): the merge rules; a save, an edit and a delete during a refresh; a save during
+  a refresh; a queued edit, new row and delete through delta and full pulls; a conflict still raised;
+  concurrent writers; the late commit fetched; 1,201 rows in three pages; a broken page not counted as
+  fresh; the overlap re-read writes nothing. Each was checked to fail with its fix undone.
+- updated deliberately: w8aAppFixes W8a-SYN12-001 (the strict read now sits in putRow / removeRow /
+  updateList), syncDevice F1A-002 (it also reads updateList keys).
+
+## v10.110.0 — Sync on the device: sign-out clears everything, writes retry until they land, "Synced" tells the truth *(2026-10-18)*
+
+App only. Track F1, part a (audit FE-SYN-04, FE-SYN-05, FE-SYN-08; owner decisions 18 Oct 2026).
+
+- **Sign-out clears every household copy on the device (FE-SYN-04).**
+  - What stayed behind before: budget lines (the purge named them `budget_allocations`; the cache key is
+    `budgetAllocations`), the net-worth history, the bell's notifications and the onboarding answers (take-home
+    pay, cash, debts).
+  - The purge now reads the adapter's own entity list, and a test fails when the adapter writes a key nothing
+    purges.
+  - The onboarding copy goes when the person changes (sign-out, or another user signing in). It stays on a
+    same-user cache reset: offline, an empty copy would send them back through onboarding, which writes again.
+  - The purge moves the cache generation before it deletes, so a cloud read landing mid-purge can no longer
+    write a deleted key back.
+  - An explicit sign-out waits until the purge has finished, and the in-memory profile, net-worth history and
+    sync time are cleared with the rest.
+  - Set-aside writes stay, as the write queue does.
+- **A write retries until it lands, and set-aside writes are their owner's (FE-SYN-05).**
+  - Before: a write that failed five times (about 30 seconds: no network, captive-portal Wi-Fi, a minute of
+    503s) was set aside for good.
+  - Now a failure that can pass is tried again, backing off to every 5 minutes, until it lands. That covers no
+    network, a timeout, a 5xx, a token to refresh, or a schema still deploying.
+  - Only a write the database refuses, or a conflict, is set aside. So is a request the API itself refuses
+    (PGRST1xx), which would otherwise hold back every later write to that entity.
+  - Counts, Dismiss and Refresh & re-apply act only on the signed-in person's entries. Before, the next person
+    on a shared device saw "4 changes failed to sync" about someone else's writes, and Dismiss deleted them.
+  - Entries from before owners were stamped go to the device's cache owner when they sign back in.
+  - Dismiss on a set-aside write re-reads its rows from the cloud, as Dismiss on a conflict already did.
+- **"Synced" names the cloud read behind the screen (FE-SYN-08; owner: last cloud time only).**
+  - Before: every refresh stamped "Synced · just now", even when it was served from the device's copy and
+    every cloud read was failing.
+  - The time is now when the cloud data on screen was read: the oldest across transactions, accounts, budgets
+    and their lines, debts, assets and recurring.
+  - While the cloud can't be reached, it keeps that time ("Synced · 2h ago"). Before the first cloud read of
+    the session lands, the badge says "Syncing…".
+  - After opening the app, tapping the badge or switching household, the app paints once more when the cloud
+    reads land. The screen shows the cloud within a second, not at the next 90-second poll. A switch of
+    household starts its own sync time.
+
+Tests:
+- syncDevice.test.ts (new, 12): purge coverage read from the adapter, onboarding kept on an epoch reset, the
+  generation moved first, the sign-out state, retry until it lands (ten failures, then success), what is set
+  aside, owner scoping and adoption, Dismiss re-reads, and the cloud-read time in the adapter, the store and
+  the badge;
+- updated deliberately: sync.test.ts CON-UNIT-072/074 (backoff to 5 minutes, no retry cap) and 077 (owner-scoped
+  counts), cacheInvalidation.test.ts CON-UNIT-130 (two bumps per purge).
+
+## v10.109.0 — An EMI is set up on its loan; the Pulse Score is archived *(2026-10-18)*
+
+App, the bundled engine, admin v1.4.6 and one content migration. Owner decisions, 16 Oct 2026, from the review of
+Track E.
+
+- **R-1: an EMI request opens the loan, never a schedule.**
+  - **The bug.** Asking Pip to "set up my car EMI 15,000 monthly" drafted a Recurring schedule in Loan / EMI.
+    Recurring hides EMI schedules since v10.100.0, and they never post, so the saved schedule vanished.
+  - **Pip.** An EMI request is answered with no model call:
+    - with no matching loan, Pip opens **Add loan** pre-filled with the name ("Car loan"), the EMI, the next
+      EMI date (from "on the 5th") and **Record each EMI automatically** switched on;
+    - with a matching loan, Pip states its EMI and next date, and offers a **Record … automatically** chip
+      when that is off. The chip opens that loan with the switch on;
+    - with several loans and no name, Pip lists them.
+  - **Recurring.** The Loan EMIs section always shows, with **+ Add loan EMI**. A Loan / EMI draft saved there
+    becomes Add loan. Turning on Record automatically for a loan without a paying account or next date opens
+    the loan with the switch already on.
+  - **WhatsApp.** The hand-off says where to do it in the app.
+- **The Pulse Score is archived.**
+  - Pip no longer states a score: "how am I doing?" leads with this month's cash flow and savings rate, then
+    the cushion or the budgets over. Asked for "my pulse score", Pip says it was retired.
+  - The Pip summary no longer carries it, and the Dashboard's hidden Pulse card, its switch and advice line
+    are gone.
+  - The metering bucket is now `status`.
+  - Its code stays, unused.
+  - Migration `20261029120000_unpublish_pulse_content.sql` sets every published Learn or Insights item that
+    names Pulse (whole word, so "impulse" is untouched) back to draft, for you to reword.
+- **Demo.** The demo budget plans the mortgage ($2,340) and loan EMIs ($745), on a $4,800 total, so it no longer
+  reads $1,175 over with the mortgage "not planned".
+
+Tests:
+- emiHandoffPulse.test.ts (new, 11): the hand-off, the chip, WhatsApp, the store's seed guard, the forms, Pulse
+  gone from Pip and the summary, and the demo budget;
+- pulseContentSql.test.ts (new, 2, PGlite): the content migration, whole word, idempotent;
+- updated deliberately: dashboardPresentation (no Pulse flag);
+- retired with the feature: the e2e Pulse spec and its backlog placeholders.
+
+## v10.108.0 — The 15-second promo on the landing page *(2026-10-18)*
+
+The Play Store promo (YouTube `NTGKS3WBjUg`, @askvyact) sits right under the hero: "See Vyact in 15 seconds."
+
+- **Nothing from YouTube loads with the page.** The poster is a brand card drawn in CSS (Pip, "Family budget
+  app", play button, 0:15) in a 16:9 box, so there is no image to become the largest paint and nothing shifts.
+  YouTube's only frame for this upload is letterboxed and still shows the retired tagline, so it is used only
+  as the `VideoObject` thumbnail. The poster is a real link to the video, so it works with no script at all.
+- **One player, however early the tap.** A tap after the app is up mounts the `youtube-nocookie` player
+  from `Landing` state. A tap before (landing.html boots the app on first interaction) stays on the page:
+  the boot script counts the play, sets `window.__vyPromo`, pulses the button, and `Landing` mounts the
+  player once the app has redrawn `#root`. If the app has not come up after 5 s the script swaps the player in itself.
+- **Measured:** `landing_video_play` (`docs/measurement/events.yaml`, once per page view). The registry's
+  `landing_cta_click` placements now list `demo` and the three Shorts, which v10.57.0 added.
+- **`VideoObject`** in the landing JSON-LD (name, ISO duration `PT15S`, upload date, contentUrl, embedUrl,
+  publisher). PUB-029 pins the poster (no `<img>`, no iframe before the tap), the player and the schema.
+
+Also in this release, ahead of the Android app's production launch:
+- `FEATURES.playStore.packageId` is `com.vyact.app` (it still named the `com.vyact.consumer` prototype, so
+  every Play link would have opened the wrong listing). The Play features stay OFF (`live: false`) while
+  the app is in closed testing.
+- Household invite links come from `APP_URL`, not `window.location.origin` (in the Android app that origin
+  is `https://localhost`, so a shared invite was dead).
+- `APP_URL` drops a trailing slash: `.env.production` has `https://vyact.app/`, which made every auth
+  callback `https://vyact.app//auth/…`.
 
 ## v10.107.1 — Pip's gateway: one database round trip before the model *(2026-10-17)*
 
@@ -4865,7 +5527,7 @@ Round of fixes on v10.14.0's split sharing, from live testing:
   participant is alerted in the bell when a split is shared with their email —
   previously they'd only find it by opening the Splits page.
 - **Verification of feedback 3 (did it reach the other accounts?):** the shared
-  rows were created correctly. `u.reddy@vidaxl.com` (an existing account) **does**
+  rows were created correctly. `manu@example.com` (an existing account) **does**
   see the split via RLS on their Splits page once signed in; `owner@example.com`
   has no account yet, so it's pending their signup (by design). **No emails were
   sent because the app has no email-sending capability at all** — all split

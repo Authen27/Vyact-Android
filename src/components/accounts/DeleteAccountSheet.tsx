@@ -69,6 +69,12 @@ export default function DeleteAccountSheet({ account, open, onClose, onDone }: P
   const destinations = moveDestinations(account, accounts);
   const splitsBlockMove = !!deps && deps.openSplits.length > 0;
   const loanBlocksMove = !!deps && deps.loanEvents > 0;
+  // v10.119.0 (owner, 19 Oct 2026): a loan that records its EMIs from this account keeps it from being
+  // archived (its payments would be refused); moving carries the loan to the other account.
+  const recordingLoans = deps?.loans ?? [];
+  const loansBlockArchive = recordingLoans.length > 0;
+  const loanNames = recordingLoans.map(l => l.name).join(', ');
+  const effectiveChoice = loansBlockArchive ? 'move' : choice;
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -118,7 +124,7 @@ export default function DeleteAccountSheet({ account, open, onClose, onDone }: P
           title="Permanent delete unlocks once nothing is tagged to this account">
           Delete · blocked
         </button>
-        {choice === 'archive' ? (
+        {effectiveChoice === 'archive' ? (
           <Button full onClick={archive} disabled={busy}>{busy ? 'Archiving…' : 'Archive account'}</Button>
         ) : (
           <Button full onClick={move} disabled={busy || !destination || splitsBlockMove || loanBlocksMove}>
@@ -188,6 +194,9 @@ export default function DeleteAccountSheet({ account, open, onClose, onDone }: P
               {deps.openSplits.length > 0 && (
                 <span style={{ color: 'var(--warn-text)' }}>{plural(deps.openSplits.length, 'split')} on it {deps.openSplits.length === 1 ? 'is' : 'are'} not settled.</span>
               )}
+              {loansBlockArchive && (
+                <>{' '}<strong>{loanNames}</strong> {recordingLoans.length === 1 ? 'records its EMIs' : 'record their EMIs'} from it automatically.</>
+              )}
             </p>
           </div>
 
@@ -202,6 +211,7 @@ export default function DeleteAccountSheet({ account, open, onClose, onDone }: P
                 <Row label={`🔁 Recurring: ${deps.recurring.map(r => r.label).join(', ')}`} value={plural(deps.recurring.length, 'rule')} />
               )}
               {deps.openSplits.length > 0 && <Row warn label="⇄ Split · not settled" value={plural(deps.openSplits.length, 'split')} />}
+              {loansBlockArchive && <Row label={`Loan EMIs: ${loanNames}`} value={plural(recordingLoans.length, 'loan')} />}
             </div>
             {splitsBlockMove && (
               <p className="text-[0.76rem] text-ink-dim mt-2 leading-snug">
@@ -213,18 +223,21 @@ export default function DeleteAccountSheet({ account, open, onClose, onDone }: P
           <div>
             <div className="font-mono text-[8.5px] tracking-[0.14em] uppercase text-ink-dim mb-2">What should happen to them?</div>
             <div className="flex flex-col gap-2.5 mb-3" role="radiogroup" aria-label="What should happen to this account's history">
-              <Pick on={choice === 'archive'} onSelect={() => setChoice('archive')} title="Archive instead" badge="recommended">
-                All {plural(tx.count, 'transaction')} stay where they are, history intact. The account leaves your list and
-                stops appearing in Add Transaction.
+              <Pick on={effectiveChoice === 'archive'} onSelect={() => setChoice('archive')} title="Archive instead"
+                badge={loansBlockArchive ? undefined : 'recommended'} disabled={loansBlockArchive}>
+                {loansBlockArchive
+                  ? `${loanNames} would stop recording ${recordingLoans.length === 1 ? 'its' : 'their'} EMIs. Change ${recordingLoans.length === 1 ? 'its' : 'their'} paying account in Debts first, or move this account's history (the ${recordingLoans.length === 1 ? 'loan moves' : 'loans move'} with it).`
+                  : <>All {plural(tx.count, 'transaction')} stay where they are, history intact. The account leaves your list and
+                    stops appearing in Add Transaction.</>}
               </Pick>
-              <Pick on={choice === 'move'} onSelect={() => setChoice('move')} title="Move them, then delete"
+              <Pick on={effectiveChoice === 'move'} onSelect={() => setChoice('move')} title="Move them, then delete"
                 disabled={splitsBlockMove || loanBlocksMove || destinations.length === 0}>
                 {destinations.length === 0
                   ? `There is no other ${account.kind === 'credit_card' ? 'card' : 'bank account'} to move them to.`
-                  : 'Re-tag everything to another account, then remove this one. Your totals stay the same, but the history will read as though the money always moved through the other account.'}
+                  : `Re-tag everything to another account, then remove this one. Your totals stay the same, but the history will read as though the money always moved through the other account.${loansBlockArchive ? ` ${loanNames} will pay from it too.` : ''}`}
               </Pick>
             </div>
-            {choice === 'move' && destinations.length > 0 && (
+            {effectiveChoice === 'move' && destinations.length > 0 && (
               <Select aria-label="Move history to" value={destination} onChange={e => setDestination(e.target.value)}
                 className="mb-3">
                 <option value="">Choose destination…</option>

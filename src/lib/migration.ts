@@ -62,8 +62,8 @@ export async function migrateLocalToCloud(
   // 3. Activate
   await adapter.setActiveHousehold(household.id);
   // 4. Mark migrated so we don't prompt again (write both vt_ and legacy keys)
-  try { ls.setString('migrated_at', new Date().toISOString()); } catch { /* noop */ }
-  try { ls.setString('migrated_to', household.id); } catch { /* noop */ }
+  try { ls.setString('migrated_at', new Date().toISOString()); } catch { /* fault-ok: device storage is optional (private mode, quota); the stamp only records when the copy ran */ }
+  try { ls.setString('migrated_to', household.id); } catch { /* fault-ok: device storage is optional (private mode, quota); the stamp only records where the copy went */ }
   return {
     householdId: household.id,
     counts: {
@@ -114,7 +114,7 @@ export async function autoMigrateAnonToHousehold(
   }
   const snap = readLocalSnapshot();
   if (!snap.hasData) {
-    try { ls.setString(guardKey(householdId), '1'); } catch { /* noop */ }
+    try { ls.setString(guardKey(householdId), '1'); } catch { /* fault-ok: device storage is optional (private mode, quota); the guard is the cloud household being non-empty too */ }
     return { ran: false, reason: 'no-anon-data' };
   }
   // Confirm the cloud household is genuinely empty before we duplicate
@@ -130,7 +130,7 @@ export async function autoMigrateAnonToHousehold(
   ]);
   const cloudHasData = txs.length + bs.length + gs.length + ms.length + ds.length + as_.length > 0;
   if (cloudHasData) {
-    try { ls.setString(guardKey(householdId), '1'); } catch { /* noop */ }
+    try { ls.setString(guardKey(householdId), '1'); } catch { /* fault-ok: device storage is optional (private mode, quota); the guard is the cloud household being non-empty too */ }
     return { ran: false, reason: 'household-not-empty' };
   }
   // Copy. We strip ids so the adapter mints fresh ones (avoids cross-tenant
@@ -141,7 +141,7 @@ export async function autoMigrateAnonToHousehold(
   for (const g of snap.goals)        await adapter.upsert('goals',        householdId, { ...g, id: undefined });
   for (const d of snap.debts)        await adapter.upsert('debts',        householdId, { ...d, id: undefined });
   for (const a of snap.assets)       await adapter.upsert('assets',       householdId, { ...a, id: undefined });
-  try { ls.setString(guardKey(householdId), '1'); } catch { /* noop */ }
+  try { ls.setString(guardKey(householdId), '1'); } catch { /* fault-ok: device storage is optional (private mode, quota); the guard is the cloud household being non-empty too */ }
   return {
     ran: true,
     reason: 'success',

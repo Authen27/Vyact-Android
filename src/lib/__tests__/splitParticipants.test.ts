@@ -17,11 +17,14 @@ describe('who a split is shared with', () => {
     expect(participantEmailProblem('sam@example.com', null, ['Sam@example.com'])).toMatch(/already in the split/);
   });
 
-  it('CON-UNIT-SPL-002 · only people new to the split are confirmed; an account holder by name, anyone else as an invitation', () => {
+  // v10.114.0 (T2a, XC-PRV-12; owner "known emails only"): no name no longer means "not on Vyact" — a name
+  // comes back only for someone already known to you — so the question for anyone else is neutral.
+  it('CON-UNIT-SPL-002 · only people new to the split are confirmed; someone you know by name, anyone else by email', () => {
     expect(needsConfirmation(['a@x.com', 'B@x.com', 'b@x.com'], ['a@x.com'])).toEqual(['b@x.com']);
     expect(needsConfirmation(['a@x.com'], ['A@x.com'])).toEqual([]);
     expect(confirmQuestion({ email: 'priya@x.com', name: 'Priya Sharma' })).toBe('Is the split shared with Priya Sharma (priya@x.com)?');
-    expect(confirmQuestion({ email: 'sam@x.com', name: null })).toBe("sam@x.com isn't on Vyact yet. Send them an invite to join and settle this split?");
+    expect(confirmQuestion({ email: 'sam@x.com', name: null })).toBe("Share this split with sam@x.com? If they aren't on Vyact yet, the email invites them.");
+    expect(confirmQuestion({ email: 'sam@x.com', name: null })).not.toMatch(/isn't on Vyact/);
   });
 
   it('CON-UNIT-SPL-003 · created vs open vs settled: settled means everyone but you has paid', () => {

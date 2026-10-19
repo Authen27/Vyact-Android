@@ -12,18 +12,9 @@
 # artifact silently becomes the build config (see tsconfig.node.json).
 vite.config.js
 vite.config.d.ts
-
-# Capacitor's regenerated native projects. ANCHORED on purpose: a bare `android/` also matches
-# native/android/ (the overlay copied in by scripts/inject-android-native.mjs), and git would
-# then silently refuse to track every overlay file. check-overlay-registered.mjs guards this.
 /android/
 /ios/
 /assets/
-
-# Local installs and build output — this repo is a react/ subtree (upstream's monorepo root
-# .gitignore normally carries these), so nothing else ignores them.
 /node_modules/
 /dist/
 *.tsbuildinfo
-.env.local
-.env.*.local

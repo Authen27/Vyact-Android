@@ -5,8 +5,10 @@
 //   • `sync_conflicts` — a household member edited the same row before us, so
 //     our guarded UPDATE was rejected (the `updated_at` precondition no longer
 //     matched). Previously the only option was "Dismiss" (discard the edit).
-//   • `sync_failed`    — an op that exhausted its retries. This was entirely
-//     invisible before R5; a money write could vanish with no signal.
+//   • `sync_failed`    — a write the database refused (and, from apps before v10.110.0, one that
+//     ran out of retries). This was entirely invisible before R5; a money write could vanish with no
+//     signal. Since F1a a network failure is retried until it lands and never shows here, and the
+//     banner shows only the signed-in person's own writes.
 //
 // Behaviour:
 //   • Polls both buckets every 5 s (cheap localStorage reads).
@@ -26,6 +28,8 @@ interface DeadLetterAdapter {
   /** W3c — clear the conflicts AND re-read the rows they touched from the cloud. */
   dismissConflicts?: () => Promise<void>;
   clearFailed?: () => void;
+  /** F1a — clear the set-aside writes AND re-read the rows they touched from the cloud. */
+  dismissFailed?: () => Promise<void>;
   retryDeadLettered?: (bucket: 'sync_conflicts' | 'sync_failed') => void;
 }
 
@@ -75,7 +79,8 @@ export default function SyncConflictBanner() {
     try {
       if (adapter.dismissConflicts) await adapter.dismissConflicts();
       else adapter.clearConflicts?.();
-      adapter.clearFailed?.();
+      if (adapter.dismissFailed) await adapter.dismissFailed();
+      else adapter.clearFailed?.();
       setConflicts(0); setFailed(0);
     } finally { setBusy(false); }
   };

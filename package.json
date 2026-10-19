@@ -1,7 +1,7 @@
 {
   "name": "vyact-react",
   "private": true,
-  "version": "10.107.1",
+  "version": "10.127.0",
   "type": "module",
   "engines": { "node": "22.x" },
   "description": "Vyact — Family Finance OS · React + TypeScript + Recharts",
@@ -13,6 +13,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc -p tsconfig.e2e.json",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "typecheck:edge": "tsc -p ../scripts/typecheck/edge.tsconfig.json",
+    "test:tz": "node scripts/test-timezones.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:live": "vitest run --config vitest.live.config.ts",

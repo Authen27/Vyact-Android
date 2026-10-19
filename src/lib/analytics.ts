@@ -68,6 +68,8 @@ export type EventName =
   | 'learn_card_view'
   | 'learn_cta_click'
   | 'landing_cta_click'
+  // v10.108.0 — the landing promo video was started (tapped poster; before the app is up, landing.html sends it).
+  | 'landing_video_play'
   | 'pwa_install'
   | 'whatsapp_linked'
   // v10.54.0 — Pip: answer feedback, copy, new chat, and the WhatsApp entry point.
@@ -143,7 +145,7 @@ export function platform(): 'android-app' | 'pwa' | 'web' {
   try {
     if (window.matchMedia?.('(display-mode: standalone)').matches) return 'pwa';
     if ((window.navigator as Navigator & { standalone?: boolean }).standalone) return 'pwa';
-  } catch { /* fall through */ }
+  } catch { /* fault-ok: a display mode that cannot be read counts as the web */ }
   return 'web';
 }
 
@@ -152,7 +154,9 @@ const isEnabled = (): boolean => {
   // Disable for Playwright runs (the e2e oracle is mounted) and Vitest.
   if (window.__vt_store !== undefined) return false;
   if (import.meta.env.MODE === 'test') return false;
-  return typeof window.gtag === 'function';
+  // T4b (v10.125.0, XC-PRV-03) — only once analytics is on: allowed on the web, or the Android app. The
+  // consent script (api/_consent.js) sets it; before, every event went to the queue whatever the visitor chose.
+  return typeof window.gtag === 'function' && (window as { __vyGaOn?: boolean }).__vyGaOn === true;
 };
 
 export function track(name: EventName, params: EventParams = {}): void {
@@ -160,7 +164,7 @@ export function track(name: EventName, params: EventParams = {}): void {
   try {
     window.gtag?.('event', name, { ...params, platform: params.platform ?? platform() } as Record<string, unknown>);
   } catch {
-    // Analytics must never break the app.
+    // fault-ok: analytics must never break the app
   }
 }
 
@@ -175,7 +179,7 @@ export function setUserProperties(props: {
   if (!isEnabled()) return;
   try {
     window.gtag?.('set', 'user_properties', props);
-  } catch { /* no-op */ }
+  } catch { /* fault-ok: analytics must never break the app */ }
 }
 
 /** Bucket a money amount before sending — never send raw values. */
@@ -202,7 +206,7 @@ const REF_KEY = 'vy_signup_ref';
 /** Keep the landing / Learn `?ref=` through the auth flow, so sign_up can say where it came from. */
 export function rememberSignupRef(ref: string | null): void {
   if (!ref) return;
-  try { localStorage.setItem(REF_KEY, ref.slice(0, 80)); } catch { /* private mode */ }
+  try { localStorage.setItem(REF_KEY, ref.slice(0, 80)); } catch { /* fault-ok: device storage is optional (private mode, quota) */ }
 }
 
 /** How old an account can be and still count as "new" on its first session (v10.53.0). */
@@ -253,5 +257,5 @@ export async function setAnalyticsUser(userId: string | null): Promise<void> {
   try {
     const user_id = userId ? await sha256Hex(`vyact:${userId}`) : null;
     window.gtag?.('set', { user_id });
-  } catch { /* analytics must never break the app */ }
+  } catch { /* fault-ok: analytics must never break the app */ }
 }

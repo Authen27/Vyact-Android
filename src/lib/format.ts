@@ -19,7 +19,7 @@ export function dateKeyIn(at: Date, tz?: string | null): string {
         .formatToParts(at);
       const part = (type: string) => parts.find(p => p.type === type)?.value ?? '';
       return `${part('year')}-${part('month')}-${part('day')}`;
-    } catch { /* an unknown zone name: use the device's day, as the app does */ }
+    } catch { /* fault-ok: an unknown zone name falls back to the device's day, as the app does */ }
   }
   return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`;
 }
@@ -111,7 +111,7 @@ export const uid = (): string => {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       return crypto.randomUUID();
     }
-  } catch { /* fall through */ }
+  } catch { /* fault-ok: no crypto.randomUUID: the fallback id below is used */ }
   // RFC-4122 v4 fallback
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;

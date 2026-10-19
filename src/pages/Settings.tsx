@@ -2,7 +2,7 @@ import { useState, useEffect, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Download, FileText, Clipboard, ShieldAlert, Cloud, Trash2, PauseCircle, XOctagon } from 'lucide-react';
 import { useStore } from '../store';
-import { useTranslation } from '../hooks';
+import { useTranslation, useFollowedField } from '../hooks';
 import { fmt, today } from '../lib/format';
 import { CURRENCIES, LOCALES } from '../constants';
 import { FULLY_TRANSLATED, languageOptionLabel } from '../lib/i18n';
@@ -16,8 +16,11 @@ import WhatsAppLink from '../components/settings/WhatsAppLink';
 import WhatsAppIcon from '../components/whatsapp/WhatsAppIcon';
 import { transactionsCsv, downloadCsv } from '../lib/transactionsCsv';
 import { buildBackup } from '../lib/backup';
+import { analyticsState, setAnalyticsAllowed, type AnalyticsState } from '../lib/analyticsConsent';
+import { setAnalyticsUser } from '../lib/analytics';
 import PushNotifications from '../components/settings/PushNotifications';
 import { POLICY_VERSION } from './Privacy';
+import { formatPolicyDate } from '../lib/policyVersion';
 import Chip from '../components/ui/Chip';
 import { Select } from '../components/ui/Input';
 import {
@@ -41,13 +44,6 @@ const DATE_FORMATS: { key: Profile['dateFormat']; label: string; example: string
   { key: 'iso', label: 'ISO',      example: '2026-05-09' },
 ];
 
-// POLICY_VERSION is an ISO date string ('2026-07-01') — render it human-readable
-// instead of the internal versioning format.
-function formatPolicyDate(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
-}
 
 // Board E · M1/D1 — the grouped `.set-group` navigation list: a compact row
 // (icon · label · optional value preview · chevron) per setting, grouped
@@ -133,10 +129,10 @@ export default function Settings() {
   const theme       = useStore(s => s.theme);
   const cloudEnabled = useStore(s => s.cloudEnabled);
   const session      = useStore(s => s.session);
+  const [analytics, setAnalytics] = useState<AnalyticsState>(() => analyticsState());
   const currentHouseholdId = useStore(s => s.currentHouseholdId);
   const transactions = useStore(s => s.transactions);
   const budgets     = useStore(s => s.budgets);
-  const goals       = useStore(s => s.goals);
   const debts       = useStore(s => s.debts);
   const assets      = useStore(s => s.assets);
   const members     = useStore(s => s.members);
@@ -236,9 +232,11 @@ export default function Settings() {
     } finally { setDeleting(false); }
   }
 
-  const [name, setName]       = useState(profile.name);
+  // v10.113.0 — both follow the loaded profile until edited: opened before it loaded, the name box
+  // stayed empty and "Save Preferences" wrote a 0 extra payment over the real one (useState copied once).
+  const [name, setName, followName] = useFollowedField(profile.name);
   const [saving, setSaving]   = useState(false);
-  const [extraPay, setExtraPay] = useState(String(profile.extraPayment || 0));
+  const [extraPay, setExtraPay, followExtraPay] = useFollowedField(String(profile.extraPayment || 0));
   // W6 (audit FE-UIS-06): only the owner can change what lives on the household row. Everyone else
   // sees the values, read-only, instead of a "saved" toast for a write the database refuses.
   const myRole = useStore(s => s.myRole);
@@ -285,6 +283,7 @@ export default function Settings() {
       // W6 (audit FE-UIS-06): the name only. The email field saved nowhere (no profile column, not the
       // sign-in address) while saying "Profile saved"; the account email is shown, not edited, here.
       await updateProfile({ name });
+      followName();
       toast('Profile saved', 'success');
     } catch { toast('Save failed', 'error'); }
     finally { setSaving(false); }
@@ -293,12 +292,17 @@ export default function Settings() {
   // One snapshot for both 'Download Backup' and 'Copy to Clipboard' (the copy used to leave out
   // members and the version while its button said 'Full backup'). W3b: no exchange rates — a
   // household has one currency and nothing is converted. W7a: built by lib/backup (all the data).
+  // T4b (v10.125.0, XC-PRV-08; owner): the household's transactions, splits, debts, accounts, net worth,
+  // recurring schedules and the household itself, and nothing else (lib/backup.ts).
   function backupSnapshot() {
     const s = useStore.getState();
+    const meta = s.households.find(h => h.id === s.currentHouseholdId);
     return buildBackup({
-      profile, transactions, budgets, goals, members, debts, assets,
-      accounts: s.accounts, budgetAllocations: s.budgetAllocations,
-      recurringSchedules: s.recurringSchedules, netWorthSnapshots: s.netWorthSnapshots,
+      household: meta ?? { name: 'My Household', type: profile.household, baseCurrency: profile.baseCurrency },
+      members, transactions,
+      sharedSplitsOwned: s.sharedSplitsOwned, sharedSplitsWithMe: s.sharedSplitsWithMe,
+      debts, accounts: s.accounts, assets, netWorthSnapshots: s.netWorthSnapshots,
+      recurringSchedules: s.recurringSchedules,
     }, today(), __APP_VERSION__);
   }
 
@@ -329,6 +333,7 @@ export default function Settings() {
   async function saveDebtPrefs() {
     const ep = parseFloat(extraPay);
     await updateProfile({ extraPayment: isNaN(ep) ? 0 : ep });
+    followExtraPay();
     toast('Debt preferences saved', 'success');
   }
 
@@ -721,6 +726,39 @@ export default function Settings() {
 
         {/* ── About (board E · .set-group) ─────────────────── */}
         <SettingsGroup caption="About">
+          {/* T4b (v10.125.0, XC-PRV-03) — the analytics choice the banner asked, changeable here. */}
+          <SettingRow icon="📊" label="Usage analytics"
+            open={openRow === 'analytics'} onToggle={() => toggleRow('analytics')}>
+            <div className="px-3.5 pb-3 space-y-2">
+              {analytics === 'unavailable' ? (
+                <p className="text-[13px] text-ink-mid">Not used here: analytics runs only on vyact.app and in the Vyact app.</p>
+              ) : analytics === 'app' ? (
+                <p className="text-[13px] text-ink-mid">On. In the Vyact app it is part of the app&apos;s permissions on this phone.</p>
+              ) : (
+                <div className="flex items-center gap-2.5 py-1">
+                  <span className="font-display font-semibold text-[13px] text-ink">Google Analytics</span>
+                  <span className="text-[12px] text-ink-dim">{analytics === 'on' ? 'counting how pages are used' : analytics === 'off' ? 'off' : 'not chosen yet'}</span>
+                  <button type="button" role="switch" aria-checked={analytics === 'on'} aria-label="Usage analytics"
+                    onClick={() => {
+                      const allow = analytics !== 'on';
+                      setAnalyticsAllowed(allow);
+                      setAnalytics(analyticsState());
+                      if (allow && session?.user) void setAnalyticsUser(session.user.id);
+                      toast(allow ? 'Usage analytics on' : 'Usage analytics off', 'info');
+                    }}
+                    className="ml-auto relative w-[44px] h-[26px] rounded-pill border-none cursor-pointer flex-shrink-0"
+                    style={{ background: analytics === 'on' ? 'color-mix(in srgb, hsl(var(--sage)) 40%, var(--sunken))' : 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
+                    <i aria-hidden className="absolute top-[3px] w-5 h-5 rounded-full transition-[left] duration-150"
+                      style={{ left: analytics === 'on' ? 21 : 3, background: analytics === 'on' ? 'hsl(var(--sage))' : 'var(--ff-ink-3)', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
+                  </button>
+                </div>
+              )}
+              <p className="text-[12px] text-ink-dim">
+                It counts which pages and features are used, never the money you record.{' '}
+                <Link to="/cookies" className="text-coral hover:underline">Cookie Policy</Link>
+              </p>
+            </div>
+          </SettingRow>
           <SettingRow icon="📄" label="Legal & policies"
             open={openRow === 'legal'} onToggle={() => toggleRow('legal')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-3 gap-3">

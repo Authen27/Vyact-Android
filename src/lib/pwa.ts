@@ -32,6 +32,13 @@ export function isStandalone(): boolean {
   return iosStandalone || window.matchMedia('(display-mode: standalone)').matches;
 }
 
+/** Inside the Vyact Android app (a Capacitor WebView), not a browser or the installed web app. */
+export function isNativeApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  try { return !!cap?.isNativePlatform?.(); } catch { return false; }
+}
+
 export function isIos(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = window.navigator.userAgent;
@@ -107,7 +114,7 @@ export async function forceReloadForUpdate(): Promise<void> {
         return;
       }
     } catch {
-      /* fall through to the nuclear path */
+      // fault-ok: the reload below still runs
     }
   }
   // No waiting worker — the precache is just stale. Wipe SW + caches and
@@ -123,7 +130,7 @@ export async function forceReloadForUpdate(): Promise<void> {
       await Promise.all(keys.map(k => caches.delete(k).catch(() => false)));
     }
   } catch {
-    /* best-effort — fall through to the reload either way */
+    // fault-ok: the reload below still runs
   }
   // Cache-busting query param defeats any HTTP / memory cache for the doc.
   const url = new URL(window.location.href);

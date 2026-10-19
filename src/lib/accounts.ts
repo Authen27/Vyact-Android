@@ -5,6 +5,10 @@
 //   • credit cards       (debt type: credit_card)
 // Plus a generic "Cash" fallback so a brand-new household can still record money.
 //
+// T5b (v10.121.0; audit XC-ARC-08) — the pickers read the household's ACCOUNTS (`buildAccountsFromStore`)
+// in every build. The legacy `buildAccounts(assets, debts)` derivation is deleted: the retired Money Map
+// flag still chose it in local-only builds, where a bank asset's option moved no account.
+//
 // Transactions reference an account via `paymentMethod`, encoded as:
 //   'cash'            → generic cash
 //   'asset:<uuid>'    → a bank/cash asset in Net Worth
@@ -42,46 +46,6 @@ function initials(name: string): string {
   if (!parts.length) return '••';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-/** Build the list of accounts a user can spend from / receive into. */
-export function buildAccounts(
-  assets: Asset[],
-  debts: Debt[],
-  opts: { excludeId?: string; filter?: (a: AccountOption) => boolean } = {},
-): AccountOption[] {
-  const out: AccountOption[] = [
-    { value: 'cash', label: 'Cash', abbr: '$', color: CASH_COLOR, kind: 'cash' },
-  ];
-
-  for (const a of assets) {
-    if (!BANK_ASSET_TYPES.includes(a.type as (typeof BANK_ASSET_TYPES)[number])) continue;
-    // A dedicated cash asset folds into generic Cash to avoid two "Cash" rows.
-    if (a.type === 'cash') continue;
-    out.push({
-      value: `asset:${a.id}`,
-      label: a.name,
-      abbr: initials(a.name),
-      color: BANK_COLOR,
-      kind: 'bank',
-    });
-  }
-
-  for (const d of debts) {
-    if (d.type !== 'credit_card') continue;
-    out.push({
-      value: `debt:${d.id}`,
-      label: d.name,
-      abbr: initials(d.name),
-      color: CARD_COLOR,
-      kind: 'card',
-    });
-  }
-
-  let result = out;
-  if (opts.excludeId) result = result.filter(a => a.value !== opts.excludeId);
-  if (opts.filter) result = result.filter(opts.filter);
-  return result;
 }
 
 /** Resolve any stored paymentMethod value to a displayable account, or null. */
@@ -161,11 +125,8 @@ export const ACCOUNT_REQUIRED_TYPES = ['expense', 'income', 'transfer'] as const
 
 // ── v7.1.2 — first-class accounts (Money Map) ────────────────────────────
 //
-// When the Money Map flag is `'shadow'` or `'on'` AND the household has
-// real `accounts` rows (post-Phase-1 backfill), the picker should source
-// options from the canonical accounts table rather than re-deriving them
-// from assets+debts. The legacy `buildAccounts(assets, debts)` path stays
-// untouched for the off / pre-backfill case so nothing regresses.
+// The picker sources its options from the canonical accounts table. Since T5b (v10.121.0) this is the
+// only path: the Money Map flag and the assets + debts derivation are retired.
 
 function kindToOption(kind: Account['kind']): { color: string; abbr: string; kind: AccountKind } {
   if (kind === 'credit_card') return { color: CARD_COLOR, abbr: 'CC', kind: 'card' };

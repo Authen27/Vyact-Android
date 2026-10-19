@@ -18,8 +18,10 @@ export interface SyncSlice {
   loading: boolean;
   toasts: ToastMsg[];
   // R4 (sync fix) — refresh-based sync surface.
-  lastSyncedAt: number | null;        // epoch ms of the last successful pull
+  lastSyncedAt: number | null;        // epoch ms of the cloud read behind the rows shown (F1a)
   manualRefresh: () => Promise<void>; // full-sweep resync behind the Refresh button
+  /** F1a — once the background cloud reads have landed, refresh again (no-op without a cloud). */
+  settleFromCloud: () => Promise<void>;
   subscribeRealtime: (householdId: string) => () => void;
   setTheme: (t: Theme) => void;
   toast: (text: string, type?: ToastMsg['type'], action?: ToastAction) => void;
@@ -32,7 +34,7 @@ export const createSyncSlice: StateCreator<Store, [], [], SyncSlice> = (set, get
   theme: (readLocalString('theme', 'dark') as Theme) || 'dark',
   loading: true,
   toasts: [],
-  lastSyncedAt: null,   // R4 (sync fix) — set by refresh() on success
+  lastSyncedAt: null,   // R4 (sync fix) — set by refresh(): the cloud read behind what it shows (F1a)
 
   // R4 (sync fix) — manual full-sweep resync behind the Refresh control.
   // Clears the per-device delta cursors + synced sentinels (forceFullResync)
@@ -44,8 +46,21 @@ export const createSyncSlice: StateCreator<Store, [], [], SyncSlice> = (set, get
     const { adapter, currentHouseholdId } = get();
     const fullSweep = (adapter as { forceFullResync?: (hid: string) => void }).forceFullResync;
     if (typeof fullSweep === 'function' && currentHouseholdId) {
-      try { fullSweep.call(adapter, currentHouseholdId); } catch { /* noop */ }
+      try { fullSweep.call(adapter, currentHouseholdId); } catch { /* fault-ok: forceFullResync only clears device markers, each already guarded; the refresh below runs */ }
     }
+    await get().refresh();
+    // F1a — that refresh painted the device's copy while the full pull ran; show what the pull brought.
+    await get().settleFromCloud();
+  },
+
+  // v10.110.0 (F1a, audit FE-SYN-08) — a refresh paints the device's copy and pulls from the cloud in
+  // the background. This waits for those pulls, then refreshes once more, so the screen (and
+  // "Synced · <time>") reflect the cloud. One extra refresh, never a chain: the refresh it runs
+  // starts its own pulls, which this does not wait for.
+  settleFromCloud: async () => {
+    const { adapter } = get();
+    if (typeof adapter.cloudSettled !== 'function') return;
+    await adapter.cloudSettled();
     await get().refresh();
   },
 

@@ -3,7 +3,9 @@ import type { Entity } from '../dataAdapter';
 
 export interface QueueOp {
   ts: number;
-  op: 'upsert' | 'remove' | 'replaceAll' | 'updateProfile' | 'upsertRate';
+  /** `shareSplit` (v10.112.0, F1c): a split's sharing, payload `SplitShareIntent`; it waits behind its
+   *  transaction's own queued writes (outbox `claimDue`). */
+  op: 'upsert' | 'remove' | 'replaceAll' | 'updateProfile' | 'upsertRate' | 'shareSplit';
   entity?: Entity;
   householdId: string;
   payload?: unknown;
@@ -19,10 +21,10 @@ export interface QueueOp {
    */
   expectedUpdatedAt?: string;
   /**
-   * TD-10 (2026-06-01) — bounded retry. Transient failures (network blip,
-   * 5xx) re-queue with an exponential backoff (`nextRetryAt`) and a hard
-   * cap (`MAX_RETRIES`). Past the cap the op is moved to the
-   * `vt_sync_failed` dead-letter bucket so it stops jamming flushes.
+   * TD-10 (2026-06-01) — transient failures (network blip, 5xx) re-queue with an
+   * exponential backoff (`nextRetryAt`). Since v10.110.0 (F1a) there is no cap: the
+   * backoff tops out at 5 minutes and the op is tried until it lands. Only a refused
+   * write or a conflict goes to a dead-letter bucket.
    */
   attempts?: number;
   nextRetryAt?: number;

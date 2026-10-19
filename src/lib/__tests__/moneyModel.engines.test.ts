@@ -86,7 +86,7 @@ describe('budgetIntel — read-only inference (A8)', () => {
     // W4h (owner decision D27), deliberately: no goal line (Goals are retired; its 'savings' row was
     // invisible yet counted in the total), and a legacy id is proposed as its current one.
     const recurring: RecurringSchedule[] = [
-      { id: 'r1', frequency: 'monthly', startDate: d('01'), nextDueDate: d('01'),
+      { id: 'r1', frequency: 'monthly', startDate: d('01'), nextDueDate: d('01'), autoConfirm: false, active: true,
         transactionTemplate: { type: 'expense', amount: 1200, currency: 'USD', description: '', category: 'rent' } as Omit<Transaction,'id'|'date'> },
     ];
     const debts: Debt[] = [{ id: 'd1', type: 'loan', name: 'L', principal: 0, currentBalance: 5000, interestRate: 8, minimumPayment: 250, currency: 'USD' }];

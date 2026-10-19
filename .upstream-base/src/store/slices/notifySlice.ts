@@ -15,13 +15,16 @@ import {
   recurringDueNotifs, recurringReminderNotifs, budgetThresholdNotifs,
   debtDueNotifs, incomeLandedNotifs, staleBalanceNotifs, pipNudgeNotifs,
   splitReceivedNotifs, splitSettledNotifs, splitClosedNotifs,
-  DEFAULT_PREFS, isInQuietHours, showWebPush, resolvedBillCards,
+  DEFAULT_PREFS, isInQuietHours, showWebPush, resolvedBillCards, deviceNotificationText,
 } from '../../lib/notifications';
 import {
   insertNotifications, fetchNotifications, updateNotificationStatus, purgeExpired,
 } from '../../lib/notificationsCloud';
 import { readLocalJson, setLocalJson } from '../localJson';
 import { deviceHasServerPush, syncPush } from '../../lib/webPush';
+import { normalizeAppRole } from '../../lib/permissions';
+import { expected } from '../../lib/faults';
+import { landIn } from '../landIn';
 
 const KEY = (hid: string) => `notifications_${hid}`;
 const DAY = 86_400_000;
@@ -46,7 +49,10 @@ export interface NotifySlice {
   updateNotificationPrefs: (patch: Partial<NotificationPrefs>) => void;
 }
 
-export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set, get) => ({
+export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set, get) => {
+  // T5b (v10.121.0; audit XC-ARC-10) — a write after an await lands only in the household it was made for.
+  const commit = landIn(set, get);
+  return ({
   notifications: [],
   notificationPrefs: { ...DEFAULT_PREFS, ...readLocalJson('notification_prefs', {}) },
 
@@ -93,26 +99,36 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
 
     if (cloud) {
       try {
-        if (fresh.length) await insertNotifications(fresh);
+        // v10.115.0 (Track T2b-1, audit DB-SEC-06): a viewer reads the household's notifications but
+        // never writes them (from T2b-2 the database refuses it), and a refused write never stops the
+        // bell from loading: it used to skip the fetch below and leave the list as it was.
+        if (fresh.length && normalizeAppRole(get().myRole) !== 'viewer') {
+          try { await insertNotifications(fresh); } catch (e) { expected(e, 'notifications:insert'); }
+        }
         void purgeExpired(hid);
         const { list: all, resolved } = settle(purge(await fetchNotifications(hid)));
-        set({ notifications: all });
+        commit(hid, { notifications: all });
         if (resolved.length) void updateNotificationStatus(resolved, 'read');
       } catch {
         // Offline / RLS hiccup — keep whatever we have; a later refresh retries.
-        set({ notifications: purge(existing) });
+        commit(hid, { notifications: purge(existing) });
       }
     } else {
       const { list: merged } = settle(purge(fresh.length ? [...existing, ...fresh] : existing));
       setLocalJson(KEY(hid), merged);
-      set({ notifications: merged });
+      commit(hid, { notifications: merged });
     }
 
     // Web Push for action-required (P1) types outside quiet hours (opt-in).
     // v10.48.0 — a device registered for real push gets these from the server (with the
     // app closed too); popping them here as well would show each one twice.
     if (fresh.length && notificationPrefs.webPushEnabled && !isInQuietHours(notificationPrefs) && !deviceHasServerPush()) {
-      for (const n of fresh) if (n.priority === 'P1') showWebPush(n.title, n.body);
+      // v10.126.0 (T4c, BE-FN-12): with "Show details on the lock screen" off, only the private line.
+      for (const n of fresh) {
+        if (n.priority !== 'P1') continue;
+        const text = deviceNotificationText(n, notificationPrefs);
+        void showWebPush(text.title, text.body);
+      }
     }
   },
 
@@ -156,8 +172,11 @@ export const createNotifySlice: StateCreator<Store, [], [], NotifySlice> = (set,
     set({ notificationPrefs: next });
     // v10.48.0 — the server applies this device's switches and quiet hours when it pushes.
     const { cloudEnabled, currentHouseholdId } = get();
-    if (cloudEnabled && currentHouseholdId && currentHouseholdId !== 'local' && next.webPushEnabled) {
+    // T4d: syncPush decides (a browser only when its switch is on; the Android app unless turned off there),
+    // so a phone that registered by default still gets its quiet hours and "Show details" changes.
+    if (cloudEnabled && currentHouseholdId && currentHouseholdId !== 'local') {
       void syncPush(currentHouseholdId, next);
     }
   },
 });
+};

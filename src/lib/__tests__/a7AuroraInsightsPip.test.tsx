@@ -27,7 +27,7 @@ describe('A7 · PIP2 — one build-and-check for the form and Pip', () => {
       description: 'Swiggy', category: 'food_dining', memberId: 'm1', paymentMethod: 'cash',
     });
     expect(r.txn.paymentMode).toBeUndefined();               // modes unknown → never written
-    expect(buildTxn({ ...base, paymentMode: 'upi' }, { ...ctx, payingModes: ['upi', 'card'] }).ok && (buildTxn({ ...base, paymentMode: 'upi' }, { ...ctx, payingModes: ['upi', 'card'] }) as { txn: Transaction }).txn.paymentMode).toBe('upi');
+    expect(buildTxn({ ...base, paymentMode: 'upi' }, { ...ctx, payingModes: ['upi', 'debit_card'] }).ok && (buildTxn({ ...base, paymentMode: 'upi' }, { ...ctx, payingModes: ['upi', 'debit_card'] }) as { txn: Transaction }).txn.paymentMode).toBe('upi');
     const notStated = buildTxn(base, { ...ctx, payingModes: ['upi'] });
     expect(notStated.ok && notStated.txn.paymentMode).toBeNull();     // "Not specified" with known modes
   });
