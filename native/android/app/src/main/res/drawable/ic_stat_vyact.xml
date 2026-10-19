@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The status-bar icon for lock-screen notifications (Firebase's default_notification_icon, set by
+     scripts/setup-native-push.mjs). Android draws it as a white silhouette tinted with vyact_coral, so it
+     is a single solid shape: a "V". -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M3.6,4.5h3.6l4.8,10.7l4.8,-10.7h3.6l-6.7,15h-3.4z" />
+</vector>
