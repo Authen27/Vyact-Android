@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSharedSplit, fetchOwnedSharedSplits, fetchSharedWithMe, settleSharedSplitShare,
-  closeSharedSplit, updateSharedSplit, updateShareAmount, resolveParticipantNames } from '../sharedSplits';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { syncSharedSplit, fetchOwnedSharedSplits, fetchSharedWithMe, settleSharedSplitShare,
+  closeSharedSplit, resolveParticipantNames } from '../sharedSplits';
 
 const transport = vi.hoisted(() => ({ from: vi.fn(), rpc: vi.fn(), getUser: vi.fn() }));
 vi.mock('../supabase', () => ({ sb: () => ({ ...transport, auth: { getUser: transport.getUser } }) }));
+// v10.112.0 (F1c): the owner's create and edit are one repeat-safe step run by the sync queue, given the client.
+const client = () => ({ ...transport, auth: { getUser: transport.getUser } }) as unknown as SupabaseClient;
 
 function response(data: unknown) {
   const query = { insert: vi.fn(), select: vi.fn(), single: vi.fn(), eq: vi.fn(), neq: vi.fn(),
-    order: vi.fn(), in: vi.fn(), update: vi.fn(), then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data, error: null }).then(resolve) };
-  for (const method of [query.insert, query.select, query.single, query.eq, query.neq, query.order, query.in, query.update]) method.mockReturnValue(query);
+    order: vi.fn(), in: vi.fn(), update: vi.fn(), delete: vi.fn(), then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data, error: null }).then(resolve) };
+  for (const method of [query.insert, query.select, query.single, query.eq, query.neq, query.order, query.in, query.update, query.delete]) method.mockReturnValue(query);
   transport.from.mockReturnValueOnce(query);
   return query;
 }
@@ -23,23 +26,29 @@ afterEach(() => vi.useRealTimers());
 
 describe('shared split cloud service contracts', () => {
   it('creates an authenticated transaction-backed split and normalizes participant email', async () => {
+    const find = response([]);
     const parent = response(split);
-    const children = response([share]);
-    const created = await createSharedSplit({ ownerHouseholdId: 'household', txnId: 'transaction', description: 'Dinner',
+    response([]);                                   // its shares: none yet
+    const children = response(null);
+    const created = await syncSharedSplit(client(), 'household', { txnId: 'transaction', description: 'Dinner',
       currency: 'USD', totalAmount: 90, txnType: 'expense', date: '2026-09-09', participants: [{ email: ' Friend@Example.COM ', share: 45 }] });
+    expect(find.eq.mock.calls).toEqual([['owner_user_id', 'owner'], ['txn_id', 'transaction']]);
     expect(parent.insert).toHaveBeenCalledWith(expect.objectContaining({ owner_user_id: 'owner', txn_id: 'transaction', total_amount: 90 }));
     expect(children.insert).toHaveBeenCalledWith([{ split_id: 'split', email: 'friend@example.com', share: 45 }]);
-    expect(created).toMatchObject({ id: 'split', txnId: 'transaction', totalAmount: 90, shares: [{ id: 'share', share: 45, paid: false }] });
+    expect(created).toEqual({ splitId: 'split', added: 1 });
   });
 
   it('edits unpaid shares, settles through the participant RPC, closes and reloads on both sides', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-09-09T12:00:00Z'));
+    response([split]);                              // the split exists
     const parentEdit = response(null);
-    await updateSharedSplit('split', { totalAmount: 100 });
-    expect(parentEdit.update).toHaveBeenCalledWith({ total_amount: 100 });
+    response([share]);
     const shareEdit = response(null);
-    await updateShareAmount('share', 50);
+    expect(await syncSharedSplit(client(), 'household', { txnId: 'transaction', description: 'Dinner', currency: 'USD',
+      totalAmount: 100, txnType: 'expense', date: '2026-09-09', participants: [{ email: 'friend@example.com', share: 50 }] }))
+      .toEqual({ splitId: 'split', added: 0 });
+    expect(parentEdit.update).toHaveBeenCalledWith(expect.objectContaining({ total_amount: 100 }));
     expect(shareEdit.update).toHaveBeenCalledWith({ share: 50 });
     expect(shareEdit.eq.mock.calls).toEqual([['id', 'share'], ['paid', false]]);
     transport.rpc.mockResolvedValue({ error: null });

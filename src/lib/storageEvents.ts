@@ -27,12 +27,12 @@ export function onStorageEvent(listener: Listener): () => void {
 
 export function emitStorageEvent(e: StorageEvent): void {
   for (const l of listeners) {
-    try { l(e); } catch { /* listener throw must not break the writer */ }
+    try { l(e); } catch { /* fault-ok: a listener that throws must not break the writer */ }
   }
   // Also fan-out via window event so non-React surfaces (e.g. error
   // tracking) can subscribe without importing this module.
   if (typeof window !== 'undefined' && typeof CustomEvent !== 'undefined') {
-    try { window.dispatchEvent(new CustomEvent('vt:storage-event', { detail: e })); } catch { /* noop */ }
+    try { window.dispatchEvent(new CustomEvent('vt:storage-event', { detail: e })); } catch { /* fault-ok: no window events (a worker or test): listeners are called directly above */ }
   }
 }
 

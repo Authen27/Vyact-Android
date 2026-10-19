@@ -141,9 +141,14 @@ describe('W8a · app fixes', () => {
       vi.resetModules();
     }
     const adapter = src('lib/dataAdapter.ts');
-    for (const m of ['async upsert<', 'async put<', 'async remove(', 'async createBudgetChecked(', 'async recordNetWorthSnapshot(']) {
+    // v10.111.0 (F1b): the row writes run under the list's lock through putRow / removeRow / updateList,
+    // which hold the strict read; upsert, put and remove reach it through them.
+    for (const m of ['async putRow<', 'async removeRow(', 'async updateList<', 'async createBudgetChecked(', 'async recordNetWorthSnapshot(']) {
       const body = adapter.slice(adapter.indexOf(m), adapter.indexOf(m) + 900);
       expect(body, m).toMatch(/this\.readForWrite</);
+    }
+    for (const [m, via] of [['async upsert<', 'this.putRow('], ['async put<', 'this.putRow('], ['async remove(', 'this.removeRow(']]) {
+      expect(adapter.slice(adapter.indexOf(m), adapter.indexOf(m) + 900), m).toContain(via);
     }
     expect(adapter).toMatch(/const v = await kvGetStrict<T>\(key\);/);
   });
@@ -176,7 +181,7 @@ describe('W8a · app fixes', () => {
     expect(src('pages/auth/SignIn.tsx')).toMatch(/<GoogleButton consentByContinuing \/>/);
     const g = src('components/auth/GoogleButton.tsx');
     expect(g).toMatch(/if \(requireAgreement \|\| consentByContinuing\) sessionStorage\.setItem\('pending_policy_accept', '1'\);/);
-    expect(g).toMatch(/By continuing with Google you agree to the/);
+    expect(g).toMatch(/By continuing with Google you confirm you are 18 or older and agree to the/);   // 18+ since T4b
   });
 
   it('W8a-PAR05-001 · one stale-balance rule: a new account is fresh; push and Reply UPDATE agree (INT-PAR-05)', () => {

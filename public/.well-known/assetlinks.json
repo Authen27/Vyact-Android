@@ -1,1 +1,15 @@
-[]
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.vyact.app",
+      "sha256_cert_fingerprints": [
+        "E1:29:A9:42:91:89:00:F1:DF:06:08:E3:38:85:EF:12:41:AD:E7:B5:39:C1:52:72:1F:B1:AA:4F:31:18:CF:C5"
+      ]
+    }
+  }
+]

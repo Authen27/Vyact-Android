@@ -390,6 +390,9 @@ export interface AccountDependencies {
   /** Shared splits on this account's transactions that are not yet closed. */
   openSplits: { id: string; txnId: string }[];
   loanEvents: number;
+  /** v10.119.0 — live loans that record their EMIs automatically from this account. While there are any,
+   *  it can't be deleted or archived; a move carries them (owner, 19 Oct 2026). */
+  loans: { id: string; name: string }[];
 }
 
 /** v10.24.0 (R2) — result of moving an account's history, then deleting it. */
@@ -554,6 +557,10 @@ export interface NotificationPrefs {
   quietEnd: string;    // HH:MM
   webPushEnabled: boolean;
   defaultLeadDays: 1 | 3 | 7;
+  /** v10.126.0 (T4c; audit BE-FN-12; owner: "show by default, and hide via settings") — this device's
+   *  notifications show their amounts and names. Off: a private line per type (`lockScreenText`).
+   *  Absent (prefs saved before v10.126.0) means on. */
+  lockScreenDetails?: boolean;
 }
 
 /** How a part-payment was applied. 'apply_advance' survives only on legacy payment-log entries (W4f retired it). */

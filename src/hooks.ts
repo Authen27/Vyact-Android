@@ -5,6 +5,19 @@ import { useStore } from './store';
 import { LOCALES } from './constants';
 import { shortcutAllowed, OPEN_DIALOG_SELECTOR } from './lib/shortcuts';
 import { htmlLangFor } from './lib/htmlLang';
+import { followedValue, type FollowedField } from './lib/followedField';
+
+/**
+ * v10.113.0 — an editable field that starts from a value which may still be loading (lib/followedField).
+ * Returns the shown value, the setter (marks the field edited) and `follow()`, which makes it follow the
+ * loaded value again (after a save).
+ */
+export function useFollowedField<T>(source: T): [T, (value: T) => void, () => void] {
+  const [field, setField] = useState<FollowedField<T>>(() => ({ value: source, edited: false }));
+  const set = useCallback((value: T) => setField({ value, edited: true }), []);
+  const follow = useCallback(() => setField(f => ({ value: f.value, edited: false })), []);
+  return [followedValue(field, source), set, follow];
+}
 
 // useTranslation — returns t() bound to current language
 export function useTranslation() {

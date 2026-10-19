@@ -255,7 +255,7 @@ describe('§7 INV-9 — categories are type-scoped; transfers/investments carry 
     expect(CATEGORIES_BY_TYPE.expense.length).toBeGreaterThan(0);
     expect(CATEGORIES_BY_TYPE.income.length).toBeGreaterThan(0);
     // no id appears in both the expense and income pools (disjoint scopes).
-    const exp = new Set(CATEGORIES_BY_TYPE.expense.map(c => c.id));
+    const exp = new Set<string>(CATEGORIES_BY_TYPE.expense.map(c => c.id));
     expect(CATEGORIES_BY_TYPE.income.some(c => exp.has(c.id))).toBe(false);
   });
 });

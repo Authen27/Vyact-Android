@@ -6,7 +6,7 @@
 // when we last converged — and tapping it triggers a full-sweep resync.
 //
 // State machine (worst-wins): Local · Offline · N Failed · N Conflict(s) ·
-// Refreshing · Syncing · Synced "· 2m ago".
+// Refreshing · Syncing · Synced "· 2m ago" (the time of the cloud read behind the screen, F1a).
 
 import { useState } from 'react';
 import Badge from '../ui/Badge';
@@ -48,8 +48,11 @@ export default function SyncStatusBadge() {
 
   // Worst-wins selection. `failed` and `conflicts` were previously invisible —
   // surfacing them is the core R4 honesty fix.
-  let tone: 'neutral' | 'warn' | 'alert' | 'info' | 'good' = 'good';
-  let label = `Synced${lastSyncedAt ? ` · ${agoLabel(lastSyncedAt)}` : ''}`;
+  // v10.110.0 (F1a, audit FE-SYN-08): the time is that of the cloud read behind what is on screen,
+  // so a device whose cloud reads keep failing reads "Synced · 2h ago", never "just now". Until the
+  // first cloud read of the session lands, it is still syncing.
+  let tone: 'neutral' | 'warn' | 'alert' | 'info' | 'good' = lastSyncedAt ? 'good' : 'info';
+  let label = lastSyncedAt ? `Synced · ${agoLabel(lastSyncedAt)}` : 'Syncing…';
   if (!online)            { tone = 'warn';  label = 'Offline'; }
   else if (refreshing)    { tone = 'info';  label = 'Refreshing…'; }
   else if (failed > 0)    { tone = 'alert'; label = `${failed} failed`; }

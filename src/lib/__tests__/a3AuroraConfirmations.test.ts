@@ -86,7 +86,7 @@ describe('A3 · confirmations and undo', () => {
     expect(copy.removeMemberRequest({ name: 'Asha Mehta', household: 'Mehta Family' }).lines).toEqual(['They lose access to Mehta Family.', 'Entries they added stay, under their name.']);
     expect(copy.leaveHouseholdRequest({ household: 'Mehta Family' }).action).toBe('Leave household');
     expect(copy.deleteHouseholdRequest({ household: 'Mehta Family' }).input).toMatchObject({ mustEqual: 'Mehta Family' });
-    expect(copy.verificationCodeRequest({ email: 'a@b.c', action: 'erase all household data', resend: () => undefined })).toMatchObject({
+    expect(copy.verificationCodeRequest({ email: 'a@b.c', action: 'erase all household data', resend: async () => undefined })).toMatchObject({
       title: 'Enter the code we emailed', input: { code: true }, resend: { seconds: 45 }, tone: 'primary',
     });
     expect(copy.deactivateRequest().lines?.[1]).toMatch(/kept as it is/);

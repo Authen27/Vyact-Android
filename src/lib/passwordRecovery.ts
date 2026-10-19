@@ -12,7 +12,7 @@ const TTL_MS = 15 * 60_000;
 type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 export function markRecovery(store: Store | null, now: number): void {
-  try { store?.setItem(KEY, String(now)); } catch { /* without storage a refresh asks for a new link */ }
+  try { store?.setItem(KEY, String(now)); } catch { /* fault-ok: without storage a refresh asks for a new link */ }
 }
 
 export function recoveryActive(store: Store | null, now: number): boolean {
@@ -23,7 +23,7 @@ export function recoveryActive(store: Store | null, now: number): boolean {
 }
 
 export function clearRecovery(store: Store | null): void {
-  try { store?.removeItem(KEY); } catch { /* ignore */ }
+  try { store?.removeItem(KEY); } catch { /* fault-ok: storage unavailable: nothing was kept there */ }
 }
 
 export function recoveryStore(): Store | null {

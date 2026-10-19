@@ -23,5 +23,5 @@ export function readNumberSystemPref(householdId: string): NumberSystem | null {
 
 export function writeNumberSystemPref(householdId: string, val: NumberSystem): void {
   if (!householdId) return;
-  try { localStorage.setItem(KEY_PREFIX + householdId, val); } catch { /* ignore */ }
+  try { localStorage.setItem(KEY_PREFIX + householdId, val); } catch { /* fault-ok: device storage is optional (private mode, quota); the household's own setting still applies */ }
 }

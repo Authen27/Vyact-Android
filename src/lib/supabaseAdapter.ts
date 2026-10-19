@@ -503,6 +503,7 @@ const rowToAccount = (r: AccountRow): Account => ({
 // through untouched rather than being guessed at.
 const ACCOUNT_RPC_ERRORS: Record<string, string> = {
   account_in_use: 'This account has history attached — archive it, or move its history first.',
+  account_pays_a_loan: 'A loan records its EMIs from this account — change its paying account first.',
   cash_account_protected: 'Cash in Hand cannot be deleted — every household keeps exactly one.',
   system_account_protected: 'This is a system account and cannot be deleted.',
   not_allowed: 'Only the household owner or an admin can delete accounts.',
@@ -1001,6 +1002,7 @@ export class SupabaseAdapter implements DataAdapter {
       recurring?: { id?: string; label?: string }[];
       openSplits?: { id?: string; txnId?: string }[];
       loanEvents?: number;
+      loans?: { id?: string; name?: string }[];
     };
     return {
       accountId,
@@ -1016,6 +1018,7 @@ export class SupabaseAdapter implements DataAdapter {
       recurring: (r.recurring ?? []).map(x => ({ id: String(x.id), label: String(x.label ?? 'Recurring') })),
       openSplits: (r.openSplits ?? []).map(x => ({ id: String(x.id), txnId: String(x.txnId) })),
       loanEvents: Number(r.loanEvents ?? 0),
+      loans: (r.loans ?? []).map(x => ({ id: String(x.id), name: String(x.name ?? 'A loan') })),
     };
   }
 

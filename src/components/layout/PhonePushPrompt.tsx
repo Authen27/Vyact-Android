@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { pushBlocker, deviceHasServerPush, devicePushStatus, enablePush, pushRefusalMessage } from '../../lib/webPush';
+import { isNativeApp } from '../../lib/pwa';
 
 const DISMISS_KEY = 'vyact_phone_push_prompt_dismissed';
 
@@ -26,8 +27,10 @@ export default function PhonePushPrompt() {
 
   useEffect(() => {
     let dismissed = false;
-    try { dismissed = sessionStorage.getItem(DISMISS_KEY) === '1'; } catch { /* show it */ }
-    if (!cloud || dismissed || pushBlocker() === 'unsupported' || !prefs.master) { setShow(false); return; }
+    try { dismissed = sessionStorage.getItem(DISMISS_KEY) === '1'; } catch { /* fault-ok: device storage is optional; the prompt just shows */ }
+    // T4d: the Android app registers itself (on by default) and Settings says when it could not, so the
+    // card is for browsers only. T4c's 'native_app' (an older APK) would offer a button that can only refuse.
+    if (!cloud || dismissed || pushBlocker() === 'unsupported' || isNativeApp() || !prefs.master) { setShow(false); return; }
     if (deviceHasServerPush()) {
       // The local marker can outlive a subscription the browser dropped; ask the server.
       void devicePushStatus().then(s => setShow(!(s.registered && s.active !== false)));
@@ -54,7 +57,7 @@ export default function PhonePushPrompt() {
   }
 
   function notNow() {
-    try { sessionStorage.setItem(DISMISS_KEY, '1'); } catch { /* hide for now anyway */ }
+    try { sessionStorage.setItem(DISMISS_KEY, '1'); } catch { /* fault-ok: device storage is optional; the prompt is hidden for this view anyway */ }
     setShow(false);
   }
 

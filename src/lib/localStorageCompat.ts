@@ -7,7 +7,7 @@
 // pre-TD-14 contract that callers don't have to handle storage errors.
 
 import { emitStorageEvent, isQuotaError } from './storageEvents';
-import { expected } from './faults';
+import { expected, unexpected } from './faults';
 
 const NEW_PREFIX = 'vt_';
 const LEGACY_PREFIX = (() => {
@@ -18,7 +18,7 @@ const LEGACY_PREFIX = (() => {
     if (typeof atob !== 'undefined') {
       return atob(b64);
     }
-  } catch { /* noop */ }
+  } catch { /* fault-ok: no atob: the Buffer decoder below is tried */ }
   try {
     const nodeBuffer = (globalThis as {
       Buffer?: {
@@ -29,7 +29,7 @@ const LEGACY_PREFIX = (() => {
       // Node fallback during SSR/build-time won't be evaluated in browser runtime.
       return nodeBuffer.from(b64, 'base64').toString('utf8');
     }
-  } catch { /* noop */ }
+  } catch { /* fault-ok: no decoder: the value reads as absent */ }
   // Last-resort: construct from char codes (should rarely be hit at runtime).
   const codes = [102, 102, 95];
   return codes.map(n => String.fromCharCode(n)).join('');
@@ -64,7 +64,7 @@ export function setString(key: string, value: string | null): void {
       return;
     }
     localStorage.setItem(n, value);
-    try { localStorage.removeItem(l); } catch { /* noop */ }
+    try { localStorage.removeItem(l); } catch { /* fault-ok: storage unavailable: nothing was kept there */ }
   } catch (err) {
     if (isQuotaError(err)) {
       emitStorageEvent({ kind: 'quota-exceeded', key: n, bytes: value?.length, error: err });
@@ -83,15 +83,15 @@ export function readJson<T = any>(key: string): T | null {
 
 export function setJson(key: string, value: any): void {
   if (value === undefined) return;
-  try { setString(key, JSON.stringify(value)); } catch { /* noop */ }
+  try { setString(key, JSON.stringify(value)); } catch (e) { unexpected(e, `localStorageCompat.setJson:${key}`); }
 }
 
 export function removeBoth(key: string): void {
   if (typeof localStorage === 'undefined') return;
   const n = newKey(key);
   const l = legacyKey(key);
-  try { localStorage.removeItem(n); } catch { /* noop */ }
-  try { localStorage.removeItem(l); } catch { /* noop */ }
+  try { localStorage.removeItem(n); } catch { /* fault-ok: storage unavailable: nothing was kept there */ }
+  try { localStorage.removeItem(l); } catch { /* fault-ok: storage unavailable: nothing was kept there */ }
 }
 
 export default {

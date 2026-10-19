@@ -177,7 +177,7 @@ export default function AccountMenu({ trigger = 'pill' }: { trigger?: 'pill' | '
         <button
           onClick={async () => {
             // Aurora 4.0 CF19 — nothing is lost, so no question: sign out at once.
-            try { await authSignOut(); } catch { /* auth listener clears state */ }
+            try { await authSignOut(); } catch { /* fault-ok: the auth listener clears the session either way */ }
           }}
           title={session.user?.email || ''}
           className="w-full flex items-center justify-center gap-1.5 mt-0.5 py-2.5 font-mono text-[9px] tracking-[0.15em] uppercase cursor-pointer border-none bg-transparent"

@@ -9,6 +9,7 @@ import Money from '../components/ui/Money';
 import { splitsOutstanding, type SplitOutstanding } from '../lib/calculations';
 import type { Transaction, SplitParticipant, Debt } from '../types';
 import { splitCounts } from '../lib/splitParticipants';
+import { shareIntentForTxn } from '../lib/sharedSplits';
 import PageHead from '../components/ui/PageHead';
 import EmptyState from '../components/ui/EmptyState';
 import { askSheet, confirmSheet } from '../lib/confirmSheet';
@@ -55,7 +56,7 @@ export default function Splits() {
   const sharedSplitsOwned   = useStore(s => s.sharedSplitsOwned);
   const sharedSplitsWithMe  = useStore(s => s.sharedSplitsWithMe);
   const settleMySplitShare  = useStore(s => s.settleMySplitShare);
-  const markSplitShareRowPaid = useStore(s => s.markSplitShareRowPaid);
+  const updateSharedSplitForTxn = useStore(s => s.updateSharedSplitForTxn);
   const closeMySplit        = useStore(s => s.closeMySplit);
   const myEmail = session?.user?.email?.toLowerCase();
   const cloudActive = cloudEnabled && currentHouseholdId !== 'local';
@@ -102,7 +103,8 @@ export default function Splits() {
     }));
     if (!answer.ok) return;
     if (answer.choice === 'close' && shared) {
-      try { await closeMySplit(shared.id); toast('Split closed', 'info'); }
+      // closeMySplit says 'Split closed' itself (and if its email didn't go out).
+      try { await closeMySplit(shared.id); }
       catch (e) { toast(`Close failed: ${(e as Error).message}`, 'error'); }
       return;
     }
@@ -115,22 +117,20 @@ export default function Splits() {
     }
   }
 
-  // v10.18.1 — the local transaction card is now the single owner surface, so
-  // marking a member paid must also settle their CLOUD share (the copy other
-  // households see + their notifications), matched by email. Best-effort.
-  async function syncCloudSharePaid(txnId: string, email?: string) {
-    if (!cloudActive || !email) return;
-    const owned = sharedSplitsOwned.find(sp => sp.txnId === txnId);
-    const share = owned?.shares.find(sh => sh.email?.toLowerCase() === email.toLowerCase());
-    if (share && !share.paid) {
-      try { await markSplitShareRowPaid(share.id); } catch { /* best-effort cloud sync */ }
-    }
+  // v10.18.1 — the local transaction card is the single owner surface, so marking a member paid also
+  // settles their CLOUD share (the copy other households see, and their notifications).
+  // v10.121.0 (T5b; owner, 19 Oct 2026: "queue it") — through the split's queued share step, behind the
+  // transaction, retried until it lands. It used to call the cloud from here and swallow a failure, so
+  // offline the other household kept seeing the money as owed.
+  async function queueCloudSharesPaid(txn: Transaction) {
+    if (!cloudActive) return;
+    const intent = shareIntentForTxn(txn);
+    if (intent?.participants.length) await updateSharedSplitForTxn(intent);
   }
 
   async function markPaid(txnId: string, participantName: string) {
     const txn = transactions.find(tx => tx.id === txnId);
     if (!txn?.split) return;
-    const target = txn.split.participants.find((p: SplitParticipant) => p.name === participantName);
     const updated: Transaction = {
       ...txn,
       split: {
@@ -141,7 +141,7 @@ export default function Splits() {
       },
     };
     await upsertTransaction(updated);
-    await syncCloudSharePaid(txnId, target?.email);
+    await queueCloudSharesPaid(updated);
     toast(`Marked ${participantName} as settled`, 'success');
   }
 
@@ -156,13 +156,7 @@ export default function Splits() {
       },
     };
     await upsertTransaction(updated);
-    // Also settle every unpaid cloud share for this split (best-effort).
-    if (cloudActive) {
-      const owned = sharedSplitsOwned.find(sp => sp.txnId === txnId);
-      for (const sh of owned?.shares ?? []) {
-        if (!sh.paid) { try { await markSplitShareRowPaid(sh.id); } catch { /* best-effort */ } }
-      }
-    }
+    await queueCloudSharesPaid(updated);
     toast('All participants settled', 'success');
   }
 
@@ -171,7 +165,7 @@ export default function Splits() {
     const shared = sharedSplitsOwned.find(sp => sp.id === splitId);
     const txn = shared ? transactions.find(t => t.id === shared.txnId) : undefined;
     if (!(await confirmSheet(closeSplitRequest({ name: txn?.description ?? '', others: txn ? othersOn(txn) : [] })))) return;
-    try { await closeMySplit(splitId); toast('Split closed', 'info'); }
+    try { await closeMySplit(splitId); }
     catch (e) { toast(`Close failed: ${(e as Error).message}`, 'error'); }
   }
 
@@ -450,7 +444,7 @@ export default function Splits() {
                   ) : sp.closedAt ? (
                     <span className="text-[12px] text-ink-dim">Closed</span>
                   ) : (
-                    <button className="btn-primary text-xs py-1 px-2.5" onClick={() => settleMySplitShare(myShare.id)}>
+                    <button className="btn-primary text-xs py-1 px-2.5" onClick={() => settleMySplitShare(myShare.id).catch(e => toast(`Settle failed: ${(e as Error).message}`, 'error'))}>
                       Settle my share
                     </button>
                   )}

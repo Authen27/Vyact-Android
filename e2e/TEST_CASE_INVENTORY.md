@@ -50,7 +50,7 @@
 
 **Developed (80):** foundation CON-E2E-001..008/010/011; §1 TXN-FC-001/002/003/004/005/007/008/009/010/011/012/013;
 §2 TXN-EDIT-FC-003; §3 TXN-DEL-FC-001/002; §4 NWRT-FC-003/004; §5 BDGT-FC-001/002/004/005/006/007;
-§7 DEBT-FC-001/002/003/006/007/009; §8 ASSET-FC-001/002/004; §12 RPT-FC-001/002/003; §13 PULSE-FC-005/006; §14 AUTH-FC-010/012;
+§7 DEBT-FC-001/002/003/006/007/009; §8 ASSET-FC-001/002/004; §12 RPT-FC-001/002/003; §14 AUTH-FC-010/012;
 §15 PROFILE-FC-001/002/003/004/005/006/007/008; §18 BACKUP-FC-001/002/003/004/005; §19 SEARCH-FC-001/002/003/004;
 §20 ONB-FC-002/003/004/005; §21 PRIV-FC-001/002; §23 FX-FC-001/005; §24 A11Y-FC-001/004; §25 RESP-FC-001/002/004/005.
 
@@ -58,9 +58,8 @@
 `docs/ROADMAP_AUTO_LINKING.md` plus two app-gap items surfaced in CI —
 - **NWRT-FC-001 / -002 / -005 / -006** — need Auto-Linking **Phase A**
   (verified: `upsertTransaction` does not mutate `Asset.value`; no
-  transaction→asset reflection exists yet). NWRT-FC-002 is `fixme` in CI;
-  the other three carry the same dependency and are tagged 🟠 for
-  consistency.
+  transaction→asset reflection exists yet). The other three carry the same dependency and are tagged 🟠
+  for consistency. NWRT-FC-002 runs since v10.121.0 (below).
 - **GOAL-FC-003 / -004** — Auto-Linking **Phase B** (income→goal credit).
 - **BDGT-FC-008** — Auto-Linking **Phase C** (budget surplus routing).
 - **SPLIT-FC-005 / -006, TXN-DEL-FC-004** — Auto-Linking **Phase D**
@@ -173,7 +172,7 @@ hold rows that still describe roadmap-era behaviour.
 | 10 | Recurring Transactions | RECUR-FC | 0 | 7 | 7 |
 | 11 | Notifications System | NOTIF-FC | 0 | 6 | 6 |
 | 12 | Reports & Analytics | RPT-FC | 3 | 3 | 6 |
-| 13 | Family Pulse Score™ | PULSE-FC | 2 | 4 | 6 |
+| 13 | Family Pulse Score™ (retired v10.109.0) | PULSE-FC | 0 | 0 | 0 |
 | 14 | Login, Registration & Session | AUTH-FC | 2 | 10 | 12 |
 | 15 | Account Details & Profile | PROFILE-FC | 8 | 0 | 8 |
 | 16 | Multi-Household & Members | HH-FC | 0 | 10 | 10 |
@@ -441,10 +440,11 @@ closes the modal at any stage.
 - **Blocked**: Auto-Linking Phase A — `upsertTransaction` does not mutate
   `Asset.value` today. Same dependency as NWRT-FC-002.
 
-### 🟠 NWRT-FC-002 — Income increases asset balance (Phase A)
+### ✅ NWRT-FC-002 — Income increases asset balance
 - **Scenario**: $5k salary into $10k Checking → NetWorth $15,000.
-- **Blocked**: Auto-Linking Phase A. Currently `fixme` in
-  `react/e2e/tests/networth-impact.spec.ts`.
+- **Runs since v10.121.0 (T5b; audit XC-ARC-08)** as CON-E2E-009 in `react/e2e/tests/networth-impact.spec.ts`.
+  The deposit moves the Checking ACCOUNT, whose live balance is in Net Worth. The local-only build used to offer
+  the legacy asset list through the retired Money Map flag, where the entry moved no account.
 
 ### ✅ NWRT-FC-003 — Adding an asset increases total assets
 - **Scenario**: Add Real Estate $500k, liquidity `long`.
@@ -640,7 +640,10 @@ amount unchanged.
 
 ---
 
-# §13 · Family Pulse Score™ (PULSE-FC)
+# §13 · Family Pulse Score™ (PULSE-FC) — RETIRED v10.109.0
+
+> The Pulse Score is archived (owner, 16 Oct 2026): no screen or answer shows it. Its e2e spec and
+> backlog placeholders were removed; `computePulseScore` stays, unused, with its unit tests.
 
 ### 🟡 PULSE-FC-001 — Score weights match the documented 25/25/15/15/20 split
 - **Method**: Construct a seed that yields known component values; assert

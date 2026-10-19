@@ -49,7 +49,7 @@ export default function EvergreenLearn({ openId, onConsumedOpen, suggested = [],
   // breaks the tab.
   useEffect(() => {
     if (!isCloudEnabled()) return;
-    fetchEvergreenMedia().then(setMedia).catch(() => {});
+    fetchEvergreenMedia().then(setMedia).catch(() => { /* fault-ok: lesson media is optional; the lessons show without it */ });
   }, []);
 
   // Honor a deep-link open request from the feed reel.

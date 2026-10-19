@@ -3,8 +3,9 @@
 // supabase/migrations/20260724130000_shared_splits.sql). Cloud-only — there
 // is no email/auth identity to key on in local-only mode, so callers must
 // gate on `isCloudEnabled()` themselves before calling any of these.
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { sb } from './supabase';
-import type { SharedSplit, SharedSplitShare } from '../types';
+import type { SharedSplit, SharedSplitShare, Transaction } from '../types';
 
 interface SplitRow {
   id: string;
@@ -77,49 +78,133 @@ async function withShares(splits: SplitRow[]): Promise<SharedSplit[]> {
 export interface NewSharedSplitParticipant {
   email: string;
   share: number;
+  /** v10.121.0 (T5b) — the owner has marked this person paid; the share step settles their cloud share. */
+  paid?: boolean;
 }
 
-/** Owner creates a shared split + one share row per participant email. */
-export async function createSharedSplit(input: {
-  ownerHouseholdId: string;
-  txnId?: string;
-  description: string;
-  currency: string;
-  totalAmount: number;
-  txnType: 'expense' | 'income';
-  date: string;
-  participants: NewSharedSplitParticipant[];
-}): Promise<SharedSplit> {
-  const { data: session } = await sb().auth.getUser();
-  const ownerUserId = session.user?.id;
+/**
+ * v10.112.0 (F1c, audit INT-TXN-11) — the queued "share this split" step: how one transaction's split
+ * should look in the cloud. `deleted` removes the shared split (the split was deleted).
+ */
+export type SplitShareIntent =
+  | {
+    txnId: string; deleted?: false;
+    description: string; currency: string; totalAmount: number; txnType: 'expense' | 'income'; date: string;
+    participants: NewSharedSplitParticipant[];
+  }
+  | { txnId: string; deleted: true };
+
+/**
+ * v10.112.0 (F1c, audit INT-TXN-11; owner decision 18 Oct 2026: "today's calls, repeat-safe").
+ *
+ * Makes the owner's shared split for one transaction match `intent`, starting from whatever the cloud
+ * holds now. It replaces the one-shot create / update / delete calls, which the Split form made
+ * directly after queueing the transaction: offline, or before the transaction had landed, they failed
+ * on its foreign key, and nothing ever tried again. The sync queue runs this once the transaction has
+ * landed, and again after any failure:
+ * - every run re-reads the cloud and does only what is missing, so a run cut off half-way (the split
+ *   created, its shares not) is finished by the next, and a repeat changes nothing;
+ * - an edit adds new people, removes unpaid shares no longer wanted and changes unpaid amounts. A paid
+ *   share is never changed or removed;
+ * - new shares are inserted LAST, so when `added` is above zero nothing after the insert can fail, and
+ *   the caller emails them once;
+ * - v10.121.0 (T5b; owner, 19 Oct 2026: "queue it") — a person the owner marked paid has their share
+ *   settled (`paid`, `paid_at` now) here too, never un-settled. Marking paid used to call the cloud
+ *   straight from the Splits page and swallow the failure, so offline the other household kept seeing
+ *   the money as owed.
+ *
+ * Returns the split's id and how many people were added in this run, or null when there is no shared
+ * split (deleted, or none wanted).
+ */
+export async function syncSharedSplit(
+  client: SupabaseClient, ownerHouseholdId: string, intent: SplitShareIntent,
+): Promise<{ splitId: string; added: number } | null> {
+  const { data: auth } = await client.auth.getUser();
+  const ownerUserId = auth.user?.id;
+  // A session that can't be read is transient: the queue tries again.
   if (!ownerUserId) throw new Error('Must be signed in to share a split');
 
-  const { data: splitRow, error: splitErr } = await sb()
-    .from('shared_splits')
-    .insert({
-      owner_user_id: ownerUserId,
-      owner_household_id: input.ownerHouseholdId,
-      txn_id: input.txnId ?? null,
-      description: input.description,
-      currency: input.currency,
-      total_amount: input.totalAmount,
-      txn_type: input.txnType,
-      date: input.date,
-    })
-    .select('*')
-    .single();
-  if (splitErr) throw splitErr;
-  const split = splitRow as SplitRow;
+  const { data: found, error: findError } = await client.from('shared_splits').select('*')
+    .eq('owner_user_id', ownerUserId).eq('txn_id', intent.txnId).order('created_at', { ascending: true });
+  if (findError) throw findError;
+  let split = ((found ?? []) as SplitRow[])[0];
 
-  const { data: shareRows, error: shareErr } = await sb()
-    .from('shared_split_shares')
-    .insert(input.participants.map(p => ({
-      split_id: split.id, email: p.email.toLowerCase().trim(), share: p.share,
-    })))
-    .select('*');
-  if (shareErr) throw shareErr;
+  if (intent.deleted) {
+    if (split) {
+      const { error } = await client.from('shared_splits').delete().eq('id', split.id);   // shares cascade
+      if (error) throw error;
+    }
+    return null;
+  }
 
-  return fromSplitRow(split, shareRows as ShareRow[]);
+  const fields = {
+    description: intent.description, currency: intent.currency, total_amount: intent.totalAmount,
+    txn_type: intent.txnType, date: intent.date,
+  };
+  if (!split) {
+    if (!intent.participants.length) return null;
+    const { data, error } = await client.from('shared_splits')
+      .insert({ owner_user_id: ownerUserId, owner_household_id: ownerHouseholdId, txn_id: intent.txnId, ...fields })
+      .select('*').single();
+    if (error) throw error;
+    split = data as SplitRow;
+  } else if (split.description !== fields.description || split.currency !== fields.currency
+      || Number(split.total_amount) !== fields.total_amount || split.txn_type !== fields.txn_type || split.date !== fields.date) {
+    const { error } = await client.from('shared_splits').update(fields).eq('id', split.id);
+    if (error) throw error;
+  }
+
+  const { data: shareRows, error: sharesError } = await client.from('shared_split_shares').select('*').eq('split_id', split.id);
+  if (sharesError) throw sharesError;
+  const shares = (shareRows ?? []) as ShareRow[];
+  const want = new Map(intent.participants.map(p => [p.email.toLowerCase().trim(), p]));
+  const have = new Map(shares.map(s => [s.email.toLowerCase(), s]));
+  for (const s of shares) {
+    if (want.has(s.email.toLowerCase()) || s.paid) continue;
+    const { error } = await client.from('shared_split_shares').delete().eq('id', s.id).eq('paid', false);
+    if (error) throw error;
+  }
+  const paidNow = () => ({ paid: true, paid_at: new Date().toISOString() });
+  for (const [email, p] of want) {
+    const current = have.get(email);
+    if (!current || current.paid) continue;
+    const change = {
+      ...(Number(current.share) === p.share ? {} : { share: p.share }),
+      ...(p.paid ? paidNow() : {}),
+    };
+    if (!Object.keys(change).length) continue;
+    const { error } = await client.from('shared_split_shares').update(change).eq('id', current.id).eq('paid', false);
+    if (error) throw error;
+  }
+  const missing = [...want].filter(([email]) => !have.has(email));
+  if (missing.length) {
+    const { error } = await client.from('shared_split_shares')
+      .insert(missing.map(([email, p]) => ({ split_id: split.id, email, share: p.share, ...(p.paid ? paidNow() : {}) })));
+    if (error) throw error;
+  }
+  return { splitId: split.id, added: missing.length };
+}
+
+/**
+ * v10.121.0 (T5b) — the share step for a split transaction, as the Split form and the Splits page both
+ * queue it: everyone with an email but you, with their share and whether you marked them paid. Null when
+ * the row is not a split.
+ */
+export function shareIntentForTxn(
+  txn: Pick<Transaction, 'id' | 'type' | 'currency' | 'date' | 'description' | 'split'>,
+): Extract<SplitShareIntent, { participants: NewSharedSplitParticipant[] }> | null {
+  if (!txn.split) return null;
+  return {
+    txnId: txn.id,
+    description: txn.description,
+    currency: txn.currency,
+    totalAmount: txn.split.totalAmount,
+    txnType: txn.type === 'income' ? 'income' : 'expense',
+    date: txn.date,
+    participants: txn.split.participants
+      .filter(p => !p.isYou && p.email)
+      .map(p => ({ email: p.email!, share: p.share, ...(p.paid ? { paid: true } : {}) })),
+  };
 }
 
 /** Splits the signed-in user owns (any household — this is cross-household by design). */
@@ -159,15 +244,6 @@ export async function settleSharedSplitShare(shareId: string): Promise<void> {
   if (error) throw error;
 }
 
-/** Owner marks a participant paid directly (e.g. "they paid me in cash"). */
-export async function markShareRowPaid(shareId: string): Promise<void> {
-  const { error } = await sb()
-    .from('shared_split_shares')
-    .update({ paid: true, paid_at: new Date().toISOString() })
-    .eq('id', shareId);
-  if (error) throw error;
-}
-
 /** Owner closes a split once all shares are settled. */
 export async function closeSharedSplit(splitId: string): Promise<void> {
   const { error } = await sb()
@@ -177,48 +253,5 @@ export async function closeSharedSplit(splitId: string): Promise<void> {
   if (error) throw error;
 }
 
-// ── v10.16 — owner-side editing (RLS already permits owner UPDATE/INSERT/DELETE) ──
-
-/** Owner edits a split's own fields (only while nothing is paid — enforced by
- *  the caller, which knows the paid state). `set_updated_at` trigger bumps updated_at. */
-export async function updateSharedSplit(
-  splitId: string,
-  fields: { description?: string; currency?: string; totalAmount?: number; txnType?: 'expense' | 'income'; date?: string },
-): Promise<void> {
-  const row: Record<string, unknown> = {};
-  if (fields.description !== undefined) row.description = fields.description;
-  if (fields.currency !== undefined) row.currency = fields.currency;
-  if (fields.totalAmount !== undefined) row.total_amount = fields.totalAmount;
-  if (fields.txnType !== undefined) row.txn_type = fields.txnType;
-  if (fields.date !== undefined) row.date = fields.date;
-  if (!Object.keys(row).length) return;
-  const { error } = await sb().from('shared_splits').update(row).eq('id', splitId);
-  if (error) throw error;
-}
-
-/** Owner changes an unpaid share's amount. */
-export async function updateShareAmount(shareId: string, share: number): Promise<void> {
-  const { error } = await sb().from('shared_split_shares').update({ share }).eq('id', shareId).eq('paid', false);
-  if (error) throw error;
-}
-
-/** Owner adds a participant to an existing split (only while nothing is paid). */
-export async function addShareToSplit(splitId: string, email: string, share: number): Promise<void> {
-  const { error } = await sb()
-    .from('shared_split_shares')
-    .insert({ split_id: splitId, email: email.toLowerCase().trim(), share });
-  if (error) throw error;
-}
-
-/** Owner removes an unpaid participant. */
-export async function removeShare(shareId: string): Promise<void> {
-  const { error } = await sb().from('shared_split_shares').delete().eq('id', shareId).eq('paid', false);
-  if (error) throw error;
-}
-
-/** Owner deletes a whole shared split (its shares cascade). Used when the
- *  backing transaction is deleted. */
-export async function deleteSharedSplit(splitId: string): Promise<void> {
-  const { error } = await sb().from('shared_splits').delete().eq('id', splitId);
-  if (error) throw error;
-}
+// v10.16's owner-side create / edit / delete calls are replaced by `syncSharedSplit` (F1c, v10.112.0),
+// run from the sync queue. RLS already permits the owner's INSERT / UPDATE / DELETE it uses.

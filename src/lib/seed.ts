@@ -161,11 +161,15 @@ export function buildSeed(now: Date = new Date()): SeedBundle {
   // ── One monthly budget with category allocations (the current container model) ──
   const budgetId = uid();
   const y = now.getFullYear(), m = now.getMonth() + 1;
+  // v10.109.0 (owner, 16 Oct 2026) — the plan covers the mortgage and the loan EMIs too. A budget's total
+  // counts ALL spending in its month (lib/budgetProgress), so without them the demo read "$1,175 over" with
+  // the mortgage "not planned". Allocations sum to $4,685; the $115 left is the "Unallocated" line.
   const budgets: Budget[] = [{
-    id: budgetId, limit: 1800, currency: 'USD', scope: 'month', periodYear: y, periodMonth: m,
+    id: budgetId, limit: 4800, currency: 'USD', scope: 'month', periodYear: y, periodMonth: m,
     periodStart: ymd(new Date(y, m - 1, 1)), periodEnd: ymd(new Date(y, m, 0)),
   }];
   const budgetAllocations: BudgetAllocation[] = [
+    ['rent_mortgage', 2340], ['loan_emi', 745],
     ['food_dining', 700], ['utilities', 150], ['entertainment', 60], ['health', 120], ['shopping', 250], ['education', 120], ['travel', 200],
   ].map(([category, amount]) => ({ id: uid(), budgetId, category: category as string, amount: amount as number }));
 

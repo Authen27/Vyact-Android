@@ -16,11 +16,10 @@ import {
   CURRENCIES,
   getCat,
 } from '../../constants';
-import { buildAccounts, buildAccountsFromStore, resolveAccount, editSeedAccount, ACCOUNT_REQUIRED_TYPES, notInvestment, txnAccountLabel } from '../../lib/accounts';
+import { buildAccountsFromStore, resolveAccount, editSeedAccount, ACCOUNT_REQUIRED_TYPES, notInvestment, txnAccountLabel } from '../../lib/accounts';
 import { confirmSheet } from '../../lib/confirmSheet';
 import { deleteTransactionRequest } from '../../lib/confirmCopy';
 import TimeDial from '../ui/TimeDial';
-import { getMoneyMapMode } from '../../lib/featureFlags';
 import { accountValueOf } from '../../lib/accountBalance';
 import { PAYMENT_MODE_LABEL } from '../../lib/accountsView';
 import { LoanPaymentRefused, loanErrorMessage } from '../../lib/loanSchedule';
@@ -184,31 +183,25 @@ export default function TransactionFormModal(props: Props) {
     setEmiDue(null);
     if (!open || form.category !== 'loan_emi' || !form.linkedDebtId) return;
     let live = true;
-    loanDue(form.linkedDebtId).then(due => { if (live) setEmiDue(due); }).catch(() => { /* the form still saves; the server decides */ });
+    loanDue(form.linkedDebtId).then(due => { if (live) setEmiDue(due); }).catch(() => { /* fault-ok: the form still saves; the server decides what is due */ });
     return () => { live = false; };
   }, [open, form.category, form.linkedDebtId, loanDue]);
 
-  // Linked spending accounts. With `money_map` flag on (or in shadow) and
-  // a populated `accounts` store, source options from the canonical table;
-  // otherwise fall back to the legacy assets+debts derivation so off-mode
-  // and pre-backfill households keep working unchanged.
-  const useFirstClassAccounts = getMoneyMapMode() !== 'off' && accountsState.length > 0;
+  // The household's accounts (Accounts screen), in the ledger's own encoding.
+  // T5b (v10.121.0; audit XC-ARC-08) — the retired Money Map flag no longer picks the list: in local-only
+  // builds it chose the legacy assets + debts derivation, whose bank-asset options moved no account at all.
   // v10.17 — the cash-side picker never offers investment accounts; they are
   // walled off to the Investment track only (`notInvestment` predicate).
   const accounts = useMemo(
-    () => useFirstClassAccounts
-      ? buildAccountsFromStore(accountsState, { filter: notInvestment })
-      : buildAccounts(assets, debts),
-    [useFirstClassAccounts, accountsState, assets, debts],
+    () => buildAccountsFromStore(accountsState, { filter: notInvestment }),
+    [accountsState],
   );
   // For transfer + investment, the destination dropdown excludes the source
   // so a user can't pick the same account on both sides — and (v10.17) never
   // lists investment accounts either.
   const accountsTo = useMemo(
-    () => useFirstClassAccounts
-      ? buildAccountsFromStore(accountsState, { excludeId: form.paymentMethod || undefined, filter: notInvestment })
-      : buildAccounts(assets, debts, { excludeId: form.paymentMethod || undefined }),
-    [useFirstClassAccounts, accountsState, assets, debts, form.paymentMethod],
+    () => buildAccountsFromStore(accountsState, { excludeId: form.paymentMethod || undefined, filter: notInvestment }),
+    [accountsState, form.paymentMethod],
   );
   // v9 §4.3 — the Investment form's destination picker shows ONLY
   // type='investment' ASSETS (value = the asset id) — v10.26.0 (R4): an

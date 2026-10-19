@@ -92,6 +92,7 @@ function ChatForHousehold({ embedded = false }: { embedded?: boolean } = {}) {
   const openAddTxn    = useStore(s => s.openAddTxn);
   const openAddBudget = useStore(s => s.openAddBudget);
   const openAddDebt   = useStore(s => s.openAddDebt);
+  const openEditDebt  = useStore(s => s.openEditDebt);
   const openAddAsset  = useStore(s => s.openAddAsset);
   const closeAsk      = useStore(s => s.closeAsk);
   const myRole        = useStore(s => s.myRole);
@@ -110,8 +111,8 @@ function ChatForHousehold({ embedded = false }: { embedded?: boolean } = {}) {
       if (scoped) return scoped.filter(m => !m.pending);
       const legacy = ls.readJson<ChatRow[]>('chat_history');
       if (legacy) {
-        try { ls.setJson(key, legacy); } catch { /* noop */ }
-        try { localStorage.removeItem('vt_chat_history'); localStorage.removeItem('chat_history'); } catch { /* noop */ }
+        try { ls.setJson(key, legacy); } catch { /* fault-ok: device storage is optional (private mode, quota); the old history stays where it was */ }
+        try { localStorage.removeItem('vt_chat_history'); localStorage.removeItem('chat_history'); } catch { /* fault-ok: the old keys only take space; the history was copied above */ }
         return legacy;
       }
       return [];
@@ -178,7 +179,7 @@ function ChatForHousehold({ embedded = false }: { embedded?: boolean } = {}) {
   // Surface one proactive insight on open (rate-limited to one per session).
   useEffect(() => {
     if (!isAskVyactEnabled() || !FEATURES.askVyact.proactiveInsight) return;
-    try { if (sessionStorage.getItem('askvyact_proactive_shown') === '1') return; } catch { /* noop */ }
+    try { if (sessionStorage.getItem('askvyact_proactive_shown') === '1') return; } catch { /* fault-ok: storage unavailable: the greeting shows again */ }
     const ctx: AssistantContext = {
       summary, transactions: txns, budgets, budgetAllocations, goals, debts, assets, recurring,
       profile, rates, baseCurrency: profile.baseCurrency,
@@ -186,7 +187,7 @@ function ChatForHousehold({ embedded = false }: { embedded?: boolean } = {}) {
     const insight = proactiveInsight(ctx);
     if (insight) {
       setProactive(insight);
-      try { sessionStorage.setItem('askvyact_proactive_shown', '1'); } catch { /* noop */ }
+      try { sessionStorage.setItem('askvyact_proactive_shown', '1'); } catch { /* fault-ok: storage unavailable: the greeting may show again */ }
     }
     // Run once on mount; summary is stable enough for a first-open insight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -337,17 +338,25 @@ function ChatForHousehold({ embedded = false }: { embedded?: boolean } = {}) {
         // v10.39.1 (P21) — a recurring draft opens the Recurring section's own sheet,
         // the only place a schedule is authored; the user picks the account and saves.
         if (turn.recurringSeed) appNavigate('/recurring', { state: { recurringSeed: turn.recurringSeed } });
+        // v10.109.0 (owner, R-1) — an EMI is set up on its LOAN: Add loan pre-filled, or that loan, with
+        // Record automatically on. The drawer closes first, as for any form (openSetup).
+        if (turn.loanSeed) {
+          const loanSeed = turn.loanSeed;
+          if (embedded) closeAsk();
+          if (loanSeed.mode === 'new') openAddDebt(loanSeed);
+          else {
+            const loan = useStore.getState().debts.find(d => d.id === loanSeed.debtId);
+            if (loan) openEditDebt(loan, loanSeed);
+          }
+        }
         setActiveTurn(null);
         return;
       }
       // Ask Vyact is the ONLY assistant (v10.20). With the feature flag off there
       // is no second engine to fall through to — the old ChatBackend path was
       // removed with its browser-side key. Say so plainly rather than routing the
-      // user to something they were never told about.
-      void logAiUsage({
-        householdId, text: question, surface: 'chat',
-        outcome: 'error', latencyMs: Date.now() - startedAt,
-      });
+      // user to something they were never told about. No model was called, so no
+      // usage row (T5c, FE-PIP-09).
       patchTurn({ content: 'The assistant is turned off right now.', pending: false });
     } catch (e) {
       void logAiUsage({
@@ -417,7 +426,7 @@ function ChatForHousehold({ embedded = false }: { embedded?: boolean } = {}) {
 
   function stopVoice() {
     if (recRef.current) {
-      try { recRef.current.stop(); } catch { /* already stopped */ }
+      try { recRef.current.stop(); } catch { /* fault-ok: the recogniser was already stopped */ }
       recRef.current = null;
     }
     setListening(false);

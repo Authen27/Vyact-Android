@@ -16,4 +16,24 @@
 // were stamped '2026-07-01' while the pages showed '2026-10-07'.
 // 2026-10-13: ADM-03 (owner decision) — Security says what staff can see in the admin console: that an
 // action happened (its time and kind), never the amounts, names or descriptions.
-export const POLICY_VERSION = '2026-10-13';
+// 2026-10-19: T4b (audit XC-PRV-03/08/09/10/11; owner decisions 19 Oct 2026) — analytics asked first on the
+// web; 18 or older; the processors named with their regions (AWS Bedrock in Sydney and OpenRouter in the USA
+// for Pip); rights under India's DPDP Act, grievance redressal and the breach process; what "Download my
+// data" holds. People who accepted an older version are asked again (components/auth/PolicyUpdateSheet).
+export const POLICY_VERSION = '2026-10-19';
+
+/** What changed in POLICY_VERSION, one sentence each: the re-consent sheet lists them. */
+export const POLICY_CHANGES: readonly string[] = [
+  'Usage analytics (Google Analytics) is off on the web until you allow it, and you can change it in Settings. In the Vyact app it is part of the app\'s permissions.',
+  'Vyact is for people 18 or older.',
+  'We name who processes your data and where: Pip\'s language model runs on Amazon Web Services in Sydney, Australia, with OpenRouter in the USA as a fallback that is asked not to keep your data.',
+  'Your rights under India\'s Digital Personal Data Protection Act, how to raise a grievance, and what we do if your data is ever breached.',
+  '"Download my data" holds your household\'s transactions, splits, debts, accounts, net worth, recurring bills and household details.',
+];
+
+/** POLICY_VERSION (an ISO date) as people read it: "Oct 19, 2026". */
+export function formatPolicyDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}

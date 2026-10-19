@@ -8,7 +8,7 @@ import type {
   Transaction, Budget, BudgetAllocation, Goal, Debt, Asset, Account, Profile, ExchangeRates,
 } from '../types';
 import {
-  monthlyData, computePulseScore,
+  monthlyData,
   spendByCategory, reportableTxns,
 } from './calculations';
 import { budgetLinesNow } from './budgetProgress';
@@ -77,13 +77,8 @@ export interface SafeSummary {
     type: string;
     members: number;
   };
-  // NOTE/TODO: `computePulseScore` now may return `total: number | null`.
-  // TODO(review): The handoff brief assumed `pulseScore.total` was always a
-  // number and that only the gauge consumed it. In this code the summary
-  // also includes the pulse. Accept `null` here and coerce to `0` in the
-  // consumer below. Senior review: confirm whether `null` should be
-  // represented differently in AI summaries.
-  pulseScore: { total: number | null; components: Record<string, number> };
+  // v10.109.0 (owner, 16 Oct 2026): the Pulse Score is archived. It is no longer computed for, or sent
+  // with, the summary; computePulseScore stays in calculations.ts, unused, like Goals and Tax.
   thisMonth: {
     monthKey: string;
     income: number;
@@ -175,7 +170,7 @@ export interface SafeSummary {
   monthBudget?: { limit: number; spent: number; left: number };
   /**
    * Track E, E5 (owner, 14 Oct 2026) — spending in a category with nothing allocated: from this month's
-   * budget, else from the annual one (`annual`, over its year). Always over; never counted by Pulse.
+   * budget, else from the annual one (`annual`, over its year). Always over; never alerted on.
    */
   budgetsNotPlanned: { category: string; spent: number; annual?: true }[];
   goals:   { type: string; targetPct: number; daysToDeadline: number | null }[];
@@ -215,8 +210,6 @@ export function buildSafeSummary(
   const basis = spendBasis(txns, cur, rates, { classifications, tz });
   const liquidityMonths = monthsOfCover(liquid, basis.averageMonthly) ?? 0;
   const essentialMonths = monthsOfCover(liquid, basis.averageEssential);
-  // Audit F5 — Pulse sees the allocation-derived budget lines.
-  const pulse = computePulseScore(txns, budgets, goals, debts, cur, rates, allocations, tz);
 
   // Top 5 expense categories this month — by category id only (no merchants)
   const spend = spendByCategory(txns, mk, cur, rates);
@@ -280,7 +273,6 @@ export function buildSafeSummary(
     asOf: today(tz),
     baseCurrency: cur,
     household: { type: profile.household, members: 0 /* caller sets */ },
-    pulseScore: pulse,
     thisMonth: {
       monthKey: mk,
       income: round2(month.income),

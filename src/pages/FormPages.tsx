@@ -9,6 +9,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 import { useStore, type Store } from '../store';
 import { can } from '../lib/permissions';
 import type { Transaction } from '../types';
+import type { LoanSeed } from '../lib/askVyactResponses';
 import { formPath } from '../lib/formRoutes';
 import { isSplitRow } from '../lib/txnEdit';
 
@@ -80,16 +81,25 @@ function SplitEdit() {
   return <SplitFormModal initial={txn} onClose={close} />;
 }
 
+/** v10.109.0 (R-1) — an EMI request's seed (Pip, Recurring) travels as router state, read once. */
+function useLoanSeed(): LoanSeed | null {
+  const location = useLocation();
+  const [seed] = useState(() => (location.state as { loanSeed?: LoanSeed } | null)?.loanSeed ?? null);
+  return seed;
+}
+
 function DebtNew() {
   const close = useFormClose('/debts');
-  return <DebtFormModal onClose={close} />;
+  const seed = useLoanSeed();
+  return <DebtFormModal onClose={close} seed={seed?.mode === 'new' ? seed : null} />;
 }
 
 function DebtEdit() {
   const debt = useRouteEntity(s => s.debts);
   const close = useFormClose('/debts');
+  const seed = useLoanSeed();
   if (!debt) return <Navigate to="/debts" replace />;
-  return <DebtFormModal initial={debt} onClose={close} />;
+  return <DebtFormModal initial={debt} onClose={close} seed={seed?.mode === 'edit' ? seed : null} />;
 }
 
 /** Budgets are the one form the screen gates by role; a direct link must not

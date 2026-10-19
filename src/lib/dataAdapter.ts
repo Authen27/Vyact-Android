@@ -26,10 +26,15 @@ import { expected } from './faults';
 // just gets its own bucket.
 // v7.3.0 — `savedViews` joins as a first-class entity (Money Map Item #4).
 //          Backed by `saved_views` table + `replace_saved_views` RPC.
-export type Entity =
-  | 'transactions' | 'budgets' | 'goals' | 'debts' | 'assets'
-  | 'members' | 'accounts' | 'savedViews' | 'recurring'
-  | 'budgetAllocations';   // v9.1 §4 — cloud-synced budget sub-limits
+// v10.110.0 (F1a, audit FE-SYN-04) — the entity list is a value, so the sign-out purge and the full
+// resync read the same list the type does (the purge named 'budget_allocations' while the cache key is
+// 'budgetAllocations', so budget lines outlived a sign-out).
+export const ENTITIES = [
+  'transactions', 'budgets', 'goals', 'debts', 'assets',
+  'members', 'accounts', 'savedViews', 'recurring',
+  'budgetAllocations',   // v9.1 §4 — cloud-synced budget sub-limits
+] as const;
+export type Entity = typeof ENTITIES[number];
 
 export interface DataAdapter {
   // households / profiles
@@ -155,15 +160,39 @@ export interface DataAdapter {
    *  wrong month in (first write wins). Adapters without a cache omit this.
    */
   positionIsCloudFresh?(householdId: string): boolean;
+  /**
+   * v10.110.0 (F1a, audit FE-SYN-08) — when the cloud read behind the rows the store last read was
+   *  applied (the oldest across the synced entities), or null when none has been this session. "Synced"
+   *  shows this time, never the time of a read served from the device's copy. Adapters without a cache
+   *  omit it.
+   */
+  cloudReadAt?(householdId: string): number | null;
+  /** v10.110.0 (F1a) — resolves once the background cloud reads started so far have landed or failed. */
+  cloudSettled?(): Promise<void>;
 }
 
 const ANON = 'local';
+
+// v10.111.0 (F1b, audit FE-SYN-06) — every read-modify-write of one cached list runs one at a time.
+// A user's save, a cloud pull and a flush's fold-back each read the whole list and wrote it back, so
+// two at once kept only one of their changes: a save could vanish from the cache while its write was
+// still queued. One chain per storage key, shared by every adapter instance (they share the storage).
+// Within one tab; tabs share the cache but not this chain.
+const listChains = new Map<string, Promise<unknown>>();
+function serialised<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = listChains.get(key) ?? Promise.resolve();
+  const result = previous.then(run, run);
+  const tail = result.then(() => undefined, () => undefined);
+  listChains.set(key, tail);
+  void tail.then(() => { if (listChains.get(key) === tail) listChains.delete(key); });
+  return result;
+}
 
 export class LocalStorageAdapter implements DataAdapter {
   constructor() {
     // Run a one-time anon-key migration (legacy -> vt_) where appropriate.
     // This is intentionally best-effort and idempotent.
-    try { this.migrateAnonKeys(); } catch { /* noop */ }
+    try { this.migrateAnonKeys(); } catch { /* fault-ok: the old keys stay where they are; nothing is lost */ }
   }
 
   private async read<T>(suffix: string, householdId: string, fallback: T): Promise<T> {
@@ -200,7 +229,7 @@ export class LocalStorageAdapter implements DataAdapter {
   private migrateAnonKeys(): void {
     try {
       // Guard so we only attempt this once per device
-      try { if (ls.readString('migrated_v1') === '1') return; } catch { /* continue */ }
+      try { if (ls.readString('migrated_v1') === '1') return; } catch { /* fault-ok: unreadable: the copy runs again and skips keys already copied */ }
       const anonKeys = [
         'transactions','budgets','goals','members','debts','assets','rates','profile',
         'profiles_list','active_profile','recurring','notifications','notification_prefs',
@@ -213,13 +242,13 @@ export class LocalStorageAdapter implements DataAdapter {
           if (localStorage.getItem(nk) === null) {
             const v = localStorage.getItem(lk);
             if (v !== null) {
-              try { localStorage.setItem(nk, v); } catch { /* noop */ }
+              try { localStorage.setItem(nk, v); } catch { /* fault-ok: the old key stays; the copy runs again next load */ }
             }
           }
-        } catch { /* continue */ }
+        } catch { /* fault-ok: the old keys stay; the copy runs again next load */ }
       }
-      try { ls.setString('migrated_v1', '1'); } catch { /* noop */ }
-    } catch { /* noop */ }
+      try { ls.setString('migrated_v1', '1'); } catch { /* fault-ok: the copy runs again next load and skips keys already copied */ }
+    } catch { /* fault-ok: the old keys stay where they are; nothing is lost */ }
   }
 
   // ── households ────────────────────────────────────────────────
@@ -265,11 +294,11 @@ export class LocalStorageAdapter implements DataAdapter {
     await this.write('profiles_list', ANON, list);
   }
   async getActiveHousehold(): Promise<string> {
-    try { const v = ls.readString('active_profile'); if (v) return v; } catch { /* noop */ }
+    try { const v = ls.readString('active_profile'); if (v) return v; } catch { /* fault-ok: unreadable: the default household opens */ }
     return ANON;
   }
   async setActiveHousehold(id: string): Promise<string> {
-    try { ls.setString('active_profile', id); } catch { /* noop */ }
+    try { ls.setString('active_profile', id); } catch { /* fault-ok: device storage is optional; the default household opens next time */ }
     return id;
   }
 
@@ -278,14 +307,25 @@ export class LocalStorageAdapter implements DataAdapter {
     return this.read<Profile | null>('profile', householdId, null);
   }
   async updateProfile(householdId: string, patch: Partial<Profile>): Promise<Profile> {
-    // W8a (FE-SYN-12): a profile that can't be READ must not be replaced by defaults + this patch.
-    const cur = (await this.readForWrite<Profile | null>('profile', householdId, null)) ?? {
-      name: '', email: '', baseCurrency: 'USD', language: 'en',
-      household: 'family', dateFormat: 'us', payoffStrategy: 'avalanche', extraPayment: 0,
-    };
-    const next = { ...cur, ...patch };
-    await this.write('profile', householdId, next);
-    return next;
+    return this.exclusive('profile', householdId, async () => {
+      // W8a (FE-SYN-12): a profile that can't be READ must not be replaced by defaults + this patch.
+      const cur = (await this.readForWrite<Profile | null>('profile', householdId, null)) ?? {
+        name: '', email: '', baseCurrency: 'USD', language: 'en',
+        household: 'family', dateFormat: 'us', payoffStrategy: 'avalanche', extraPayment: 0,
+      };
+      const next = { ...cur, ...patch };
+      await this.write('profile', householdId, next);
+      return next;
+    });
+  }
+
+  /**
+   * F1b — run `run` holding the lock of one cached list (`suffix` is an entity or another cache key).
+   * Inside, write that list only with the `*Row` methods or `write` paths that do not lock again:
+   * `upsert`, `put`, `remove`, `replaceAll` and `updateList` would wait for the lock they are in.
+   */
+  exclusive<T>(suffix: string, householdId: string, run: () => Promise<T>): Promise<T> {
+    return serialised(householdId === ANON ? suffix : `${householdId}_${suffix}`, run);
   }
 
   // ── generic CRUD ─────────────────────────────────────────────
@@ -296,13 +336,10 @@ export class LocalStorageAdapter implements DataAdapter {
     // LocalStorageAdapter is single-user / single-tab; concurrency conflicts
     // can't occur here, so `_expectedUpdatedAt` is accepted for interface
     // parity with SupabaseAdapter and intentionally ignored.
-    const list = await this.readForWrite<(T & { id: string })[]>(entity, householdId, []);
-    const id = record.id || uid();
-    const next = { ...record, id, updated_at: new Date().toISOString() } as T & { id: string };
-    const idx = list.findIndex(r => r.id === id);
-    if (idx >= 0) list[idx] = next; else list.push(next);
-    await this.write(entity, householdId, list);
-    return next;
+    return this.exclusive(entity, householdId, async () => {
+      const id = record.id || uid();
+      return this.putRow(entity, householdId, { ...record, id, updated_at: new Date().toISOString() } as T & { id: string });
+    });
   }
   /**
    * W3c (v10.67.0; audit FE-SYN-01) — cache-only: store a row EXACTLY as given. A server row keeps
@@ -310,6 +347,10 @@ export class LocalStorageAdapter implements DataAdapter {
    * edit's precondition and made it fail as a false conflict.
    */
   async put<T extends { id: string }>(entity: Entity, householdId: string, row: T): Promise<T> {
+    return this.exclusive(entity, householdId, () => this.putRow(entity, householdId, row));
+  }
+  /** F1b — `put` without taking the lock, for use inside `exclusive`. */
+  async putRow<T extends { id: string }>(entity: Entity, householdId: string, row: T): Promise<T> {
     const list = await this.readForWrite<{ id: string }[]>(entity, householdId, []);
     const idx = list.findIndex(r => r.id === row.id);
     if (idx >= 0) list[idx] = row; else list.push(row);
@@ -322,8 +363,25 @@ export class LocalStorageAdapter implements DataAdapter {
     return list.find(r => r.id === id) ?? null;
   }
   async remove(entity: Entity, householdId: string, id: string): Promise<void> {
+    await this.exclusive(entity, householdId, () => this.removeRow(entity, householdId, id));
+  }
+  /** F1b — `remove` without taking the lock, for use inside `exclusive`. */
+  async removeRow(entity: Entity, householdId: string, id: string): Promise<void> {
     const list = await this.readForWrite<{ id: string }[]>(entity, householdId, []);
     await this.write(entity, householdId, list.filter(r => r.id !== id));
+  }
+  /**
+   * F1b — read-modify-write one cached list under its lock. `change` gets the current rows and returns
+   * the next list; returning the same array leaves the stored list untouched (no write). A list that
+   * cannot be read is refused (W8a), never replaced.
+   */
+  async updateList<T>(entity: Entity, householdId: string, change: (rows: T[]) => T[] | Promise<T[]>): Promise<T[]> {
+    return this.exclusive(entity, householdId, async () => {
+      const rows = await this.readForWrite<T[]>(entity, householdId, []);
+      const next = await change(rows);
+      if (next !== rows) await this.write(entity, householdId, next);
+      return next;
+    });
   }
   async createBudgetChecked(householdId: string, budget: Partial<Budget>): Promise<Budget> {
     // Local mirror of the DB authority: reject a second budget for the same slot.
@@ -344,16 +402,15 @@ export class LocalStorageAdapter implements DataAdapter {
     const saved = (mode === 'create' && !budget.id)
       ? await this.createBudgetChecked(householdId, budget)
       : await this.upsert('budgets', householdId, budget) as Budget;
-    const all = await this.readForWrite<BudgetAllocation[]>('budgetAllocations', householdId, []);
-    const others = all.filter(a => a.budgetId !== saved.id);
     const fresh: BudgetAllocation[] = allocations
       .filter(a => (a.category ?? '') !== '')
       .map(a => ({ id: uid(), budgetId: saved.id, category: a.category!, amount: a.amount ?? 0 }));
-    await this.write('budgetAllocations', householdId, [...others, ...fresh]);
+    await this.updateList<BudgetAllocation>('budgetAllocations', householdId,
+      all => [...all.filter(a => a.budgetId !== saved.id), ...fresh]);
     return { budget: saved, allocations: fresh };
   }
   async replaceAll<T = unknown>(entity: Entity, householdId: string, records: T[]): Promise<T[]> {
-    await this.write(entity, householdId, records);
+    await this.exclusive(entity, householdId, () => this.write(entity, householdId, records));
     return records;
   }
 
@@ -363,15 +420,17 @@ export class LocalStorageAdapter implements DataAdapter {
     return [...rows].sort((left, right) => left.month.localeCompare(right.month));
   }
   async recordNetWorthSnapshot(householdId: string, snapshot: NetWorthSnapshot): Promise<NetWorthSnapshot> {
-    const rows = await this.readForWrite<NetWorthSnapshot[]>('net_worth_snapshots', householdId, []);
-    const existing = rows.find(row => row.month === snapshot.month);
-    if (existing) return existing;   // first write for a month wins
-    await this.write('net_worth_snapshots', householdId, mergeSnapshot(rows, snapshot));
-    return snapshot;
+    return this.exclusive('net_worth_snapshots', householdId, async () => {
+      const rows = await this.readForWrite<NetWorthSnapshot[]>('net_worth_snapshots', householdId, []);
+      const existing = rows.find(row => row.month === snapshot.month);
+      if (existing) return existing;   // first write for a month wins
+      await this.write('net_worth_snapshots', householdId, mergeSnapshot(rows, snapshot));
+      return snapshot;
+    });
   }
   /** Cache-only: the hybrid adapter mirrors the cloud's rows here for offline reads. */
   async replaceNetWorthSnapshots(householdId: string, rows: NetWorthSnapshot[]): Promise<void> {
-    await this.write('net_worth_snapshots', householdId, rows);
+    await this.exclusive('net_worth_snapshots', householdId, () => this.write('net_worth_snapshots', householdId, rows));
   }
 }
 

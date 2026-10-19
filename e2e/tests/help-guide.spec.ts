@@ -86,7 +86,7 @@ test('HELP-FC-001 - current task screens provide reproducible fictional guide im
   await txnModal.setAmount(42);
   await txnModal.setCategory('groceries');
   await txnModal.setDescription('Weekly groceries');
-  await txnModal.dialog.getByTestId('txn-source').selectOption({ label: 'Cash' });
+  await txnModal.dialog.getByTestId('txn-source').selectOption({ label: 'Cash in Hand' });
   await capture('expense', txnModal.dialog);
   await txnModal.cancel();
 

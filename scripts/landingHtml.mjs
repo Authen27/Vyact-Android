@@ -29,6 +29,15 @@ export function landingJsonLd(copy) {
       '@context': 'https://schema.org', '@type': 'FAQPage',
       mainEntity: copy.FAQ.map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a } })),
     },
+    // v10.108.0 — the promo under the hero (the same shape as a Learn lesson's VideoObject).
+    {
+      '@context': 'https://schema.org', '@type': 'VideoObject',
+      name: copy.PROMO.name, description: copy.STANDARD_DESCRIPTION,
+      thumbnailUrl: [copy.promoThumbnailUrl(copy.PROMO.id)],
+      uploadDate: copy.PROMO.uploadDate, duration: copy.PROMO.duration,
+      contentUrl: copy.promoWatchUrl(copy.PROMO.id), embedUrl: `https://www.youtube.com/embed/${copy.PROMO.id}`,
+      publisher: orgRef, inLanguage: 'en',
+    },
     org,
   ];
 }
@@ -45,12 +54,21 @@ const THEME_BOOT = `<script>(function(){try{var t=localStorage.getItem('vt_theme
 // signed-in visitor still gets "Go to Dashboard"). Until it is up, this script records
 // CTA clicks itself; once the app is up (window.__vyLandingLive) the app's own onClick
 // does, so nothing is counted twice.
-const appBoot = src => `<script>(function(){var src=${JSON.stringify(src)},done=false,evs=['scroll','wheel','touchstart','pointerdown','keydown'];
+//
+// v10.108.0 — the same goes for the promo poster ([data-promo]). A tap before the app is up stays on
+// the page: the script counts the play, marks it (window.__vyPromo) for Landing.tsx, which starts the
+// player once the app has redrawn #root, and pulses the button meanwhile. If the app has not come up
+// after 5 s, the script swaps in the player itself, so the tap is never lost.
+const appBoot = (src, embed, title) => `<script>(function(){var src=${JSON.stringify(src)},done=false,evs=['scroll','wheel','touchstart','pointerdown','keydown'];
 function boot(){if(done)return;done=true;evs.forEach(function(e){removeEventListener(e,boot,true)});var s=document.createElement('script');s.type='module';s.crossOrigin='';s.src=src;document.head.appendChild(s);}
 evs.forEach(function(e){addEventListener(e,boot,{capture:true,passive:true})});
 try{for(var i=0;i<localStorage.length;i++){if(/^sb-.+-auth-token$/.test(localStorage.key(i)||'')){if(document.readyState==='complete')boot();else addEventListener('load',boot,{once:true});break;}}}catch(e){}
-addEventListener('click',function(e){if(window.__vyLandingLive)return;var a=e.target&&e.target.closest&&e.target.closest('[data-cta]');if(!a||!window.gtag)return;
+addEventListener('click',function(e){if(window.__vyLandingLive)return;var t=e.target;if(!t||!t.closest)return;
 var p='web';try{if(matchMedia('(display-mode: standalone)').matches||navigator.standalone)p='pwa';}catch(x){}
+var v=t.closest('[data-promo]');if(v){e.preventDefault();if(window.__vyPromo)return;window.__vyPromo='play';v.setAttribute('data-loading','');boot();
+if(window.gtag)window.gtag('event','landing_video_play',{page:'/',platform:p,transport_type:'beacon'});
+setTimeout(function(){if(window.__vyLandingLive||!v.isConnected)return;var f=document.createElement('iframe');f.src=${JSON.stringify(embed)};f.title=${JSON.stringify(title)};f.allow='autoplay; encrypted-media; picture-in-picture; fullscreen';f.allowFullscreen=true;f.className='absolute inset-0 w-full h-full border-0';v.replaceWith(f);},5000);return;}
+var a=t.closest('[data-cta]');if(!a||!window.gtag)return;
 window.gtag('event','landing_cta_click',{placement:a.getAttribute('data-cta'),page:'/',platform:p,transport_type:'beacon'});},true);})();</script>`;
 
 function must(html, re, what) {
@@ -78,7 +96,8 @@ export function landingHtml(indexHtml, markup, copy) {
   // its modulepreloads, and boot it on interaction instead.
   const entry = /<script type="module"[^>]*\ssrc="(\/assets\/[^"]+\.js)"[^>]*><\/script>/.exec(h);
   if (!entry) throw new Error('landing.html: index.html is missing the app entry script');
-  h = h.replace(entry[0], () => appBoot(entry[1])).replace(/\s*<link rel="modulepreload"[^>]*>/g, '');
+  h = h.replace(entry[0], () => appBoot(entry[1], copy.promoEmbedUrl(copy.PROMO.id), copy.PROMO.name))
+    .replace(/\s*<link rel="modulepreload"[^>]*>/g, '');
   return h;
 }
 

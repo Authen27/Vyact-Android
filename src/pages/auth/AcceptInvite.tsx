@@ -31,6 +31,8 @@ export default function AcceptInvite() {
       }
       // W8a (audit FE-PLT-07): a signed-in visit asks first. Opening a link (one forwarded to the wrong
       // person, or tapped by accident) used to join the household on page load.
+      // v10.114.0 (T2a, INT-HH-09): the link has been reached; nothing should send anyone here again.
+      try { sessionStorage.removeItem('pending_invite_token'); } catch { /* fault-ok: private mode: nothing was kept there */ }
       setStatus('confirm');
     })();
   }, [token]);

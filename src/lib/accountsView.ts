@@ -12,7 +12,7 @@
 // available limit is derived, and a statement that disagrees is a reconcile —
 // never an overwrite.
 import type {
-  Account, AccountDependencies, PaymentMode, RecurringSchedule, Transaction,
+  Account, AccountDependencies, Debt, PaymentMode, RecurringSchedule, Transaction,
 } from '../types';
 import { localDayUTC } from './format';
 import { parseAmount } from './amountInput';
@@ -218,7 +218,18 @@ export function accountsSummary(accounts: Account[], balanceOf: (a: Account) => 
  */
 export function hasDependencies(d: AccountDependencies): boolean {
   return d.transactions.count > 0 || d.recurring.length > 0
-    || d.openSplits.length > 0 || d.loanEvents > 0;
+    || d.openSplits.length > 0 || d.loanEvents > 0 || (d.loans?.length ?? 0) > 0;
+}
+
+/**
+ * v10.119.0 (owner, 19 Oct 2026) — the live loans that record their EMIs automatically from this account,
+ * the set the database's `account_dependencies` lists as `loans`. While there are any, the account can't be
+ * deleted or archived (a payment from it would be refused, and the EMI would silently go unrecorded); a
+ * move carries them to the destination.
+ */
+export function loansRecordingFrom(accountId: string, debts: readonly Debt[]): Debt[] {
+  return debts.filter(d => d.fundingAccountId === accountId && !!d.autoRecord && !d.paidOffAt
+    && (d.direction ?? 'owed_by_me') === 'owed_by_me');
 }
 
 /**
@@ -230,6 +241,7 @@ export function localAccountDependencies(
   accountId: string,
   transactions: Transaction[],
   schedules: RecurringSchedule[],
+  debts: readonly Debt[] = [],
 ): AccountDependencies {
   const txns = transactions.filter(t => t.accountId === accountId || t.toAccountId === accountId);
   const groups = new Map<string, { label: string; count: number; total: number }>();
@@ -255,6 +267,7 @@ export function localAccountDependencies(
       .map(s => ({ id: s.id, label: s.transactionTemplate.description || s.transactionTemplate.category || 'Recurring' })),
     openSplits: [],
     loanEvents: 0,
+    loans: loansRecordingFrom(accountId, debts).map(d => ({ id: d.id, name: d.name })).sort((a, b) => a.name.localeCompare(b.name)),
   };
 }
 

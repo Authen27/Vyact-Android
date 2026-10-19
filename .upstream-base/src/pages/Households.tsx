@@ -23,7 +23,7 @@ import {
   changeMemberRole, removeMembership, leaveHousehold, listActivity,
 } from '../lib/auth';
 import { track } from '../lib/analytics';
-import { sb } from '../lib/supabase';
+import { sb, APP_URL } from '../lib/supabase';
 import { can, roleLabel, type Action } from '../lib/permissions';
 import type { ProfileTypeKey, AppRole } from '../types';
 import ActivityRow from '../components/households/ActivityRow';
@@ -526,7 +526,7 @@ function InvitesList({ invites, canRevoke, onRevoked }: {
   return (
     <div className="divide-y divide-line">
       {invites.map(inv => {
-        const url = `${window.location.origin}/invite/${encodeURIComponent(inv.token)}`;
+        const url = `${APP_URL}/invite/${encodeURIComponent(inv.token)}`;
         const expiry = new Date(inv.expires_at);
         const expired = expiry < new Date();
         const isLinkOnly = inv.invited_email === INVITE_LABEL_SENTINEL;
@@ -586,8 +586,7 @@ function CreateHouseholdModal({ open, onClose, onCreated }: {
           await onCreated(name.trim(), type, currency);
           setName('');
         } catch {
-          // Already toasted by onCreated — keep the typed name/type/currency
-          // so a transient failure doesn't force retyping.
+          // fault-ok: onCreated has already said what failed; the typed name, type and currency are kept for a retry
         } finally { setSubmitting(false); }
       }}>
         <Field label="Name"><Input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Smith Family · Acme Consulting · …" required /></Field>
@@ -655,7 +654,7 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
           text: `You're invited to join ${householdName} on Vyact.`,
           url,
         });
-      } catch { /* user cancelled */ }
+      } catch { /* fault-ok: the person closed the share sheet */ }
     } else {
       void copyLink(url);
     }
@@ -716,7 +715,7 @@ function InviteModal({ open, householdId, householdName, onClose, onSent }: {
           try {
             const inv = await createInviteLink(householdId, role, householdRole, label.trim() || undefined, check.email);
             track('member_invited', { invite_role: role });
-            const url = `${window.location.origin}/invite/${encodeURIComponent((inv as { token: string }).token)}`;
+            const url = `${APP_URL}/invite/${encodeURIComponent((inv as { token: string }).token)}`;
             setLink(url);
             void copyLink(url);
             onSent();

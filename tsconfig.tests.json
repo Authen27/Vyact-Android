@@ -1,0 +1,16 @@
+{
+  "//": "T5a (GATE-04): type-checks the unit tests (and the public-page JS and Edge code they import). tsconfig.json excludes the tests, and Vitest only transpiles them, so type errors in tests and fixtures went unseen. Edge code reads supabase-js and Deno's globals as scripts/typecheck/edge.tsconfig.json does.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": false,
+    "paths": {
+      "@/*": ["./src/*"],
+      "https://esm.sh/@supabase/supabase-js@2.45.0": ["./node_modules/@supabase/supabase-js"]
+    }
+  },
+  "include": ["src", "../scripts/typecheck/edge-globals.d.ts"],
+  "exclude": ["e2e", "dist", "node_modules"]
+}

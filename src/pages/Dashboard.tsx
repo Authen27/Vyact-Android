@@ -1,10 +1,10 @@
 // Dashboard — Track ▸ Overview (Batch A fidelity pass · board M1/D1).
 // Mobile: pace banner → cash-flow hero (inline 6-mo trend + scrub tooltip) →
-// pulse ring + component meters → budget progress → recent. Desktop: greeting
-// + Add-transaction header → cash-flow/net-worth hero pair → pulse card +
-// metric tiles + insight spine-cards → 3-col panels. Every number reuses the
-// SAME aggregates as before (monthlyData/pulse/spendByCategory) — this pass
-// changes presentation only.
+// budget progress → recent. Desktop: greeting + Add-transaction header →
+// cash-flow/net-worth hero pair → metric tiles + insight spine-cards → 3-col
+// panels. Every number reuses the SAME aggregates as before (monthlyData /
+// spendByCategory) — this pass changes presentation only. v10.109.0 (owner,
+// 16 Oct 2026): the Pulse Score is archived; its ring, meters and advice line are gone.
 import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../store';
@@ -13,7 +13,7 @@ import { Panel } from '../components/ui/Card';
 import EmptyState from '../components/ui/EmptyState';
 import { CategoryDonut } from '../components/charts/DonutCharts';
 import {
-  selectMonthlyData, selectPulse, selectInsights,
+  selectMonthlyData, selectInsights,
   selectSpendByCategory, selectRecentTxns, selectNetWorth,
   selectMonthlyDebtPayment,
 } from '../lib/selectors';
@@ -29,30 +29,13 @@ import { can } from '../lib/permissions';
 import { motion } from 'framer-motion';
 import { staggerContainer, staggerItem } from '../lib/motion';
 import { getCat } from '../constants';
-import { ArrowRight } from 'lucide-react';
 import { FEATURES } from '../config/features';
-import type { PulseScore } from '../lib/calculations';
 import type { Transaction } from '../types';
 import PageHead from '../components/ui/PageHead';
 
 // The "Learn in a minute" shelf carries the lesson library (a large JSON): loaded after the Dashboard
 // renders, never in its first paint.
 const LearnShelf = lazy(() => import('../components/dashboard/LearnShelf'));
-
-/** #7 — one actionable line under the Pulse: point at the weakest applicable
- *  component so the user always knows what to do next. */
-function pulseAdvice(p: PulseScore): { text: string; to: string } {
-  if (p.total === null) return { text: 'Add income and a budget to start your Pulse.', to: '/budgets' };
-  const comps: [number, boolean, string, string][] = [
-    [p.components.budget,  p.applicable.budget,  'A budget is over — review and adjust it.', '/budgets'],
-    [p.components.savings, p.applicable.savings, 'Lift your savings rate — trim a discretionary category.', '/budgets'],
-    [p.components.trend,   p.applicable.trend,   'Spending is trending up — see what changed.', '/reports'],
-    [p.components.debt,    p.applicable.debt,    'Bring your debt-to-income down.', '/debts'],
-  ];
-  const weakest = comps.filter(c => c[1]).sort((a, b) => a[0] - b[0])[0];
-  if (!weakest || weakest[0] >= 80) return { text: "You're in good shape — keep it up.", to: '/reports' };
-  return { text: weakest[2], to: weakest[3] };
-}
 
 const greet = (): string => {
   const h = new Date().getHours();
@@ -79,7 +62,6 @@ export default function Dashboard() {
   const mk = nowMonthKey();
   const month = useStore(selectMonthlyData(mk));
   const rate = month.income > 0 ? Math.round((month.income - month.expense) / month.income * 100) : 0;
-  const pulse = useStore(selectPulse);
   const insights = useStore(selectInsights);
   const spend = useStore(selectSpendByCategory(mk));
   const donutData = Object.entries(spend).map(([catId, amount]) => ({ catId, amount }));
@@ -137,7 +119,6 @@ export default function Dashboard() {
     return p ? { under: p.under, amt: p.amount } : null;
   }, [budgetNow]);
 
-  const advice = pulseAdvice(pulse);
 
   // Board M1 status banner. Prefer the budget-pace nudge; when there's no
   // current-month budget, fall back to a this-month savings status so the
@@ -242,15 +223,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Pulse + desktop metric tiles / insight spine-cards (board D1). */}
-      <div data-testid="dashboard-metrics" className={FEATURES.dashboard.showPulse ? 'grid sm:grid-cols-[230px_1fr] gap-section-content' : 'hidden sm:block'}>
-        {FEATURES.dashboard.showPulse && <div data-testid="dashboard-pulse">
-          <PulseBlock pulse={pulse} />
-          {/* #7 — actionable next step; board mobile keeps this as the one nudge line. */}
-          <Link to={advice.to} className="sm:hidden mt-2 flex items-start gap-1.5 text-[0.76rem] text-ink-mid hover:text-ink px-1">
-            <span>{advice.text}</span><ArrowRight size={13} className="text-coral shrink-0 mt-0.5" />
-          </Link>
-        </div>}
+      {/* Desktop metric tiles / insight spine-cards (board D1). */}
+      <div data-testid="dashboard-metrics" className="hidden sm:block">
         <div className="hidden sm:flex flex-col gap-group">
           <div className="grid grid-cols-3 gap-section-content">
             <MetricTile
@@ -529,72 +503,6 @@ function NetWorthHero({ ta, tl, baseCur }: { ta: number; tl: number; baseCur: st
         <span>Liabilities <b className="num text-ink">{fmtShort(tl, baseCur)}</b></span>
       </div>
     </Link>
-  );
-}
-
-/** Board pulse composite — conic ring + the four component meters. Mobile is
- *  the bare ring-beside-meters row (M1); desktop is the titled card (D1). */
-function PulseBlock({ pulse }: { pulse: PulseScore }) {
-  const score = pulse.total;
-  const colorOf = (v: number) => v >= 70 ? 'hsl(var(--sage))' : v >= 40 ? 'hsl(var(--honey))' : 'hsl(var(--terra))';
-  const band = score == null ? 'No data yet' : score >= 80 ? 'Excellent' : score >= 60 ? 'On track' : score >= 40 ? 'Watch' : 'At risk';
-  const deg = ((score ?? 0) / 100) * 360;
-
-  const ring = (size: number, fontSize: number) => (
-    <div className="rounded-full flex-shrink-0" style={{ width: size, height: size, padding: 7, boxShadow: 'var(--neu-inset)' }}>
-      <div className="w-full h-full rounded-full relative flex items-center justify-center"
-        style={{ background: score == null ? 'var(--sunken)' : `conic-gradient(${colorOf(score)} ${deg}deg, var(--sunken) ${deg}deg)` }}>
-        <div aria-hidden className="absolute rounded-full" style={{ inset: 10, background: 'var(--canvas)', boxShadow: 'var(--neu-sm)' }} />
-        <div className="relative z-[1] text-center">
-          <div className="num font-display font-bold leading-none" style={{ fontSize, color: score == null ? 'var(--ff-ink-3)' : colorOf(score) }}>
-            {score ?? '—'}
-          </div>
-          <div className="font-mono text-[7.5px] tracking-[0.15em] uppercase text-ink-dim mt-1">{band}</div>
-        </div>
-      </div>
-    </div>
-  );
-
-  const rows: [string, number, boolean][] = [
-    ['Budgets', pulse.components.budget, pulse.applicable.budget],
-    ['Savings', pulse.components.savings, pulse.applicable.savings],
-    ['Trend',   pulse.components.trend,   pulse.applicable.trend],
-    ['Debt',    pulse.components.debt,    pulse.applicable.debt],
-  ];
-  const meters = (gap: string) => (
-    <div className={`flex flex-col ${gap}`}>
-      {rows.map(([label, v, applicable]) => (
-        <div key={label} className="flex items-center gap-2">
-          <span className="font-mono text-[8.5px] tracking-[0.15em] uppercase text-ink-dim w-[52px] flex-shrink-0">{label}</span>
-          <div className="flex-1 h-[5px] rounded-full overflow-hidden" style={{ background: 'var(--sunken)', boxShadow: 'var(--neu-inset)' }}>
-            {applicable && <i className="block h-full rounded-full chart-grow" style={{ width: `${v}%`, background: colorOf(v) }} />}
-          </div>
-          <span className="num text-[11px] w-6 text-right" style={{ color: applicable ? colorOf(v) : 'var(--ff-ink-3)' }}>
-            {applicable ? v : '—'}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-
-  return (
-    <>
-      {/* M1 — bare composite: ring left, meters right. */}
-      <div className="sm:hidden flex items-center gap-3">
-        <Link to="/reports" aria-label={`Family Pulse ${score ?? '—'} of 100 — open reports`} className="rounded-full">
-          {ring(108, 28)}
-        </Link>
-        <div className="flex-1 min-w-0">{meters('gap-1.5')}</div>
-      </div>
-      {/* D1 — titled pulse card. */}
-      <div className="hidden sm:block rounded-r3 p-4 text-center h-full" style={{ background: 'var(--canvas)', boxShadow: 'var(--neu)' }}>
-        <div className="font-mono text-[8.5px] tracking-[0.15em] uppercase mb-3" style={{ color: 'var(--accent-text)' }}>Family Pulse Score™</div>
-        <Link to="/reports" aria-label={`Family Pulse ${score ?? '—'} of 100 — open reports`} className="inline-block rounded-full mb-3">
-          {ring(118, 32)}
-        </Link>
-        <div className="text-left">{meters('gap-[5px]')}</div>
-      </div>
-    </>
   );
 }
 

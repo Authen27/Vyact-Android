@@ -33,7 +33,7 @@ import { baselineLabel, spendBaseline } from './spendBaseline';
 import { expandRRule } from './rrule';
 import { ruleOf, policyOf, isLoanEmiSchedule } from './recurring';
 import type { IntentResult, AssistantBucket } from './askVyactIntents';
-import { normaliseChips, type AssistantChip, type ResolveResult, type RecurringSeed } from './askVyactResponses';
+import { normaliseChips, type AssistantChip, type ResolveResult, type RecurringSeed, type LoanSeed } from './askVyactResponses';
 import {
   classifyIntentViaModel, phraseViaModel, phraseData,
   InventedFigureError, ModelUnavailableError, OffScopeReplyError, LOW_CONFIDENCE, type ModelCall,
@@ -114,6 +114,8 @@ export interface AssistantTurn {
   seed?: Partial<Transaction>;
   /** v10.39.1 (P21) — draft for the Recurring section's schedule sheet. */
   recurringSeed?: RecurringSeed;
+  /** v10.109.0 (R-1) — an EMI request: opens Add loan, or that loan, with Record automatically on. */
+  loanSeed?: LoanSeed;
   /**
    * Up to three one-tap follow-ups (#62). Already normalised and capped by
    * `runAssistant` — a renderer may show these verbatim without re-checking.
@@ -403,17 +405,13 @@ function positionFacts(ctx: AssistantContext) {
     // W8a (audit FE-PIP-13): with no spending history there is no "typical month" to divide by — say so
     // rather than "0.0 months, a thin cushion". Track E, E4: two labelled figures (coverFacts).
     ...coverFacts(ctx),
-    // v10.39.1 (P7) — Pulse scores this month's habits (budgets, savings RATE, trend,
-    // debt). It says nothing about how long savings would last, so a 100/100 beside a
-    // thin cushion is not a contradiction — but an answer must not read it as one.
-    pulse_measures: "budgets, this month's savings rate, spending trend and debt — not how long your savings would last",
+    // v10.109.0 (owner, 16 Oct 2026): the Pulse Score is archived, so no score is stated here.
     ...(basisOf(ctx).averageMonthly > 0 && s.netWorth.liquidityMonths < 3
-      ? { cushion_note: `liquid savings cover ${s.netWorth.liquidityMonths.toFixed(1)} months at your usual spending, under the usual three-month cushion, whatever the Pulse score says` }
+      ? { cushion_note: `liquid savings cover ${s.netWorth.liquidityMonths.toFixed(1)} months at your usual spending, under the usual three-month cushion` }
       : {}),
     income_this_month: money(s.thisMonth.income, ctx),
     spending_this_month: money(s.thisMonth.expense, ctx),
     savings_rate_this_month: `${Math.round(s.thisMonth.netSavingsRate * 100)}%`,
-    pulse_score: s.pulseScore.total == null ? 'not enough data yet' : `${s.pulseScore.total}/100`,
     // W5 (P1): an annual line is not judged on one month.
     budgets_over_limit: s.budgets.filter(b => !b.annual && b.spentPct > 100).map(b => getCat(b.category).label),
     // v10.38.1 (P3) — raised, never silently corrected. Cash cannot be negative in
@@ -489,7 +487,7 @@ function capabilitySummary(): string {
 }
 
 /** A quick reply: the text, and the chips to offer after it (none on a close). */
-export interface QuickReply { reply: string; chips?: AssistantChip[] }
+export interface QuickReply { reply: string; chips?: AssistantChip[]; loanSeed?: LoanSeed }
 
 /**
  * v10.41.0 — the RECEPTIONIST (design: "Vyact receptionist and button replies").
@@ -583,6 +581,18 @@ export function quickReply(utterance: string, ctx?: AssistantContext): QuickRepl
   }
   if (/^add (an |a )?account$/.test(t)) {
     return { reply: 'Accounts live on the Accounts screen: Plan › Accounts › Add account. Add the bank or card you spend from most, with its balance today, and the rest follows.' };
+  }
+  // v10.109.0 (R-1) — the "Record … automatically" chip: opens that loan with the switch on, no model call.
+  const auto = t.match(/^record (.+?) (?:loan )?emi automatically$/);
+  if (auto && ctx) {
+    const loans = loansNamedIn(auto[1], liveLoans(ctx));
+    if (loans.length === 1) {
+      const d = loans[0];
+      return d.autoRecord
+        ? { reply: `${d.name}'s EMI is already recorded automatically on its date. It's in Recurring › Loan EMIs.` }
+        : { reply: `Opening ${d.name} with Record automatically on. Check the paying account and the next EMI date, then save.`,
+            loanSeed: { mode: 'edit', debtId: d.id, autoRecord: true } };
+    }
   }
   return null;
 }
@@ -1000,6 +1010,86 @@ const ordinal = (n: number): string => {
   return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
 };
 
+// ── v10.109.0 (owner, 16 Oct 2026; R-1) — an EMI is set up on its LOAN, never as a schedule ──────────
+//
+// A loan's EMI is paid by the loan (pay_loan) and recorded on its date when the loan's "Record
+// automatically" is on; Recurring MIRRORS each loan (Loan EMIs) and hides any EMI schedule. A Recurring
+// draft for an EMI therefore saved a schedule nobody would ever see. Pip hands the request to the loan:
+// an existing loan's EMI is stated (with a "Record automatically" chip when that is off); otherwise Add
+// loan opens pre-filled with Record automatically on. Written here, with no model call.
+const EMI_WORDS = /\b(emi|emis|instal+ments?|loan (re)?payments?)\b/;
+const NAME_STOP = new Set(['loan', 'loans', 'emi', 'emis', 'the', 'my', 'our', 'for', 'and', 'account', 'monthly',
+  'set', 'setup', 'add', 'pay', 'paying', 'every', 'month', 'new', 'a', 'an', 'up']);
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dayMonth = (iso: string) => `${Number(iso.slice(8, 10))} ${MONTH_ABBR[Number(iso.slice(5, 7)) - 1]}`;
+
+/** The household's live loans: owed by it, paid by EMI, not cleared. */
+function liveLoans(ctx: AssistantContext): Debt[] {
+  return (ctx.debts ?? []).filter(d => (d.direction ?? 'owed_by_me') !== 'owed_to_me' && d.type !== 'credit_card'
+    && d.minimumPayment > 0 && !d.paidOffAt);
+}
+const nameWords = (name: string) => normalise(name).split(/[^a-z0-9]+/).filter(w => w.length >= 3 && !NAME_STOP.has(w));
+/** The loans whose names the words mention. */
+function loansNamedIn(text: string, loans: Debt[]): Debt[] {
+  const words = new Set(normalise(text).split(/[^a-z0-9]+/));
+  return loans.filter(d => nameWords(d.name).some(w => words.has(w)));
+}
+/** "car" from "set up my car loan EMI" / "car emi" — the name a new loan would carry. */
+function loanNameFrom(text: string, merchant?: unknown): string {
+  const m = normalise(text).match(/\b([a-z]+)\s+loan\b/) ?? normalise(text).match(/\b([a-z]+)\s+emi\b/);
+  const word = m && !NAME_STOP.has(m[1]) ? m[1]
+    : typeof merchant === 'string' && merchant.trim() ? normalise(merchant).replace(/\b(loan|emi)\b/g, '').trim() : '';
+  return word ? `${word.charAt(0).toUpperCase()}${word.slice(1)} loan` : 'Loan';
+}
+/** The next date on day `day` of a month, from today (a 31st → the month's last day). */
+function nextOnDay(now: Date, day: number): string {
+  const at = (y: number, m: number) => new Date(y, m, Math.min(day, new Date(y, m + 1, 0).getDate()));
+  const thisMonth = at(now.getFullYear(), now.getMonth());
+  return isoDay(thisMonth.getDate() >= now.getDate() ? thisMonth : at(now.getFullYear(), now.getMonth() + 1));
+}
+const recordChip = (d: Debt): AssistantChip => ({ label: `Record ${d.name} automatically`, prompt: `record ${d.name} emi automatically` });
+const accountName = (ctx: AssistantContext, id?: string) => (id ? ctx.accounts?.find(a => a.id === id)?.name : undefined);
+
+/** What an EMI request becomes: the loan's own EMI, or Add loan pre-filled. */
+function emiHandoff(e: IntentResult['entities'], ctx: AssistantContext): ResolveResult {
+  const loans = liveLoans(ctx);
+  const named = loansNamedIn(e.text, loans);
+  const nameless = nameWords(loanNameFrom(e.text, e.merchant)).length === 0;
+  const matches = named.length ? named : nameless && loans.length === 1 ? loans : [];
+  if (matches.length === 1) {
+    const d = matches[0];
+    const next = d.dueDate ? `, next on ${dayMonth(d.dueDate)}` : '';
+    const from = accountName(ctx, d.fundingAccountId);
+    const message = d.autoRecord
+      ? `Your ${d.name} EMI is already set up from the loan: Vyact records ${money(d.minimumPayment, ctx)} on its date${next}${from ? ` from ${from}` : ''}. It's in Recurring › Loan EMIs.`
+      : `Your ${d.name} EMI (${money(d.minimumPayment, ctx)}${next}) is paid by the loan, so it's already in Recurring › Loan EMIs. Want Vyact to record it automatically on its date?`;
+    return { kind: 'capture', outcome: 'loan_handoff', vars: { message }, ...(d.autoRecord ? {} : { chips: [recordChip(d)] }) };
+  }
+  if (matches.length === 0 && loans.length > 1 && nameless) {
+    const list = loans.map(d => `${d.name} ${money(d.minimumPayment, ctx)}`).join(', ');
+    const off = loans.filter(d => !d.autoRecord);
+    return { kind: 'capture', outcome: 'loan_handoff',
+      vars: { message: `Your loans' EMIs are already in Recurring › Loan EMIs: ${list}.${off.length ? ' Which one should Vyact record automatically?' : ' Vyact records each of them on its date.'}` },
+      ...(off.length ? { chips: off.slice(0, 3).map(recordChip) } : {}) };
+  }
+  if (matches.length > 1) {
+    return { kind: 'capture', outcome: 'loan_handoff',
+      vars: { message: `That could be ${matches.map(d => d.name).join(' or ')}. Which loan?` },
+      chips: matches.filter(d => !d.autoRecord).slice(0, 3).map(recordChip) };
+  }
+  // No loan yet: Add loan, pre-filled, with Record automatically on (owner).
+  const emi = amountIsStated(e.text, e.amount) ? e.amount : undefined;
+  const fromText = e.text.match(/\b([1-9]|[12]\d|3[01])(st|nd|rd|th)\b/);
+  const day = typeof e.dayOfMonth === 'number' ? Math.trunc(e.dayOfMonth) : fromText ? Number(fromText[1]) : undefined;
+  const nextEmiDate = day && day >= 1 && day <= 31 ? nextOnDay(wallClock(ctx.tz), day) : undefined;
+  const name = loanNameFrom(e.text, e.merchant);
+  const what = emi != null ? `${money(emi, ctx)} a month${day ? ` on the ${ordinal(day)}` : ''}` : 'your EMI';
+  return { kind: 'capture', outcome: 'loan_handoff',
+    vars: { message: `An EMI is paid by its loan, so I've opened Add loan for ${name} with ${what} and Record automatically on. `
+      + `Add what's owed and the rate, choose the paying account, and save. Nothing is set up until you do.` },
+    loanSeed: { mode: 'new', name, ...(emi != null ? { emi } : {}), ...(nextEmiDate ? { nextEmiDate } : {}), autoRecord: true } };
+}
+
 /** v10.39.1 (P21) — the recurring draft, from what the user actually said. */
 function recurringSeedFrom(e: IntentResult['entities']): RecurringSeed {
   const text = e.text;
@@ -1186,6 +1276,10 @@ function resolveCore(intent: IntentResult, ctx: AssistantContext): ResolveResult
     // as for a one-off capture. v9.1 made Recurring the only place a schedule is
     // authored, and this keeps it so — chat only fills the draft in.
     case 'capture.recurring': {
+      // v10.109.0 (R-1): an EMI goes to its loan, never to a schedule (Recurring hides EMI schedules).
+      if (EMI_WORDS.test(normalise(e.text)) || resolveCategoryId(typeof e.category === 'string' ? e.category : undefined) === 'loan_emi') {
+        return emiHandoff(e, ctx);
+      }
       if (e.amount == null) return { kind: 'capture', outcome: 'missing_amount', vars: {} };
       const seed = recurringSeedFrom(e);
       return {
@@ -1336,7 +1430,11 @@ function resolveCore(intent: IntentResult, ctx: AssistantContext): ResolveResult
       // One overview serves all three branches: net worth, balances and "how am I
       // doing" are the same question at different zoom levels, and each used to
       // get a single pre-written sentence.
-      const facts = { ...positionFacts(ctx), ...loggingFacts(ctx) };
+      const facts = {
+        ...positionFacts(ctx), ...loggingFacts(ctx),
+        // v10.109.0 (owner): someone asking for "my pulse score" is told it was retired, and gets the position.
+        ...(/\bpulse\b/i.test(e.text) ? { pulse_score: 'retired: Vyact no longer gives a Pulse score; this is your position instead' } : {}),
+      };
       const analysis = [
         'Read your net worth, assets and debt',
         "Compared this month's income with your spending",
@@ -1354,18 +1452,22 @@ function resolveCore(intent: IntentResult, ctx: AssistantContext): ResolveResult
           detail: `Roughly ${s.netWorth.liquidityMonths.toFixed(1)} months of your usual spending in liquid savings.`,
         } };
       }
-      const total = s.pulseScore.total ?? 0;
-      // v10.39.1 (P7) — "Strong — keep doing what you are doing" was said beside 1.7
-      // months of cover. Pulse does not measure the cushion, so the verdict line must
-      // not speak for it: a strong score with a thin cushion says both.
-      const thinCushion = s.netWorth.liquidityMonths < 3 && total >= 65;
+      // v10.109.0 (owner, 16 Oct 2026): "how am I doing?" is answered from the position, never a score —
+      // this month's cash flow and savings rate, then the cushion or the budgets over.
+      const kept = s.thisMonth.income - s.thisMonth.expense;
+      const thinCushion = basisOf(ctx).averageMonthly > 0 && s.netWorth.liquidityMonths < 3;
+      const overLines = s.budgets.filter(b => !b.annual && b.spentPct > 100);
       return { kind: 'interpret', outcome: 'ok', facts, analysis, vars: {
-        headline: `Your Pulse Score is ${total}/100.`,
+        headline: s.thisMonth.income > 0
+          ? kept >= 0
+            ? `This month you've kept ${Math.round(s.thisMonth.netSavingsRate * 100)}% of what came in.`
+            : `This month you've spent ${money(-kept, ctx)} more than came in.`
+          : `Your net worth is ${netMoney(s.netWorth.netWorth, ctx, 'you owe more than you own')}.`,
         detail: thinCushion
-          ? `Your monthly habits score well, but your cushion is thin — about ${s.netWorth.liquidityMonths.toFixed(1)} months at your usual spending.`
-          : total >= 80 ? 'Strong — keep doing what you are doing.'
-          : total >= 65 ? 'Solid, with a little room to push.'
-          : 'There is room to improve — Insights lists your next steps.',
+          ? `Your cushion is thin — about ${s.netWorth.liquidityMonths.toFixed(1)} months at your usual spending.`
+          : overLines.length
+            ? `${overLines.length} ${overLines.length === 1 ? 'budget is' : 'budgets are'} over: ${overLines.map(b => getCat(b.category).label).join(', ')}.`
+            : `About ${s.netWorth.liquidityMonths.toFixed(1)} months of liquid cover at your usual spending.`,
       } };
     }
     case 'interpret.diagnostic': {
@@ -2244,6 +2346,7 @@ export async function runAssistant(
     return {
       reply: quick.reply, bucket: 'none', intentId: 'meta.assistant',
       chips: normaliseChips(quick.chips), clarify: false, allowedFigures: [],
+      ...(quick.loanSeed ? { loanSeed: quick.loanSeed } : {}),
     };
   }
   if (!backend) return unavailableTurn('not_configured');
@@ -2299,6 +2402,19 @@ export async function runAssistant(
       bucket: effective.bucket,
       intentId: effective.id,
       seed: result.seed,
+      chips: normaliseChips(result.chips),
+      clarify: false,
+      allowedFigures: figuresAllowedBy(result),
+    };
+  }
+  // v10.109.0 (R-1) — an EMI request is answered here, with no model call: the loan's own EMI, or Add loan
+  // pre-filled (the chat then opens it).
+  if (result.kind === 'capture' && result.outcome === 'loan_handoff') {
+    return {
+      reply: String(result.vars.message),
+      bucket: effective.bucket,
+      intentId: effective.id,
+      ...(result.loanSeed ? { loanSeed: result.loanSeed } : {}),
       chips: normaliseChips(result.chips),
       clarify: false,
       allowedFigures: figuresAllowedBy(result),

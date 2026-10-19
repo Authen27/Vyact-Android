@@ -108,6 +108,23 @@ export async function enqueueOp(op: QueueOp, ownerUid: string | null): Promise<S
  * Claim the due ops for one worker: pending (or stale-claimed), past their
  * backoff window, owned by this user, oldest first per entity.
  */
+/**
+ * F1c (v10.112.0; audit INT-TXN-11) — a split's sharing step references its transaction, so it waits
+ * while any earlier write of that transaction is still queued. It has its own lane (`shareSplit`), so a
+ * share that keeps failing never holds up the household's transactions.
+ */
+function waitsForItsTransaction(op: StoredOp, rows: Iterable<StoredOp>): boolean {
+  if (op.op !== 'shareSplit') return false;
+  const txnId = (op.payload as { txnId?: string } | undefined)?.txnId;
+  for (const other of rows) {
+    if (other.seq < op.seq && other.ownerUid === op.ownerUid && other.householdId === op.householdId
+        && other.entity === 'transactions' && ((other.payload as { id?: string } | undefined)?.id ?? other.id) === txnId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export async function claimDue(workerId: string, now: number, ownerUid: string | null): Promise<StoredOp[]> {
   await migrateLegacyOnce();
   if (!ownerUid) return [];
@@ -119,6 +136,7 @@ export async function claimDue(workerId: string, now: number, ownerUid: string |
       const resource = `${op.householdId}:${op.entity ?? op.op}`;
       if (blocked.has(resource)) continue;
       blocked.add(resource);
+      if (waitsForItsTransaction(op, rows.values())) continue;   // F1c: claimed once its transaction lands
       if ((op.status === 'claimed' && (op.claimedAt ?? 0) >= now - CLAIM_STALE_MS)
           || (op.nextRetryAt ?? 0) > now) continue;
       const next: StoredOp = { ...op, status: 'claimed', claimedBy: workerId, claimedAt: now };
@@ -190,9 +208,29 @@ export async function nextWakeAt(ownerUid: string): Promise<number | null> {
     const resource = `${row.householdId}:${row.entity ?? row.op}`;
     if (!heads.has(resource)) heads.set(resource, row);
   }
-  const due = [...heads.values()].map(row => row.status === 'claimed'
+  // F1c: a sharing step waiting for its transaction is woken by that transaction's own head, never "now".
+  const due = [...heads.values()].filter(row => !waitsForItsTransaction(row, rows)).map(row => row.status === 'claimed'
     ? (row.claimedAt ?? 0) + CLAIM_STALE_MS + 1 : row.nextRetryAt ?? 0);
   return due.length ? Math.min(...due) : null;
+}
+
+/**
+ * F1b (v10.111.0; audit INT-TXN-10) — the rows of one household's entity that still have a write
+ * queued, each mapped to its latest write. A cloud pull leaves exactly these rows as the device has
+ * them (`overlayQueued`). Only the given owner's ops count: the cache belongs to them.
+ */
+export async function queuedWrites(ownerUid: string | null, householdId: string, entity: string): Promise<Map<string, 'upsert' | 'remove'>> {
+  const out = new Map<string, 'upsert' | 'remove'>();
+  if (!ownerUid) return out;
+  const rows = (await getDriver().getAll())
+    .filter(row => row.ownerUid === ownerUid && row.householdId === householdId && row.entity === entity
+      && (row.op === 'upsert' || row.op === 'remove'))
+    .sort((left, right) => left.seq - right.seq);
+  for (const row of rows) {
+    const id = (row.payload as { id?: string } | undefined)?.id ?? row.id;
+    if (id) out.set(id, row.op as 'upsert' | 'remove');
+  }
+  return out;
 }
 
 /** W3c — is another op for this ROW still queued? (The fold-back used to check the whole entity.) */

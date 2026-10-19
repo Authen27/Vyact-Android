@@ -51,8 +51,8 @@ export default function Terms() {
       </Section>
 
       <Section title="3. Eligibility and accounts" id="eligibility">
-        <p>You must be at least 16 years old (or the age of digital consent in your jurisdiction, if higher) to create an account. You are responsible for maintaining the confidentiality of your credentials and for all activity under your account. Notify us immediately of any unauthorized use.</p>
-        <p>Household accounts may include multiple members with different roles (owner, admin, member, viewer, child-profile). The household owner is responsible for managing member access and permissions.</p>
+        <p>You must be 18 or older to create an account. A child in your family does not have a Vyact account of their own. You are responsible for maintaining the confidentiality of your credentials and for all activity under your account. Notify us immediately of any unauthorized use.</p>
+        <p>Household accounts may include multiple members with different roles (owner, admin, member, viewer). The household owner is responsible for managing member access and permissions.</p>
       </Section>
 
       <Section title="4. Intellectual property rights" id="ip">

@@ -603,6 +603,10 @@ body::before {
   @media (prefers-reduced-motion: no-preference) {
     .sk { animation: vy-sk 1.4s ease-in-out infinite; }
   }
+  /* v10.108.0 — the landing promo, tapped before the app is up: the play button pulses until the player loads. */
+  @media (prefers-reduced-motion: no-preference) {
+    [data-promo][data-loading] .promo-play { animation: vy-sk 1s ease-in-out infinite; }
+  }
 }
 @keyframes vy-sk { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 

@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { analyticsState, setAnalyticsAllowed, type AnalyticsState } from '../lib/analyticsConsent';
 import { Link } from 'react-router-dom';
 import { POLICY_VERSION } from './Privacy';
 
@@ -12,12 +14,14 @@ function Section({ id, title, children }: { id?: string; title: string; children
 
 const COOKIE_TABLE: { category: string; purpose: string; examples: string; retention: string; optional: boolean }[] = [
   { category: 'Strictly necessary', purpose: 'Sign-in session, CSRF protection, load balancing', examples: 'Supabase auth session token, sync write-queue markers', retention: 'Session / up to token expiry', optional: false },
-  { category: 'Preferences', purpose: 'Remember theme, language, currency, and layout choices', examples: 'theme, locale, number-system preference', retention: 'Until changed or storage cleared', optional: true },
+  { category: 'Preferences', purpose: 'Remember theme, language, currency, and layout choices, and your analytics choice', examples: 'theme, locale, number-system preference, vt_analytics_consent', retention: 'Until changed or storage cleared', optional: true },
   { category: 'Functional / cache', purpose: 'Offline-friendly local cache of household data for fast reloads', examples: 'LocalStorageAdapter cache, onboarding state cache', retention: 'Until sign-out or manual clear', optional: false },
-  { category: 'Analytics', purpose: 'Understand feature usage in aggregate to improve the product', examples: 'GA4 custom events (if enabled for your environment)', retention: 'Per analytics provider policy, typically 14 months', optional: true },
+  { category: 'Analytics', purpose: 'Count which pages and features are used, in aggregate, to improve Vyact. Never the money you record.', examples: 'Google Analytics (_ga, _ga_<id>), only after you allow it on the web; in the Vyact Android app, part of the app\'s permissions', retention: 'Up to 2 years (the cookies\' lifetime), or until you turn analytics off', optional: true },
 ];
 
 export default function Cookies() {
+  // T4b (v10.125.0, XC-PRV-03) — the analytics choice, changeable here as well as in Settings.
+  const [choice, setChoice] = useState<AnalyticsState>(() => analyticsState());
   return (
     <div className="space-y-5">
       <div className="flex justify-between items-start gap-4 flex-wrap">
@@ -38,8 +42,8 @@ export default function Cookies() {
           storage technologies (collectively, "cookies") when you use the Service. It supplements the{' '}
           <Link to="/privacy" className="text-coral hover:underline">Privacy Policy</Link>. By
           accepting our policies at sign-up, you consent to the use of strictly-necessary and
-          functional storage described below; optional categories are only enabled where indicated
-          and can be controlled as described in Section 4.
+          functional storage described below. Analytics is optional: on the web, Vyact asks before
+          Google Analytics runs, and nothing is sent to Google until you allow it (Section 4).
         </p>
       </Section>
 
@@ -77,13 +81,17 @@ export default function Cookies() {
       <Section title="4. Managing your preferences" id="managing">
         <p>You can control optional categories in two ways:</p>
         <ul className="list-disc pl-5 space-y-1.5">
-          <li>In-app: analytics/preference cookies (where enabled for your environment) can be disabled from your device/browser settings without losing access to the Service.</li>
+          <li>Analytics: the first time you visit vyact.app, a banner asks whether Vyact may use Google Analytics. Change your answer any time in Settings → Usage analytics, or here: {choice === 'on' || choice === 'off' || choice === 'ask' ? (
+            <button type="button" className="text-coral hover:underline" onClick={() => { setAnalyticsAllowed(choice !== 'on'); setChoice(analyticsState()); }}>
+              {choice === 'on' ? 'turn analytics off' : 'allow analytics'}
+            </button>
+          ) : 'Settings → Usage analytics'}{choice === 'off' ? ' (off on this device)' : choice === 'on' ? ' (on for this device)' : ''}. Turning it off deletes Google's cookies on this device. In the Vyact Android app, analytics is part of the app's permissions.</li>
           <li>Browser settings: you can clear cookies/local storage at any time. Doing so will sign you out and remove any locally cached (not-yet-synced) data — sync any pending offline edits before clearing storage.</li>
         </ul>
       </Section>
 
       <Section title="5. Third-party storage" id="third-party">
-        <p>Where analytics or connected-channel features (e.g. WhatsApp linking) are enabled, the relevant third-party provider may set its own cookies or equivalent identifiers under its own privacy/cookie policy. We only enable these integrations you explicitly opt into (e.g. linking WhatsApp from Settings).</p>
+        <p>Google Analytics sets its cookies only after you allow it. The Userback feedback widget loads on app pages and may keep its own identifiers for the widget. Vercel Speed Insights measures page speed without cookies. WhatsApp is involved only if you link your number in Settings. Each provider handles its identifiers under its own privacy policy; the Privacy Policy names them all.</p>
       </Section>
 
       <Section title="6. Changes to this policy" id="changes">

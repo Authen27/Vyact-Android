@@ -119,7 +119,7 @@ function readJson<T>(key: string, fallback: T): T {
 
 function writeJson(key: string, value: unknown): void {
   if (typeof localStorage === 'undefined') return;
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* quota — ignore */ }
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* fault-ok: device storage is optional (private mode, quota); the household row in the cloud keeps onboarding */ }
 }
 
 // ── Onboarding state ──────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ export function setOnboarding(
 ): HouseholdOnboarding {
   const next = { ...getOnboarding(householdId), ...patch };
   writeJson(STATE_PREFIX + householdId, next);
-  try { cloudPersister?.(householdId, next); } catch { /* never break the UI */ }
+  try { cloudPersister?.(householdId, next); } catch { /* fault-ok: the persister reports its own failures; the UI must keep going */ }
   return next;
 }
 

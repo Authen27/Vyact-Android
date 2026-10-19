@@ -9,7 +9,7 @@ import { supabase, isCloudEnabled } from './supabase';
 
 export type Intent =
   | 'spending' | 'savings' | 'budget' | 'debt' | 'networth'
-  | 'goals' | 'pulse' | 'planning' | 'help' | 'other';
+  | 'goals' | 'status' | 'planning' | 'help' | 'other';
 
 export type Sentiment = 'positive' | 'neutral' | 'negative';
 
@@ -20,7 +20,8 @@ const INTENT_PATTERNS: [Intent, RegExp][] = [
   ['debt',      /\b(debt|debts|loan|owe|emi|mortgage|credit card|payoff|interest|apr|avalanche|snowball)\b/i],
   ['networth',  /\b(net worth|networth|wealth|asset|assets|liabilit|balance sheet|portfolio)\b/i],
   ['goals',     /\b(goal|goals|target|milestone|vacation|down ?payment|retire)\b/i],
-  ['pulse',     /\b(pulse|score|financial health|how am i doing|am i okay)\b/i],
+  // v10.109.0: 'pulse' until the Pulse Score was archived; older rows keep that label.
+  ['status',    /\b(pulse|score|financial health|how am i doing|am i okay)\b/i],
   ['planning',  /\b(plan|planner|recommend|advice|should i|how can i|optimi[sz]e|strategy)\b/i],
   ['help',      /\b(help|how do i|how to|what can you|guide|explain|tutorial)\b/i],
 ];
@@ -129,14 +130,27 @@ function cleanStageMs(stageMs: StageMs | undefined): StageMs | null {
 }
 
 /**
+ * T5c (v10.122.0; audit FE-PIP-09; owner, 19 Oct 2026: "timed turns only") — did this turn call the model?
+ * Its timings count each classify and phrase call (`createTurnTimer`); a quick reply, a greeting, an
+ * off-topic answer or the assistant switched off made none.
+ */
+export function turnCalledModel(stageMs: StageMs | undefined): boolean {
+  return (Number(stageMs?.classifyCalls) || 0) + (Number(stageMs?.phraseCalls) || 0) > 0;
+}
+
+/**
  * Log one AI interaction. Fire-and-forget; never throws into the caller.
  * Stores intent + sentiment + length + call metadata only — NEVER message text.
+ * T5c (FE-PIP-09) — only for a turn that called the model, the one the row's timings explain. Every
+ * turn used to write one, quick replies included, beside the gateway's own row per model call, so admin
+ * counts ran double; the admin summary now counts calls from the gateway's rows alone.
  */
 export async function logAiUsage(opts: {
   householdId: string;
   text: string;
   surface?: string;
 } & AiUsageTelemetry): Promise<void> {
+  if (!turnCalledModel(opts.stageMs)) return;
   if (!isCloudEnabled() || !supabase) return;
   if (!opts.householdId || opts.householdId === 'local') return;
   try {
@@ -172,6 +186,6 @@ export async function logAiUsage(opts: {
       await supabase.from('ai_usage').insert(withoutTimings);
     }
   } catch {
-    // Metrics are best-effort; never disrupt the chat experience.
+    // fault-ok: client metering is optional and never blocks the chat; the gateway meters every call itself
   }
 }

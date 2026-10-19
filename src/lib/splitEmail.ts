@@ -5,7 +5,7 @@
 // app or the logs said so (docs/EMAIL_TEMPLATES.md §0).
 import { supabase } from './supabase';
 
-type SplitEmailEvent = 'shared' | 'settled' | 'closed';
+export type SplitEmailEvent = 'shared' | 'settled' | 'closed';
 
 export interface SplitEmailResult {
   /** True when every recipient's email was accepted by the provider. */
@@ -29,13 +29,26 @@ export function readSplitEmailResult(data: unknown, error: unknown): SplitEmailR
 }
 
 /**
- * What to tell the person when a 'shared' email did not go out (null when it did). The split is
- * saved either way. W1c (v10.64.0): each person is emailed once per split, and one person can
+ * What to tell the person when a split email did not go out (null when it did). The split action
+ * stands either way. W1c (v10.64.0): each person is emailed once per split, and one person can
  * cause at most a daily number of split emails (`daily_limit`).
+ * v10.121.0 (T5b; audit BE-FN-09) — 'settled' and 'closed' are told too; their sends were dropped
+ * unread. Those notices follow the action's own success message, so they don't repeat it.
  */
-export function splitEmailNotice(r: SplitEmailResult): string | null {
+export function splitEmailNotice(r: SplitEmailResult, event: SplitEmailEvent = 'shared'): string | null {
   if (r.ok) return null;
-  if (r.reason === 'daily_limit') {
+  const limit = r.reason === 'daily_limit';
+  if (event === 'settled') {
+    return limit
+      ? "You've reached today's limit for split emails. The person you paid will see it when they open Vyact."
+      : "The email to the person you paid couldn't be sent. They'll see it when they open Vyact.";
+  }
+  if (event === 'closed') {
+    return limit
+      ? "You've reached today's limit for split emails. Everyone on the split will see it closed when they open Vyact."
+      : "The email saying the split is closed couldn't be sent. Everyone on it will see it when they open Vyact.";
+  }
+  if (limit) {
     return "Split shared. You've reached today's limit for split emails, so some people will only see it when they open Vyact.";
   }
   return "Split shared. They'll see it when they open Vyact, but the email couldn't be sent.";

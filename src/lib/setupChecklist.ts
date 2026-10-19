@@ -110,5 +110,5 @@ export function readSetupFlags(householdId: string): Flags {
 }
 
 export function writeSetupFlag(householdId: string, flag: keyof Flags): void {
-  try { localStorage.setItem(key(householdId), JSON.stringify({ ...readSetupFlags(householdId), [flag]: true })); } catch { /* storage blocked: the flag lasts this session */ }
+  try { localStorage.setItem(key(householdId), JSON.stringify({ ...readSetupFlags(householdId), [flag]: true })); } catch { /* fault-ok: storage blocked: the flag lasts this session */ }
 }

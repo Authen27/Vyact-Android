@@ -8,13 +8,22 @@
 // iPhone/iPad: Safari delivers web push only to an app added to the Home Screen
 // (iOS 16.4+). Android Chrome, desktop Chrome/Edge/Firefox and macOS Safari work in
 // the browser too.
+//
+// v10.127.0 (T4d): inside the Vyact Android app every function here goes through lib/nativePush.ts
+// (Firebase Cloud Messaging) when the APK carries the push plugin, so Settings, the bell and sign-out work
+// the same in the app. Without the plugin (an older APK) pushBlocker() is 'native_app'.
 import { sb } from './supabase';
-import { isIos, isStandalone } from './pwa';
+import { isIos, isNativeApp, isStandalone } from './pwa';
+import {
+  pushPlugin, enableNativePush, syncNativePush, disableNativePush, forgetNativePush, nativePushStatus,
+  nativeHasServerPush, nativePushWanted, nativeToken,
+} from './nativePush';
 import type { NotificationPrefs } from '../types';
+import { expected } from './faults';
 
 const ENDPOINT_KEY = 'vyact_push_endpoint';
 
-export type RefusalReason = 'unsupported' | 'ios_not_installed' | 'denied' | 'update_needed' | 'push_service' | 'server';
+export type RefusalReason = 'unsupported' | 'ios_not_installed' | 'native_app' | 'denied' | 'update_needed' | 'push_service' | 'server';
 export type EnableResult = { ok: true } | { ok: false; reason: RefusalReason; detail?: string };
 
 /** Brave exposes `navigator.brave`; it can block the Google push service Chromium uses. */
@@ -27,6 +36,10 @@ export function pushRefusalMessage(reason: RefusalReason, detail?: string): stri
   switch (reason) {
     case 'ios_not_installed':
       return 'On iPhone, add Vyact to your Home Screen first (Share → Add to Home Screen), open it from there, then turn this on.';
+    case 'native_app':
+      // v10.126.0 (T4c) — the Android app is a WebView, which has no Web Push. Until it has push of its own,
+      // say so, and where it does work (it used to say "This browser can't receive push notifications").
+      return "The Vyact Android app can't show notifications on your lock screen yet. To get them now, open vyact.app in Chrome, add it to your Home screen, and turn them on there.";
     case 'unsupported':
       return "This browser can't receive push notifications.";
     case 'denied':
@@ -49,14 +62,16 @@ export function pushSupported(): boolean {
 }
 
 /** Why push cannot work here, before asking for anything. */
-export function pushBlocker(): 'ios_not_installed' | 'unsupported' | null {
+export function pushBlocker(): 'ios_not_installed' | 'native_app' | 'unsupported' | null {
   if (typeof window === 'undefined') return 'unsupported';
+  if (isNativeApp()) return pushPlugin() ? null : 'native_app';
   if (isIos() && !isStandalone()) return 'ios_not_installed';
   return pushSupported() ? null : 'unsupported';
 }
 
 /** True once this device is registered with the server: the server pushes, so the open app doesn't pop up a second copy. */
 export function deviceHasServerPush(): boolean {
+  if (isNativeApp()) return nativeHasServerPush();
   try { return !!localStorage.getItem(ENDPOINT_KEY) && typeof Notification !== 'undefined' && Notification.permission === 'granted'; }
   catch { return false; }
 }
@@ -96,7 +111,11 @@ async function serverKey(): Promise<string> {
 }
 
 function prefsForServer(prefs: NotificationPrefs) {
-  return { master: prefs.master, perType: prefs.perType, quietStart: prefs.quietStart, quietEnd: prefs.quietEnd };
+  return {
+    master: prefs.master, perType: prefs.perType, quietStart: prefs.quietStart, quietEnd: prefs.quietEnd,
+    // v10.126.0 (T4c, BE-FN-12): the server sends the private line when this is false.
+    lockScreenDetails: prefs.lockScreenDetails !== false,
+  };
 }
 
 async function register(sub: PushSubscription, householdId: string, prefs: NotificationPrefs): Promise<void> {
@@ -107,7 +126,7 @@ async function register(sub: PushSubscription, householdId: string, prefs: Notif
     p_prefs: prefsForServer(prefs),
   });
   if (error) throw error;
-  try { localStorage.setItem(ENDPOINT_KEY, sub.endpoint); } catch { /* status only */ }
+  try { localStorage.setItem(ENDPOINT_KEY, sub.endpoint); } catch { /* fault-ok: the stored endpoint is only for the status line */ }
 }
 
 async function subscribe(reg: ServiceWorkerRegistration): Promise<PushSubscription> {
@@ -130,6 +149,8 @@ async function subscribe(reg: ServiceWorkerRegistration): Promise<PushSubscripti
 export async function enablePush(householdId: string, prefs: NotificationPrefs): Promise<EnableResult> {
   const blocker = pushBlocker();
   if (blocker) return { ok: false, reason: blocker };
+  const native = pushPlugin();
+  if (native) return enableNativePush(native, householdId, prefs);
   const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
   if (permission !== 'granted') return { ok: false, reason: 'denied' };
   const reg = await registration();
@@ -158,25 +179,31 @@ export async function enablePush(householdId: string, prefs: NotificationPrefs):
  * already granted (never prompts).
  */
 export async function syncPush(householdId: string, prefs: NotificationPrefs): Promise<void> {
+  // T4d: the Android app is on by default (owner), so it follows its own choice, not webPushEnabled.
+  const native = pushPlugin();
+  if (native) return syncNativePush(native, householdId, prefs);
   if (!prefs.webPushEnabled || pushBlocker() || Notification.permission !== 'granted') return;
   try {
     const reg = await registration();
     if (!reg || !(await workerHandlesPush(reg))) return;
     await register(await subscribe(reg), householdId, prefs);
-  } catch { /* retried on the next load; nothing the person needs to act on */ }
+  } catch (e) { expected(e, 'webPush.sync'); }
 }
 
-/** Turn push off for this device (switch off, or signing out): server first, then the browser. */
-export async function disablePush(): Promise<void> {
+/** Turn push off for this device (switch off, or signing out): server first, then the browser.
+ *  `byChoice` (Settings): in the Android app the phone then stays off; a sign-out is not that choice. */
+export async function disablePush({ byChoice = false }: { byChoice?: boolean } = {}): Promise<void> {
+  const native = pushPlugin();
+  if (native) return disableNativePush(native, { byChoice });
   let endpoint: string | null = null;
-  try { endpoint = localStorage.getItem(ENDPOINT_KEY); localStorage.removeItem(ENDPOINT_KEY); } catch { /* ignore */ }
+  try { endpoint = localStorage.getItem(ENDPOINT_KEY); localStorage.removeItem(ENDPOINT_KEY); } catch { /* fault-ok: storage unavailable: no endpoint was kept */ }
   try {
     const reg = await registration();
     const sub = await reg?.pushManager.getSubscription();
     endpoint = sub?.endpoint ?? endpoint;
     if (endpoint) await sb().rpc('unregister_push_subscription', { p_endpoint: endpoint });
     await sub?.unsubscribe();
-  } catch { /* best effort: a dead endpoint is retired by the server on its first 410 */ }
+  } catch (e) { expected(e, 'webPush.unregister'); }
 }
 
 /** W7a (audit FE-PLT-08) — a PASSIVE sign-out (expired or revoked session) can no longer authorise the
@@ -184,12 +211,14 @@ export async function disablePush(): Promise<void> {
  *  server retires the endpoint on its next send. Without this the next person on the device kept
  *  receiving the previous user's notifications. */
 export async function forgetPushOnDevice(): Promise<void> {
-  try { localStorage.removeItem(ENDPOINT_KEY); } catch { /* ignore */ }
+  const native = pushPlugin();
+  if (native) return forgetNativePush(native);
+  try { localStorage.removeItem(ENDPOINT_KEY); } catch { /* fault-ok: storage unavailable: no endpoint was kept */ }
   try {
     const reg = await registration();
     const sub = await reg?.pushManager.getSubscription();
     await sub?.unsubscribe();
-  } catch { /* best effort */ }
+  } catch { /* fault-ok: an unsubscribed endpoint is retired by the server at its first 410 */ }
 }
 
 export interface TestResult { device: string; status: number; accepted: boolean; gone: boolean }
@@ -198,18 +227,25 @@ export interface TestResult { device: string; status: number; accepted: boolean;
 export async function sendTestPush(): Promise<{ ok: true; results: TestResult[] } | { ok: false; error: string }> {
   let endpoint: string | undefined;
   try { endpoint = localStorage.getItem(ENDPOINT_KEY) ?? undefined; } catch { endpoint = undefined; }
-  const { data, error } = await sb().functions.invoke('web-push', { body: { mode: 'test', endpoint } });
+  const fcmToken = pushPlugin() ? nativeToken() ?? undefined : undefined;
+  const { data, error } = await sb().functions.invoke('web-push', { body: fcmToken ? { mode: 'test', fcmToken } : { mode: 'test', endpoint } });
   if (error) {
     let code = 'failed';
-    try { code = (await (error as { context?: Response }).context?.json())?.error ?? code; } catch { /* keep generic */ }
+    try { code = (await (error as { context?: Response }).context?.json())?.error ?? code; } catch { /* fault-ok: an unreadable error body keeps the generic code */ }
     return { ok: false, error: code };
   }
   return { ok: true, results: (data?.results ?? []) as TestResult[] };
 }
 
+/** Does this device want push? The web: the saved switch. The Android app: on unless turned off there (T4d). */
+export function pushWanted(prefs: NotificationPrefs): boolean {
+  return pushPlugin() ? nativePushWanted() : prefs.webPushEnabled;
+}
+
 export interface DeviceStatus { registered: boolean; active?: boolean; last_status?: number | null; last_success_at?: string | null }
 
 export async function devicePushStatus(): Promise<DeviceStatus> {
+  if (pushPlugin()) return nativePushStatus();
   try {
     const reg = await registration();
     const sub = await reg?.pushManager.getSubscription();

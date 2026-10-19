@@ -85,8 +85,23 @@ export function unexpected(err: unknown, context: string): void {
   const rec = push('unexpected', context, err);
   console.error(`[fault:unexpected] ${context}: ${rec.message}`, err);
   if (transport) {
-    try { transport(rec); } catch { /* a broken transport must never break the caller */ }
+    try { transport(rec); } catch { /* fault-ok: a broken fault transport must never break the caller */ }
   }
+}
+
+/**
+ * T5b (v10.121.0; audit XC-ARC-11) — a write that failed and is not retried by the sync queue. No
+ * network (offline, or a request that never got an answer) is the offline-first degraded path, so it is
+ * `expected`; anything else (the database refused it, a bug) is `unexpected`. Use it in a catch on a
+ * write path instead of an empty one.
+ */
+export function failedWrite(err: unknown, context: string): void {
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  // A PostgREST or Functions error is a plain object carrying `message`, not an Error.
+  const text = err && typeof err === 'object' && !(err instanceof Error) && 'message' in err
+    ? String((err as { message?: unknown }).message ?? '') : toMessage(err);
+  const network = /failed to fetch|networkerror|network request failed|load failed|fetch failed/i.test(text);
+  (offline || network ? expected : unexpected)(err, context);
 }
 
 /**

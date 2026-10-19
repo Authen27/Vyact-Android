@@ -31,17 +31,17 @@ describe('W7a · small app fixes', () => {
     const lumpy = ['2026-06-01', '2026-07-01', '2026-08-01', '2026-09-01'].map((d, i) => pay(d, [20_000, 1_50_000, 30_000, 1_20_000][i]));
     expect(evaluateRecommendations(ctx(lumpy), 50).some(r => r.id === 'income.unstable')).toBe(true);
   });
-  it('W7a-MNY15-001 · "Full backup" carries accounts, allocations, recurring bills and net-worth history (FE-MNY-15, FE-UIS-06)', () => {
-    const empty = { profile: { name: 'A' } as never, transactions: [], budgets: [], goals: [], members: [], debts: [], assets: [] };
+  it('W7a-MNY15-001 · the download carries accounts, recurring bills and net-worth history (FE-MNY-15, FE-UIS-06; since T4b, exactly the owner\'s list)', () => {
     const b = buildBackup({
-      ...empty,
-      accounts: [{ id: 'acc' } as never], budgetAllocations: [{ budgetId: 'b' } as never],
+      household: { name: 'Home', type: 'family', baseCurrency: 'INR' }, members: [],
+      transactions: [], sharedSplitsOwned: [], sharedSplitsWithMe: [], debts: [], assets: [],
+      accounts: [{ id: 'acc' } as never],
       recurringSchedules: [{ id: 'r' } as never], netWorthSnapshots: [{ month: '2026-09' } as never],
     }, '2026-10-08', '10.80.0');
     expect(b).toMatchObject({ version: BACKUP_FORMAT_VERSION, appVersion: '10.80.0', exported: '2026-10-08' });
-    expect([b.accounts, b.budgetAllocations, b.recurringSchedules, b.netWorthSnapshots].map(a => a.length)).toEqual([1, 1, 1, 1]);
+    expect([b.accounts, b.recurringSchedules, b.netWorth.monthlyHistory].map(a => a.length)).toEqual([1, 1, 1]);
     expect(b).not.toHaveProperty('exchangeRates');
-    expect(src('pages/Settings.tsx')).toMatch(/buildBackup\(\{[\s\S]*?accounts: s\.accounts, budgetAllocations: s\.budgetAllocations,[\s\S]*?recurringSchedules: s\.recurringSchedules, netWorthSnapshots: s\.netWorthSnapshots/);
+    expect(src('pages/Settings.tsx')).toMatch(/buildBackup\(\{[\s\S]*?accounts: s\.accounts, assets, netWorthSnapshots: s\.netWorthSnapshots,[\s\S]*?recurringSchedules: s\.recurringSchedules/);
   });
   it('W7a-UIC16-001 · a transaction row names its account from the accounts FK (FE-UIC-16)', () => {
     const accounts = [{ id: 'a1', name: 'HDFC Salary' }, { id: 'a2', name: 'ICICI Card' }];

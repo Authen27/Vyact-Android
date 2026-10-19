@@ -4,13 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-// @ts-expect-error — plain .mjs build script, no types
 import { findSourceMapLeaks } from '../../../scripts/assert-no-sourcemaps.mjs';
 import { readContent, READ_TIMEOUT_MS } from '../../../api/_supabase.js';
 import learnHandler from '../../../api/learn.js';
-// @ts-expect-error — plain .mjs build script, no types
 import { isCloudBuild } from '../../../scripts/cloudMode.mjs';
-// @ts-expect-error — plain .mjs build script, no types
 import { landingHtml } from '../../../scripts/landingHtml.mjs';
 
 const repo = resolve(__dirname, '../../../..');

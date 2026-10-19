@@ -19,7 +19,7 @@ import type {
   AccountDependencies, AccountMoveResult,
 } from '../types';
 import {
-  type DataAdapter, type Entity, LocalStorageAdapter,
+  type DataAdapter, type Entity, ENTITIES, LocalStorageAdapter,
 } from './dataAdapter';
 import ls from './localStorageCompat';
 import { cacheGeneration, isCacheGenerationCurrent } from './kvStore';
@@ -33,6 +33,9 @@ import * as outbox from './sync/outbox';
 import * as deadLetter from './sync/deadLetter';
 import { classifyFlushError } from './sync/conflict';
 import { cacheOwnerUid } from './cacheInvalidation';
+import { cursorAfter, mergeCloudDelta, overlapStart, overlayQueued, withRow } from './rowMerge';
+import { syncSharedSplit, type SplitShareIntent } from './sharedSplits';
+import { sendSplitEmail, type SplitEmailResult } from './splitEmail';
 
 export class HybridAdapter implements DataAdapter {
   cache: LocalStorageAdapter;
@@ -95,7 +98,46 @@ export class HybridAdapter implements DataAdapter {
     this.cloudAppliedAt.set(`${householdId}:${entity}`, Date.now());
   }
 
+  // v10.110.0 (F1a, audit FE-SYN-08) — `servedCloudAt`: the cloud read the most recent list() for a
+  // household:entity was served from (the last one applied before its cache read began). "Synced"
+  // shows the oldest of these across the entities the screens add up, so a refresh served from the
+  // device's copy while every cloud read fails no longer says "Synced · just now".
+  private servedCloudAt = new Map<string, number>();
+  private static readonly SYNCED_ENTITIES: readonly Entity[] =
+    ['transactions', 'accounts', 'budgets', 'budgetAllocations', 'debts', 'assets', 'recurring'];
+  private noteServed(freshKey: string, servedAt: number): void {
+    const appliedAt = this.cloudAppliedAt.get(freshKey);
+    if (appliedAt !== undefined && appliedAt <= servedAt) this.servedCloudAt.set(freshKey, appliedAt);
+  }
+  /** See DataAdapter.cloudReadAt. */
+  cloudReadAt(householdId: string): number | null {
+    let oldest: number | null = null;
+    for (const entity of HybridAdapter.SYNCED_ENTITIES) {
+      const at = this.servedCloudAt.get(`${householdId}:${entity}`);
+      if (at === undefined) return null;
+      oldest = oldest === null ? at : Math.min(oldest, at);
+    }
+    return oldest;
+  }
+
+  // F1a — the background cloud reads list() starts. `cloudSettled` lets the store paint the cloud's
+  // rows once they have landed (after its first paint from the device's copy), instead of at the next
+  // poll.
+  private inflight = new Set<Promise<void>>();
+  private track(read: Promise<void>): void {
+    this.inflight.add(read);
+    const done = () => { this.inflight.delete(read); };
+    read.then(done, done);
+  }
+  /** See DataAdapter.cloudSettled. */
+  async cloudSettled(): Promise<void> {
+    await Promise.allSettled([...this.inflight]);
+  }
+
+  private client: SupabaseClient;
+
   constructor(client: SupabaseClient) {
+    this.client = client;
     this.cache = new LocalStorageAdapter();
     this.cloud = new SupabaseAdapter(client);
     if (typeof window !== 'undefined') {
@@ -146,6 +188,7 @@ export class HybridAdapter implements DataAdapter {
         const fresh = await this.cloud.list<T>(entity, householdId);
         await this.applyCloudList(entity, householdId, cached as unknown[], fresh as unknown[], gen);
         this.servedFresh.set(freshKey, this.cloudAppliedAt.has(freshKey));
+        this.noteServed(freshKey, Date.now());
         return await this.cache.list<T>(entity, householdId);
       } catch {
         // Network error on first load — fall through to cached []. The
@@ -155,17 +198,17 @@ export class HybridAdapter implements DataAdapter {
       }
     }
     if (cursor) {
-      this.cloud.listSince(entity as Exclude<Entity, 'members'>, householdId, cursor)
-        .then(delta => this.applyCloudDelta(entity, householdId, delta, gen))
-        .catch(() => {/* network error — cache stays */});
+      this.track(this.pullDelta(entity as Exclude<Entity, 'members'>, householdId, cursor, gen)
+        .catch(() => { /* fault-ok: a network error keeps the cache as it is */ }));
     } else {
-      this.cloud.list<T>(entity, householdId)
+      this.track(this.cloud.list<T>(entity, householdId)
         .then(fresh => this.applyCloudList(entity, householdId, cached as unknown[], fresh as unknown[], gen))
-        .catch(() => {/* network error — cache stays */});
+        .catch(() => { /* fault-ok: a network error keeps the cache as it is */ }));
     }
     // Served from cache: fresh only if a cloud read had landed before this read began.
     const appliedAt = this.cloudAppliedAt.get(freshKey);
     this.servedFresh.set(freshKey, appliedAt !== undefined && appliedAt <= servedAt);
+    this.noteServed(freshKey, servedAt);
     return cached;
   }
 
@@ -175,7 +218,7 @@ export class HybridAdapter implements DataAdapter {
     } catch { return false; }
   }
   private markSynced(entity: Entity, householdId: string): void {
-    try { ls.setString(`cloud_synced_${householdId}_${entity}`, '1'); } catch { /* noop */ }
+    try { ls.setString(`cloud_synced_${householdId}_${entity}`, '1'); } catch { /* fault-ok: without the marker the next pull reads in full */ }
   }
   private async applyCloudList(entity: Entity, householdId: string, cached: unknown[], fresh: unknown[], gen?: number): Promise<void> {
     // A purge ran while this read was in flight — the rows belong to a session
@@ -184,7 +227,7 @@ export class HybridAdapter implements DataAdapter {
     // user's data even after invalidation.
     if (gen !== undefined && !isCacheGenerationCurrent(gen)) return;
     if (fresh.length > 0) {
-      await this.cache.replaceAll(entity, householdId, fresh);
+      await this.replaceFromCloud(entity, householdId, fresh, gen);
       this.markSynced(entity, householdId);
       this.noteCloudApplied(entity, householdId);
       // TD-06: seed the delta-sync cursor with the max(updated_at) of the
@@ -196,7 +239,7 @@ export class HybridAdapter implements DataAdapter {
     // fresh is empty
     if (cached.length === 0 || this.hasSynced(entity, householdId)) {
       // Either the cache was already empty (no-op) or we trust this empty.
-      await this.cache.replaceAll(entity, householdId, fresh);
+      await this.replaceFromCloud(entity, householdId, fresh, gen);
       this.markSynced(entity, householdId);
       this.noteCloudApplied(entity, householdId);
       return;
@@ -206,6 +249,46 @@ export class HybridAdapter implements DataAdapter {
     if (typeof console !== 'undefined') {
       console.warn(`[Vyact sync] Empty cloud response for ${entity}@${householdId}; keeping ${cached.length} cached rows. Use forceFullResync to override.`);
     }
+  }
+
+  /**
+   * v10.111.0 (F1b, audit INT-TXN-10; owner: "row-level merge") — the cloud's whole list replaces the
+   * device's copy, except the rows that still have a write queued: an edit or a row created here keeps
+   * the device's version, and a delete stays deleted, until the write lands. This used to be a plain
+   * replace, so a full pull (first sync, Force resync, Dismiss) dropped a row created offline and put
+   * back the old value of an edit. The queue is read under the list's lock, where every write also
+   * queues its op (`upsert` / `remove`), so it is never seen half-done.
+   */
+  private async replaceFromCloud(entity: Entity, householdId: string, fresh: unknown[], gen?: number): Promise<void> {
+    const owner = await this.ownerForWrite();
+    await this.cache.updateList<{ id: string }>(entity, householdId, async current => {
+      if (gen !== undefined && !isCacheGenerationCurrent(gen)) return current;
+      return overlayQueued(fresh as { id: string }[], current, await outbox.queuedWrites(owner, householdId, entity));
+    });
+  }
+
+  // v10.111.0 (F1b, audit FE-SYN-07 + DB-OPS-10; owner decision 18 Oct 2026: a 2-minute overlap and
+  // every page). A delta pull starts 2 minutes before the cursor, because updated_at is when a write's
+  // transaction STARTED and a slower one could commit behind rows already pulled, and was then never
+  // fetched. It reads page after page until a short one; only then does the entity count as fresh
+  // (one 500-row page used to, so a Net Worth snapshot could be recorded from half the rows).
+  private static readonly DELTA_OVERLAP_MS = 2 * 60_000;
+  private static readonly DELTA_PAGE = 500;
+  private static readonly DELTA_MAX_PAGES = 40;
+  private async pullDelta(entity: Exclude<Entity, 'members'>, householdId: string, cursor: string, gen: number): Promise<void> {
+    let since = overlapStart(cursor, HybridAdapter.DELTA_OVERLAP_MS);
+    for (let page = 1; page <= HybridAdapter.DELTA_MAX_PAGES; page++) {
+      const delta = await this.cloud.listSince(entity, householdId, since, HybridAdapter.DELTA_PAGE);
+      await this.applyCloudDelta(entity, householdId, delta, gen);
+      if (!isCacheGenerationCurrent(gen)) return;
+      if (delta.rows.length + delta.tombstones.length < HybridAdapter.DELTA_PAGE || !delta.maxUpdatedAt) {
+        this.noteCloudApplied(entity, householdId);   // drained: the cloud has nothing newer
+        return;
+      }
+      since = delta.maxUpdatedAt;
+    }
+    // Not drained: the cursor has moved on, so the next pull continues from here. Not fresh meanwhile.
+    expected(new Error(`delta pull not drained after ${HybridAdapter.DELTA_MAX_PAGES} pages`), `sync:delta:${entity}`);
   }
 
   // TD-06 cursor plumbing. The cursor is the largest `updated_at` we've
@@ -218,7 +301,7 @@ export class HybridAdapter implements DataAdapter {
     try { return ls.readString(this.cursorKey(entity, householdId)) || null; } catch { return null; }
   }
   private writeCursor(entity: Entity, householdId: string, value: string): void {
-    try { ls.setString(this.cursorKey(entity, householdId), value); } catch { /* noop */ }
+    try { ls.setString(this.cursorKey(entity, householdId), value); } catch { /* fault-ok: an unsaved cursor makes the next pull start earlier, reading more, never less */ }
   }
   private seedCursorFromRows(entity: Entity, householdId: string, rows: unknown[]): void {
     // Audit F8 — seed the COMPOSITE (updated_at, id) cursor so a burst of
@@ -245,34 +328,35 @@ export class HybridAdapter implements DataAdapter {
   ): Promise<void> {
     if (!isCacheGenerationCurrent(gen)) return;
     // Empty delta is the steady-state happy path — nothing changed since the
-    // cursor. No cache touch, no cursor bump.
-    if (delta.rows.length === 0 && delta.tombstones.length === 0) {
-      this.noteCloudApplied(entity, householdId);   // the cloud confirmed nothing changed
-      return;
-    }
-    for (const row of delta.rows) {
-      if (!isCacheGenerationCurrent(gen)) return;
-      const r = row as { id?: string };
-      if (!r.id) continue;
-      await this.cache.put(entity, householdId, r as { id: string });   // W3c: the server's own updated_at
-    }
-    for (const id of delta.tombstones) {
-      if (!isCacheGenerationCurrent(gen)) return;
-      try { await this.cache.remove(entity, householdId, id); } catch { /* row may already be gone */ }
-    }
-    if (delta.maxUpdatedAt && isCacheGenerationCurrent(gen)) this.writeCursor(entity, householdId, delta.maxUpdatedAt);
-    if (isCacheGenerationCurrent(gen)) this.noteCloudApplied(entity, householdId);
+    // cursor. No cache touch, no cursor bump. (Freshness is pullDelta's: once drained.)
+    if (delta.rows.length === 0 && delta.tombstones.length === 0) return;
+    // F1b — one locked read-modify-write for the whole page (it was one per row, each re-reading and
+    // re-writing the list). W3c: rows keep the server's own updated_at. A row with a write still queued
+    // is left as the device has it (INT-TXN-10), and so is a row already held at this revision.
+    const owner = await this.ownerForWrite();
+    await this.cache.updateList<{ id: string; updated_at?: string }>(entity, householdId, async current => {
+      if (!isCacheGenerationCurrent(gen)) return current;
+      return mergeCloudDelta(current, delta.rows as { id: string; updated_at?: string }[], delta.tombstones,
+        await outbox.queuedWrites(owner, householdId, entity));
+    });
+    if (delta.maxUpdatedAt && isCacheGenerationCurrent(gen)) this.advanceCursor(entity, householdId, delta.maxUpdatedAt);
+  }
+
+  /** F1b — the cursor only moves forward (the overlap re-reads behind it, never rewinds it). */
+  private advanceCursor(entity: Entity, householdId: string, next: string): void {
+    const current = this.readCursor(entity, householdId);
+    if (current && !cursorAfter(next, current)) return;
+    this.writeCursor(entity, householdId, next);
   }
 
   /** Clear the synced sentinel for a household so the next list() treats
    *  empty cloud responses as transient again. Call when you suspect
    *  cache corruption or want to re-trust the cloud. */
   forceFullResync(householdId: string): void {
-    const entities: Entity[] = ['transactions','budgets','goals','debts','assets','members','accounts','savedViews','recurring','budgetAllocations'];
-    for (const e of entities) {
-      try { ls.removeBoth(`cloud_synced_${householdId}_${e}`); } catch { /* noop */ }
+    for (const e of ENTITIES) {
+      try { ls.removeBoth(`cloud_synced_${householdId}_${e}`); } catch { /* fault-ok: storage unavailable: no marker was kept either */ }
       // TD-06: also drop the delta-sync cursor so the next list() refills it.
-      try { ls.removeBoth(`cursor_${householdId}_${e}`); } catch { /* noop */ }
+      try { ls.removeBoth(`cursor_${householdId}_${e}`); } catch { /* fault-ok: storage unavailable: no cursor was kept either */ }
     }
   }
 
@@ -282,28 +366,37 @@ export class HybridAdapter implements DataAdapter {
     // cross-user concurrency. The version precondition only applies to
     // the cloud leg, which is queued and flushed below.
     const id = record.id || uid();
-    const before = await this.cache.getById<{ id: string; updated_at?: string }>(entity, householdId, id);
-    // W3c: the cached row keeps the SERVER revision it had (none yet for a new row) — the device
-    // clock must never become the next edit's precondition.
-    const local = await this.cache.put(entity, householdId,
-      { ...record, id, updated_at: before?.updated_at ?? undefined } as T & { id: string });
-    // Audit F6: the outbox insert is durable and can never erase another op.
-    // Owner-stamped so another user's session on this device never flushes it.
-    await outbox.enqueueOp(
-      { ts: Date.now(), op: 'upsert', entity, householdId, payload: local,
-        expectedUpdatedAt: this.preconditionFor(entity, householdId, id, expectedUpdatedAt), before: before ?? null },
-      await this.ownerForWrite(),
-    );
+    const owner = await this.ownerForWrite();
+    // F1b (INT-TXN-10) — the cache row and its queued op are written under the list's lock, where a
+    // cloud pull reads the queue: the pull sees both or neither, never the new row without its op.
+    const local = await this.cache.exclusive(entity, householdId, async () => {
+      const before = await this.cache.getById<{ id: string; updated_at?: string }>(entity, householdId, id);
+      // W3c: the cached row keeps the SERVER revision it had (none yet for a new row) — the device
+      // clock must never become the next edit's precondition.
+      const row = await this.cache.putRow(entity, householdId,
+        { ...record, id, updated_at: before?.updated_at ?? undefined } as T & { id: string });
+      // Audit F6: the outbox insert is durable and can never erase another op.
+      // Owner-stamped so another user's session on this device never flushes it.
+      await outbox.enqueueOp(
+        { ts: Date.now(), op: 'upsert', entity, householdId, payload: row,
+          expectedUpdatedAt: this.preconditionFor(entity, householdId, id, expectedUpdatedAt), before: before ?? null },
+        owner,
+      );
+      return row;
+    });
     void this.flushQueue();
     return local;
   }
   async remove(entity: Entity, householdId: string, id: string): Promise<void> {
-    const before = await this.cache.getById<{ id: string }>(entity, householdId, id);
-    await this.cache.remove(entity, householdId, id);
-    await outbox.enqueueOp(
-      { ts: Date.now(), op: 'remove', entity, householdId, id, before: before ?? null },
-      await this.ownerForWrite(),
-    );
+    const owner = await this.ownerForWrite();
+    await this.cache.exclusive(entity, householdId, async () => {   // F1b: with its op, as upsert
+      const before = await this.cache.getById<{ id: string }>(entity, householdId, id);
+      await this.cache.removeRow(entity, householdId, id);
+      await outbox.enqueueOp(
+        { ts: Date.now(), op: 'remove', entity, householdId, id, before: before ?? null },
+        owner,
+      );
+    });
     void this.flushQueue();
   }
   async createBudgetChecked(householdId: string, budget: Partial<Budget>): Promise<Budget> {
@@ -312,7 +405,7 @@ export class HybridAdapter implements DataAdapter {
     // another member's unsynced one) is rejected up front rather than silently
     // dead-lettered. The returned, DB-id'd row is then written to cache.
     const saved = await this.cloud.createBudgetChecked(householdId, budget);
-    try { await this.cache.put('budgets', householdId, saved); } catch { /* cache is best-effort */ }
+    try { await this.cache.put('budgets', householdId, saved); } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
     return saved;
   }
   async upsertBudgetWithAllocations(
@@ -327,12 +420,11 @@ export class HybridAdapter implements DataAdapter {
     const res = await this.cloud.upsertBudgetWithAllocations(householdId, budget, allocations, mode);
     // Seed cache with the authoritative rows (best-effort): the budget + a SCOPED
     // replace of just this budget's allocations (preserve other budgets' cached rows).
-    try { await this.cache.put('budgets', householdId, res.budget); } catch { /* best-effort */ }
+    try { await this.cache.put('budgets', householdId, res.budget); } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
     try {
-      const cached = await this.cache.list('budgetAllocations', householdId) as Array<{ budgetId?: string }>;
-      const others = cached.filter(a => a.budgetId !== res.budget.id);
-      await this.cache.replaceAll('budgetAllocations', householdId, [...others, ...res.allocations]);
-    } catch { /* best-effort */ }
+      await this.cache.updateList<BudgetAllocation>('budgetAllocations', householdId,
+        cached => [...cached.filter(a => a.budgetId !== res.budget.id), ...res.allocations]);
+    } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
     return res;
   }
   async replaceAll<T = unknown>(entity: Entity, householdId: string, records: T[]): Promise<T[]> {
@@ -363,7 +455,7 @@ export class HybridAdapter implements DataAdapter {
         await this.cache.updateProfile(householdId, cloud);
         return cloud;
       }
-    } catch { /* offline — use cache */ }
+    } catch { /* fault-ok: offline: the cached profile is used */ }
     return this.cache.getProfile(householdId);
   }
 
@@ -384,7 +476,7 @@ export class HybridAdapter implements DataAdapter {
   async listHouseholds(): Promise<HouseholdMeta[]> {
     try {
       const cloud = await this.cloud.listHouseholds();
-      try { ls.setJson('cloud_households', cloud); } catch { /* noop */ }
+      try { ls.setJson('cloud_households', cloud); } catch { /* fault-ok: device storage is optional; the list is read from the cloud next time */ }
       return cloud;
     } catch {
       try { return ls.readJson<HouseholdMeta[]>('cloud_households') || []; }
@@ -474,12 +566,16 @@ export class HybridAdapter implements DataAdapter {
             // fresh updated_at) back into the cache, so a second edit before
             // the next refresh carries a CURRENT concurrency precondition
             // rather than a stale or missing one. W3c: per ROW (it was skipped whenever any
-            // other op for the whole entity was still queued).
-            if (isCacheGenerationCurrent(gen)
-                && !await outbox.hasPendingRow(ownerUid, op.householdId, op.entity!, saved.id, op.opId)) {
-              await this.cache.put(op.entity!, op.householdId, saved as { id: string });
+            // other op for the whole entity was still queued). F1b: the check and the write share
+            // the list's lock, so an edit queued in between is never overwritten by this row.
+            if (isCacheGenerationCurrent(gen)) {
+              await this.cache.updateList<{ id: string }>(op.entity!, op.householdId, async rows =>
+                (!isCacheGenerationCurrent(gen)
+                  || await outbox.hasPendingRow(ownerUid, op.householdId, op.entity!, saved.id, op.opId))
+                  ? rows : withRow(rows, saved as { id: string }));
             }
           }
+          else if (op.op === 'shareSplit')    await this.shareSplit(op);
           else if (op.op === 'remove')        await this.cloud.remove(op.entity!, op.householdId, op.id!);
           else if (op.op === 'replaceAll')    await this.cloud.replaceAll(op.entity!, op.householdId, op.payload as unknown[]);
           else if (op.op === 'updateProfile') await this.cloud.updateProfile(op.householdId, op.payload as Partial<Profile>);
@@ -518,17 +614,9 @@ export class HybridAdapter implements DataAdapter {
             this.emitCacheChanged();
             continue;
           }
-          if (outcome.kind === 'failed') {
-            // TD-10 — retries exhausted: dead-letter to sync_failed.
-            deadLetter.recordFailed(op, e);
-            if (typeof console !== 'undefined') {
-              console.warn('[Vyact sync] Op exhausted retries — moved to dead-letter:', op.op, op.entity, e);
-            }
-            await outbox.ack(op.opId, this.workerId);
-            continue;
-          }
           // Transient — release back to pending with the backoff patch; the
-          // next flush after nextRetryAt claims it again.
+          // next flush after nextRetryAt claims it again. F1a (FE-SYN-05): with no cap,
+          // until it lands — a network failure never sets a write aside.
           await outbox.release(op, outcome.op);
         }
       }
@@ -538,6 +626,39 @@ export class HybridAdapter implements DataAdapter {
       const nextWake = await outbox.nextWakeAt(ownerUid);
       if (nextWake !== null) this.scheduleFlush(nextWake);
     });
+  }
+
+  // ── v10.112.0 (F1c, audit INT-TXN-11; owner: "today's calls, repeat-safe") — split sharing ──
+  // The Split form used to share a split straight after QUEUEING its transaction: offline, or before the
+  // transaction had landed, the cloud refused it (foreign key), the form said "sharing failed" and
+  // nothing tried again, so the others never saw what they owed. Sharing is now a queued step of its
+  // own: it waits for its transaction (outbox), is retried until it lands like every write, and each
+  // run makes the cloud match the split (`syncSharedSplit`), so a repeat is harmless.
+
+  /** Queue a split's sharing (create, edit or delete). Works offline; sync sends it once its transaction lands. */
+  async queueSplitShare(householdId: string, intent: SplitShareIntent): Promise<void> {
+    await outbox.enqueueOp({ ts: Date.now(), op: 'shareSplit', householdId, payload: intent }, await this.ownerForWrite());
+    void this.flushQueue();
+  }
+
+  private async shareSplit(op: outbox.StoredOp): Promise<void> {
+    const result = await syncSharedSplit(this.client, op.householdId, op.payload as SplitShareIntent);
+    // The people added in this run are emailed once (the server also claims one email per share per
+    // event, so even a repeat never sends twice). Best-effort, never holding up the queue.
+    const email = result?.added ? sendSplitEmail({ splitId: result.splitId, event: 'shared' }) : Promise.resolve(null);
+    void email.then(outcome => this.emitSplitShared(outcome));
+  }
+
+  private splitListeners = new Set<(email: SplitEmailResult | null) => void>();
+  /** F1c — a queued split share landed (with the email outcome when people were added). */
+  onSplitShared(listener: (email: SplitEmailResult | null) => void): () => void {
+    this.splitListeners.add(listener);
+    return () => { this.splitListeners.delete(listener); };
+  }
+  private emitSplitShared(email: SplitEmailResult | null): void {
+    for (const listener of this.splitListeners) {
+      try { listener(email); } catch (e) { unexpected(e, 'sync:splitListener'); }
+    }
   }
 
   // ── Queue / dead-letter surface (delegated to ./sync/*) ─────
@@ -552,12 +673,12 @@ export class HybridAdapter implements DataAdapter {
    * review. Surfaced by the SyncConflictBanner (TD-03 phase B).
    */
   pendingConflictCount(): number {
-    return deadLetter.pendingConflictCount();
+    return deadLetter.pendingConflictCount(cacheOwnerUid());
   }
 
-  /** Drop all dead-lettered conflict ops (SyncConflictBanner "Dismiss"). */
+  /** Drop the signed-in person's dead-lettered conflict ops (SyncConflictBanner "Dismiss"). */
   clearConflicts(): void {
-    deadLetter.clearConflicts();
+    deadLetter.clearConflicts(cacheOwnerUid());
   }
 
   /**
@@ -566,15 +687,32 @@ export class HybridAdapter implements DataAdapter {
    * stayed on screen until a full resync happened to run).
    */
   async dismissConflicts(): Promise<void> {
-    const targets = deadLetter.conflictTargets();
-    deadLetter.clearConflicts();
+    const owner = cacheOwnerUid();
+    const targets = deadLetter.conflictTargets(owner);
+    deadLetter.clearConflicts(owner);
+    await this.rereadFromCloud(targets);
+  }
+
+  /**
+   * F1a (audit FE-SYN-05) — "Dismiss" for set-aside writes: the rows they touched are read again from
+   * the cloud, as for conflicts. A write the database refused is already rolled back; one set aside by
+   * an older app after its retries ran out still showed on screen as if it had saved.
+   */
+  async dismissFailed(): Promise<void> {
+    const owner = cacheOwnerUid();
+    const targets = deadLetter.deadLetterTargets('sync_failed', owner);
+    deadLetter.clearFailed(owner);
+    await this.rereadFromCloud(targets);
+  }
+
+  private async rereadFromCloud(targets: { householdId: string; entity: string }[]): Promise<void> {
     const gen = cacheGeneration();
     for (const { householdId, entity } of targets) {
       try {
         const cached = await this.cache.list(entity as Entity, householdId);
         const fresh = await this.cloud.list(entity as Entity, householdId);
         await this.applyCloudList(entity as Entity, householdId, cached as unknown[], fresh as unknown[], gen);
-      } catch (e) { expected(e, `sync:dismissConflicts:${entity}`); }
+      } catch (e) { expected(e, `sync:dismiss:${entity}`); }
     }
     this.emitCacheChanged();
   }
@@ -600,16 +738,17 @@ export class HybridAdapter implements DataAdapter {
   }
 
   /**
-   * R4 (sync fix) — number of ops that exhausted their retries and are now in
-   * the `sync_failed` dead-letter bucket, surfaced so "all synced" can't lie.
+   * R4 (sync fix) — the signed-in person's writes in the `sync_failed` dead-letter
+   * bucket (refused by the database; or, from older apps, out of retries), surfaced
+   * so "all synced" can't lie. F1a: only that person's.
    */
   pendingFailedCount(): number {
-    return deadLetter.pendingFailedCount();
+    return deadLetter.pendingFailedCount(cacheOwnerUid());
   }
 
-  /** Drop the dead-lettered failed ops after the user has reviewed them. */
+  /** Drop the signed-in person's set-aside writes after they have reviewed them. */
   clearFailed(): void {
-    deadLetter.clearFailed();
+    deadLetter.clearFailed(cacheOwnerUid());
   }
 
   /**
@@ -640,7 +779,7 @@ export class HybridAdapter implements DataAdapter {
       for (const d of rows.debts ?? []) { if (!isCacheGenerationCurrent(gen)) return; await this.cache.put('debts', householdId, d); }
       for (const a of rows.accounts ?? []) { if (!a || !isCacheGenerationCurrent(gen)) continue; await this.cache.put('accounts', householdId, a); }
       for (const id of rows.removedTransactionIds ?? []) { if (!isCacheGenerationCurrent(gen)) return; await this.cache.remove('transactions', householdId, id); }
-    } catch { /* cache is best-effort; the cloud write is authoritative and the next refresh re-reads it */ }
+    } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
     this.emitCacheChanged();
   }
 
@@ -668,7 +807,7 @@ export class HybridAdapter implements DataAdapter {
 
   async deleteDebt(householdId: string, debtId: string): Promise<void> {
     await this.cloud.deleteDebt(householdId, debtId);
-    try { await this.cache.remove('debts', householdId, debtId); } catch { /* the next refresh drops it */ }
+    try { await this.cache.remove('debts', householdId, debtId); } catch { /* fault-ok: the cache is best-effort; the next refresh drops it */ }
     this.emitCacheChanged();
   }
 
@@ -683,11 +822,9 @@ export class HybridAdapter implements DataAdapter {
     if (!cash) return null;
     try {
       if (!isCacheGenerationCurrent(gen)) return cash;
-      const cached = await this.cache.list<Account>('accounts', householdId);
-      if (!isCacheGenerationCurrent(gen)) return cash;
-      await this.cache.replaceAll('accounts', householdId,
-        [...cached.filter(row => row.id !== cash.id && row.kind !== 'cash'), cash]);
-    } catch { /* cache is best-effort; the cloud row is authoritative */ }
+      await this.cache.updateList<Account>('accounts', householdId, cached => (!isCacheGenerationCurrent(gen) ? cached
+        : [...cached.filter(row => row.id !== cash.id && row.kind !== 'cash'), cash]));
+    } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
     return cash;
   }
 
@@ -720,7 +857,7 @@ export class HybridAdapter implements DataAdapter {
       if (!isCacheGenerationCurrent(gen)) return stored;
       await this.cache.replaceNetWorthSnapshots(householdId,
         mergeSnapshot(cached.filter(row => row.month !== stored.month), stored));
-    } catch { /* cache is best-effort; the cloud row is authoritative */ }
+    } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
     return stored;
   }
 
@@ -755,9 +892,8 @@ export class HybridAdapter implements DataAdapter {
   private async dropCachedAccount(householdId: string, accountId: string): Promise<void> {
     const gen = cacheGeneration();
     try {
-      const cached = await this.cache.list<Account>('accounts', householdId);
-      if (!isCacheGenerationCurrent(gen)) return;
-      await this.cache.replaceAll('accounts', householdId, cached.filter(row => row.id !== accountId));
-    } catch { /* cache is best-effort; the next refresh reconciles it */ }
+      await this.cache.updateList<Account>('accounts', householdId, cached => (!isCacheGenerationCurrent(gen) ? cached
+        : cached.filter(row => row.id !== accountId)));
+    } catch { /* fault-ok: the cache is best-effort; the cloud write landed and the next refresh re-reads it */ }
   }
 }

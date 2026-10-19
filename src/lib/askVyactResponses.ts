@@ -112,6 +112,16 @@ export function chipPromptFromReply(reply: string, chips?: AssistantChip[]): str
  * only once the user picks the paying account and saves (writes are propose →
  * confirm). Base currency only — a foreign amount is converted before it gets here.
  */
+/**
+ * v10.109.0 (owner, 16 Oct 2026; R-1) — a loan's EMI is never a recurring schedule: it is set up on the
+ * LOAN, whose own schedule Recurring mirrors (Loan EMIs) and whose "Record automatically" posts it. Pip
+ * and Recurring hand an EMI request to the loan form: a new loan pre-filled, or an existing loan with
+ * Record automatically switched on. Nothing is saved until the person saves the form.
+ */
+export type LoanSeed =
+  | { mode: 'new'; name: string; emi?: number; nextEmiDate?: string; autoRecord: true }
+  | { mode: 'edit'; debtId: string; autoRecord: true };
+
 export interface RecurringSeed {
   name: string;
   type: 'expense' | 'income';
@@ -137,6 +147,8 @@ export interface ResolveResult {
   seed?: Partial<Transaction>;
   /** v10.39.1 (P21) — the draft for the Recurring schedule sheet. Never saved here. */
   recurringSeed?: RecurringSeed;
+  /** v10.109.0 — an EMI is set up on its LOAN: opens Add loan, or that loan, with auto-record on. */
+  loanSeed?: LoanSeed;
   /** True when any figure leans on onboarding estimates (provenance, §5). */
   usesEstimate?: boolean;
   /**

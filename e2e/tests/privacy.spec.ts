@@ -29,7 +29,7 @@ test.describe('§21 PRIV-FC · Excluded transaction behavior', () => {
       date: '2026-05-12',
       description: 'PRIV-FC-001 Private expense',
       category: 'food',
-      account: 'Cash',            // every entry moves an account (money model)
+      account: 'Cash in Hand',    // every entry moves an account (money model)
       excluded: true,
     });
     await txnModal.submit();

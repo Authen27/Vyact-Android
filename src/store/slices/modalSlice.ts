@@ -17,6 +17,11 @@ import type { Store } from '../../store';
 import { appNavigate } from '../../lib/appNavigation';
 import { formPath } from '../../lib/formRoutes';
 import { isSplitRow } from '../../lib/txnEdit';
+import type { LoanSeed } from '../../lib/askVyactResponses';
+
+/** v10.109.0 (R-1) — only a real seed travels: a button that passes the opener straight to onClick hands it the click event. */
+const isLoanSeed = (s: unknown): s is LoanSeed =>
+  !!s && typeof s === 'object' && 'mode' in s && 'autoRecord' in s && (s as LoanSeed).autoRecord === true;
 
 export interface ModalSlice {
   /** v7.4.5 — a seed pre-fills the Add Transaction page (Ask Vyact, notifications). */
@@ -38,8 +43,9 @@ export interface ModalSlice {
   openAddBudget: () => void;
   openEditBudget: (b: Budget) => void;
 
-  openAddDebt: () => void;
-  openEditDebt: (d: Debt) => void;
+  /** v10.109.0 (R-1) — an EMI request (Pip, Recurring) opens the loan form with this seed: pre-filled, Record automatically on. */
+  openAddDebt: (seed?: LoanSeed) => void;
+  openEditDebt: (d: Debt, seed?: LoanSeed) => void;
 
   openAddAsset: () => void;
   openEditAsset: (a: Asset) => void;
@@ -82,8 +88,8 @@ export const createModalSlice: StateCreator<Store, [], [], ModalSlice> = (set) =
   openAddBudget:  () => appNavigate(formPath.budgetNew()),
   openEditBudget: (b) => appNavigate(formPath.budgetEdit(b.id)),
 
-  openAddDebt:  () => appNavigate(formPath.debtNew()),
-  openEditDebt: (d) => appNavigate(formPath.debtEdit(d.id)),
+  openAddDebt:  (seed) => appNavigate(formPath.debtNew(), isLoanSeed(seed) ? { state: { loanSeed: seed } } : undefined),
+  openEditDebt: (d, seed) => appNavigate(formPath.debtEdit(d.id), isLoanSeed(seed) ? { state: { loanSeed: seed } } : undefined),
 
   openAddAsset:  () => appNavigate(formPath.assetNew()),
   openEditAsset: (a) => appNavigate(formPath.assetEdit(a.id)),

@@ -5,12 +5,14 @@
 //   2. Cloud enabled, user authed — render children.
 //   3. Cloud enabled, user NOT authed — render auth screen, redirect attempts back to original URL.
 
-import { type ReactNode, useEffect } from 'react';
-import { unexpected } from '../../lib/faults';
+import { type ReactNode, useEffect, useState } from 'react';
+import { expected, unexpected } from '../../lib/faults';
 import { useLocation, Navigate } from 'react-router-dom';
 import { useStore } from '../../store';
 import { isCloudEnabled, supabase } from '../../lib/supabase';
-import { reactivateIfNeeded, acceptPolicies } from '../../lib/auth';
+import { reactivateIfNeeded, acceptPolicies, signOut as authSignOut } from '../../lib/auth';
+import { POLICY_VERSION } from '../../lib/policyVersion';
+import PolicyUpdateSheet from './PolicyUpdateSheet';
 import { trackSignUpOnce, setAnalyticsUser } from '../../lib/analytics';
 
 const PUBLIC_ROUTES = [
@@ -30,6 +32,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const setSession = useStore(s => s.setSession);
   const init = useStore(s => s.init);
   const toast = useStore(s => s.toast);
+  // T4b (v10.125.0, XC-PRV-09) — the signed-in person's recorded acceptance is not this POLICY_VERSION.
+  const [needsConsent, setNeedsConsent] = useState(false);
   const location = useLocation();
 
   useEffect(() => {
@@ -65,7 +69,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     // v10.53.0 (#46) — after counting a sign-up, mark the account so a second device
     // doesn't count it again (fire-and-forget; the per-device flag still holds).
     if (trackSignUpOnce(session.user)) {
-      void supabase?.auth.updateUser({ data: { vy_signup_tracked: true } }).catch(() => {});
+      void supabase?.auth.updateUser({ data: { vy_signup_tracked: true } }).catch(() => { /* fault-ok: the device's own once-only mark still stops a second event here */ });
     }
     (async () => {
       if (sessionStorage.getItem('pending_policy_accept')) {
@@ -75,6 +79,12 @@ export default function AuthGate({ children }: { children: ReactNode }) {
           sessionStorage.removeItem('pending_policy_accept');
         } catch (e) { unexpected(e, 'consent:record'); }
       }
+      // T4b (v10.125.0; owner, 19 Oct 2026: "accept on change") — an acceptance of an older text, or none
+      // (a Google sign-up whose record was lost), is asked for again. Offline or unreadable: not asked now.
+      try {
+        const { data, error } = await supabase!.from('profiles').select('privacy_version').eq('id', session.user.id).maybeSingle();
+        if (!error && data && (data as { privacy_version: string | null }).privacy_version !== POLICY_VERSION) setNeedsConsent(true);
+      } catch (e) { expected(e, 'consent:read'); }
       const reactivated = await reactivateIfNeeded().catch(() => false);
       if (reactivated) toast('Welcome back — your account has been reactivated.', 'success');
     })();
@@ -116,5 +126,16 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     return <Navigate to="/dashboard" replace />;
   }
 
-  return <>{children}</>;
+  // T4b — never over the legal pages themselves, so the new text can be read first.
+  const onLegalPage = /^\/(privacy|terms|cookies)\b/.test(location.pathname);
+  return (
+    <>
+      {children}
+      {session && needsConsent && !onLegalPage && (
+        <PolicyUpdateSheet
+          onAccept={async () => { await acceptPolicies(session.user.id); setNeedsConsent(false); toast('Thanks, that\'s recorded', 'success'); }}
+          onSignOut={() => { void authSignOut(); }} />
+      )}
+    </>
+  );
 }

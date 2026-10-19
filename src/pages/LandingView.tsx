@@ -14,11 +14,12 @@
 import { Link } from 'react-router-dom';
 import {
   Layers, CalendarX2, BarChart3, Lightbulb, Target, TrendingUp, Users, Home, Receipt, Landmark, PiggyBank, Globe2,
-  Zap, BellRing, CalendarClock, Split, LineChart, MessageCircle, ShieldCheck, BookOpen,
+  Zap, BellRing, CalendarClock, Split, LineChart, MessageCircle, ShieldCheck, BookOpen, Play,
 } from 'lucide-react';
 import { Pip } from '../components/layout/Brand';
 import {
   HERO, PAINS, PILLARS, PIP, INSIGHTS, USE_CASES, FEATURES, LESSONS, FAQ, SHORTS, YOUTUBE_CHANNEL, DEMO_URL,
+  PROMO, promoWatchUrl, promoEmbedUrl,
 } from '../content/landingCopy';
 
 type Icon = typeof Layers;
@@ -71,9 +72,57 @@ export interface LandingViewProps {
   signedIn: boolean;
   /** Analytics hook for CTA clicks (placement); a no-op when pre-rendered. */
   onCta?: (placement: string) => void;
+  /** v10.108.0 — the promo player is showing (the visitor tapped the poster). Never true when pre-rendered. */
+  promoPlaying?: boolean;
+  /** Tapping the poster. Without it (pre-rendered) the poster is a plain link to the video on YouTube,
+   *  and the boot script in landing.html handles a tap made before the app is up. */
+  onPlayPromo?: () => void;
 }
 
-export default function LandingView({ cloudMode, signedIn, onCta }: LandingViewProps) {
+/** v10.108.0 — the promo: a poster in a 16:9 box (no layout shift), and the player only after a tap.
+ *  The poster is a brand card drawn in CSS (no image, nothing fetched): see PROMO in landingCopy.ts. */
+function PromoVideo({ playing, onPlay }: { playing: boolean; onPlay?: () => void }) {
+  return (
+    <div className="relative rounded-r4 overflow-hidden border border-line" style={{ aspectRatio: '16 / 9', background: 'var(--sunken)' }}>
+      {playing ? (
+        <iframe
+          src={promoEmbedUrl(PROMO.id)} title={PROMO.name}
+          allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen
+          className="absolute inset-0 w-full h-full border-0 bg-black"
+        />
+      ) : (
+        <a
+          href={promoWatchUrl(PROMO.id)} target="_blank" rel="noopener" data-promo={PROMO.id}
+          onClick={onPlay ? e => { e.preventDefault(); onPlay(); } : undefined}
+          className="group absolute inset-0 block" aria-label={`Play the video: ${PROMO.name}`}
+        >
+          <span aria-hidden className="absolute inset-0 transition-opacity opacity-80 group-hover:opacity-100"
+            style={{ background: 'radial-gradient(90% 120% at 80% 0%, color-mix(in srgb, hsl(var(--coral)) 30%, transparent), transparent 65%)' }} />
+          <span aria-hidden className="absolute left-4 top-4 sm:left-6 sm:top-6 flex items-center gap-2">
+            <Pip size={30} />
+            <span>
+              <span className="block display-italic text-lg text-ink leading-none">Vyact</span>
+              <span className="block text-[11px] font-medium text-coral">Family budget app</span>
+            </span>
+          </span>
+          <span aria-hidden className="absolute inset-0 flex items-center justify-center">
+            <span className="promo-play inline-flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-full shadow-lg transition-transform group-hover:scale-105"
+              style={{ background: 'hsl(var(--coral))', color: 'var(--accent-ink)' }}>
+              <Play size={28} fill="currentColor" className="ml-1" />
+            </span>
+          </span>
+          <span aria-hidden className="absolute left-4 bottom-4 sm:left-6 sm:bottom-5 text-[0.95rem] sm:text-[1.05rem] font-semibold text-ink">
+            {PROMO.name}
+          </span>
+          <span aria-hidden className="absolute right-4 bottom-4 sm:right-6 sm:bottom-5 rounded-full px-2.5 py-1 text-[12px] font-semibold text-ink"
+            style={{ background: 'color-mix(in srgb, var(--canvas) 70%, transparent)' }}>0:15</span>
+        </a>
+      )}
+    </div>
+  );
+}
+
+export default function LandingView({ cloudMode, signedIn, onCta, promoPlaying = false, onPlayPromo }: LandingViewProps) {
   const toApp = !cloudMode || signedIn;
   const primary = (ref: string) => (toApp ? '/dashboard' : `/auth/sign-up?ref=${ref}`);
   const primaryLabel = !cloudMode ? 'Open Vyact' : signedIn ? 'Go to Dashboard' : "Open Vyact — it's free →";
@@ -120,6 +169,13 @@ export default function LandingView({ cloudMode, signedIn, onCta }: LandingViewP
             )}
           </div>
           <p className="text-[0.8rem] text-ink-dim mt-3">{HERO.fine}</p>
+        </section>
+
+        {/* v10.108.0 — the 15-second promo. Below the fold on phones, so the H1 stays the page's largest paint. */}
+        <section className="pb-16 max-w-3xl mx-auto" aria-labelledby="promo" data-testid="landing-promo">
+          <h2 id="promo" className="display-italic text-2xl md:text-3xl text-ink mb-2 text-center">{PROMO.heading}</h2>
+          <p className="text-[0.95rem] leading-6 text-ink-mid mb-5 text-center">{PROMO.caption}</p>
+          <PromoVideo playing={promoPlaying} onPlay={onPlayPromo} />
         </section>
 
         {/* Sound familiar? */}

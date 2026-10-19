@@ -84,5 +84,5 @@ export function loadFavorites(): Set<string> {
 }
 
 export function saveFavorites(ids: Set<string>): void {
-  try { localStorage.setItem(FAV_KEY, JSON.stringify([...ids])); } catch { /* noop */ }
+  try { localStorage.setItem(FAV_KEY, JSON.stringify([...ids])); } catch { /* fault-ok: device storage is optional (private mode, quota) */ }
 }

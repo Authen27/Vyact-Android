@@ -32,7 +32,7 @@ export default function UpdateBanner() {
       const data = (await res.json()) as { version?: unknown };
       if (typeof data.version === 'string') setLatest(data.version);
     } catch {
-      /* offline / dev / transient — ignore, try again next tick */
+      // fault-ok: offline or a dev build; the next check asks again
     }
   }, []);
 

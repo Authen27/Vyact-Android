@@ -66,7 +66,7 @@ export default function GoogleButton({ requireAgreement = false, agreed = true, 
       </button>
       {consentByContinuing && (
         <p className="text-ink-dim text-[0.72rem] text-center mt-2">
-          By continuing with Google you agree to the <Link to="/terms" className="underline">Terms</Link> and <Link to="/privacy" className="underline">Privacy Policy</Link>.
+          By continuing with Google you confirm you are 18 or older and agree to the <Link to="/terms" className="underline">Terms</Link> and <Link to="/privacy" className="underline">Privacy Policy</Link>.
         </p>
       )}
       {oauthError && (

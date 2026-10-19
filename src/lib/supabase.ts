@@ -34,7 +34,10 @@ const FALLBACK_KEY = 'sb_publishable_SpuQFPzUWOnKI3nRR6ghNw_ktWqrKCA';
 const USE_FALLBACK = import.meta.env.PROD && import.meta.env.MODE !== 'test' && import.meta.env.VITE_LOCAL_ONLY !== '1';
 const URL  = (import.meta.env.VITE_SUPABASE_URL  as string | undefined) || (USE_FALLBACK ? FALLBACK_URL : undefined);
 const KEY  = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) || (USE_FALLBACK ? FALLBACK_KEY : undefined);
-export const APP_URL = (import.meta.env.VITE_APP_URL as string | undefined) || (typeof window !== 'undefined' ? window.location.origin : '');
+// v10.108.0 — no trailing slash: .env.production sets "https://vyact.app/", and every caller appends "/auth/…" or
+// "/invite/…" (a double slash the Supabase redirect allowlist need not match). In the Android app the page's own
+// origin is https://localhost, so invite links must come from here, never from window.location.
+export const APP_URL = ((import.meta.env.VITE_APP_URL as string | undefined) || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/+$/, '');
 
 export const isCloudEnabled = (): boolean => {
   const enabled = Boolean(URL && KEY);

@@ -643,18 +643,18 @@ describe('card dues (P19)', () => {
   });
 });
 
-// ── v10.39.1 — P7 · Pulse is not a verdict on the cushion ──────────────────────
-describe('Pulse beside a thin cushion (P7)', () => {
-  it('CON-UNIT-FACT-051 · a strong score with under three months of cover does not say "Strong"', () => {
+// ── v10.39.1 — P7 · a thin cushion is always said (v10.109.0: the Pulse Score is archived) ──────────
+describe('a thin cushion is said (P7)', () => {
+  it('CON-UNIT-FACT-051 · under three months of cover, "how am I doing?" says the cushion is thin — no score, no "Strong"', () => {
     const base = makeCtx();
     const ctx = { ...base, summary: { ...base.summary,
-      pulseScore: { total: 100, components: {} },
       netWorth: { ...base.summary.netWorth, liquidityMonths: 1.7 } } };
     const r = resolve(intent('interpret.status', { text: 'how am i doing' }), ctx);
     expect(String(r.vars.detail)).not.toContain('Strong');
     expect(String(r.vars.detail)).toContain('1.7 months');
+    expect(String(r.vars.headline)).not.toMatch(/pulse/i);
     const f = r.facts as Record<string, string>;
-    expect(f.pulse_measures).toContain('not how long your savings would last');
+    expect(f).not.toHaveProperty('pulse_measures');
     expect(f.cushion_note).toContain('1.7 months');
   });
 
