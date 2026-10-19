@@ -3,4 +3,6 @@
     <!-- Aurora "Nocturne" canvas: the app's default theme, shown behind the WebView. Used as the window
          and splash background (see scripts/inject-android-native.mjs step 4). -->
     <color name="vyact_canvas">#0F181B</color>
+    <!-- The brand coral: the tint of lock-screen notifications (scripts/setup-native-push.mjs). -->
+    <color name="vyact_coral">#E26D5C</color>
 </resources>

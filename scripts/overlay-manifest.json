@@ -39,6 +39,8 @@
     "scripts/pip-native-probe.mjs",
     "scripts/responsive-audit.sh",
     "scripts/set-android-version.mjs",
+    "scripts/setup-native-push.mjs",
+    "scripts/setup-native-push.test.mjs",
     "scripts/sync-from-upstream.mjs",
     "scripts/tap-label.sh",
     "scripts/ui-find.mjs",
@@ -47,6 +49,7 @@
     "src/components/layout/WidgetSync.tsx",
     "src/lib/native.ts",
     "src/lib/nativeFetch.ts",
+    "src/lib/__tests__/nativeServerPush.test.ts",
     "src/lib/widgets.ts"
   ]
 }

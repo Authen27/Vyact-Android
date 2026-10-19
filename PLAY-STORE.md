@@ -11,6 +11,27 @@ CI; you supply the signing secrets and the Play Console account.
   e.g. `https://vyact-twentyx.vercel.app/privacy`. (Must mention what data is
   collected and how to request deletion — see Data Safety below.)
 
+## 0b. Lock-screen notifications (Firebase Cloud Messaging), once
+
+The app can't receive web push (it is a WebView), so lock-screen notifications come through Firebase.
+The server side is upstream Vyact v10.127.0: the phone registers its token, and the server sends it the
+same alerts as a browser.
+
+1. In the Firebase console, add a project (or use your Google Cloud project), then add an **Android app**
+   with package name **`com.vyact.app`**. Download its `google-services.json`.
+2. In this repository → Settings → Secrets and variables → Actions, add **`GOOGLE_SERVICES_JSON_BASE64`**
+   (`base64 -w0 google-services.json`). With it, the build installs the push plugin and writes the file into the
+   app (`scripts/setup-native-push.mjs`). Without it, the app is built without push and says lock-screen
+   notifications aren't available yet. The plugin is never shipped without the file, because the app could
+   crash without it.
+3. In Firebase → Project settings → Service accounts, generate a private key and store it on the Vyact
+   Supabase project (then delete the file):
+   `supabase secrets set FCM_SERVICE_ACCOUNT_JSON="$(cat key.json)" --project-ref dmxqkvploojokffuhxnz`.
+   Steps 3 and 4 are also in upstream `docs/PUSH_TROUBLESHOOTING.md`.
+4. Check that **Firebase Cloud Messaging API (V1)** is enabled for the project.
+5. The app turns notifications on by itself (it asks Android's permission once), and it needs the web app
+   from upstream v10.127.0 or later: sync upstream first.
+
 ---
 
 ## 1. Create the signed AAB (the upload bundle)
@@ -217,6 +238,10 @@ screen currently reads as "0% used" rather than showing real progress.)
 - **Data safety form:** declare —
   - *Financial info* (transactions, balances) — collected, **encrypted in transit**.
   - *Personal info* (email/name for sign-in) — collected.
+  - *Device or other IDs*: the Firebase Cloud Messaging token, collected only to send the person's own
+    notifications. Not shared, not used for ads. Declare it once lock-screen notifications ship (section 0b).
+  - *App activity* (Google Analytics: the pages and features used), which is on in the app as part of its
+    permissions (upstream v10.125.0).
   - Data is **not sold**; users can **request deletion** (state the path in your policy).
 - **Content rating:** complete the questionnaire (finance app, no objectionable
   content → expected **Everyone**).
