@@ -22,6 +22,7 @@
     ".upstream-base/",
     ".upstream-sync.json",
     "ANDROID-BUILD-RULES.md",
+    "ANDROID-PUSH-SETUP.md",
     "PLAY-STORE.md",
     "android-toolchain.json",
     "android-version.json",
@@ -50,9 +51,9 @@
     "src/android-overlay.css",
     "src/components/layout/NativeNavBridge.tsx",
     "src/components/layout/WidgetSync.tsx",
+    "src/lib/__tests__/nativeServerPush.test.ts",
     "src/lib/native.ts",
     "src/lib/nativeFetch.ts",
-    "src/lib/__tests__/nativeServerPush.test.ts",
     "src/lib/widgets.ts"
   ]
 }
