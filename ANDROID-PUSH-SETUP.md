@@ -89,7 +89,8 @@ comment in the code marks the spot) so "Show details on the lock screen" applies
 1. Run **Android Release AAB** (versionCode higher than the last upload). The *Lock-screen notifications (Firebase)*
    step must print `Lock-screen notifications built in: Firebase project <id>, channel vyact_alerts.`
    (a `::notice` saying "not built in" means the secret is missing).
-2. Install (internal testing track, or the debug APK). On first start Android asks **Allow Vyact to send you
+2. Install (internal testing track, or the debug APK: Actions → **Android Debug APK** → Run workflow; it no longer
+   runs by itself after a sync). On first start Android asks **Allow Vyact to send you
    notifications?** → Allow (Android 13+; the app asks once).
 3. Settings → Notifications → **Send a test notification**. Swipe the app away first: it must arrive on the lock
    screen with the app closed. Real alerts follow the server's 15-minute cycle.

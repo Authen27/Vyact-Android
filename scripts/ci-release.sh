@@ -11,7 +11,8 @@
 #   ci-release.sh get <glob> [dir]   download matching assets of THIS run's release (default dir .)
 #   ci-release.sh prune [keep]       delete all but the newest <keep> (default 4) ci-* releases + tags
 #
-# Needs GH_TOKEN and `permissions: contents: write`. Fetch a finished run's files with:
+# Needs GH_TOKEN and `permissions: contents: write`. The release is tagged at CI_RELEASE_TARGET when set (a pull
+# request's head; its merge commit is on no branch), else GITHUB_SHA. Fetch a finished run's files with:
 #   gh release download ci-<run_id> --repo <owner/repo> --dir <dir>
 set -euo pipefail
 
@@ -22,7 +23,7 @@ cmd="${1:-}"; shift || true
 ensure_release() {
   gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && return 0
   # Two jobs can race to create it; whoever loses just finds it already there.
-  gh release create "$TAG" --repo "$REPO" --prerelease --target "${GITHUB_SHA:?}" \
+  gh release create "$TAG" --repo "$REPO" --prerelease --target "${CI_RELEASE_TARGET:-${GITHUB_SHA:?}}" \
     --title "CI run $GITHUB_RUN_ID" \
     --notes "Files from Actions run $GITHUB_RUN_ID (${GITHUB_WORKFLOW:-workflow}). CI hand-off only — safe to delete." >/dev/null 2>&1 \
     || gh release view "$TAG" --repo "$REPO" >/dev/null
