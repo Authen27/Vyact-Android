@@ -1,11 +1,36 @@
 name: Android Debug APK
 
-# Produces an installable debug APK as a downloadable artifact.
-# Run it from the GitHub UI (Actions tab -> "Run workflow") or on push to main.
+# Produces an installable debug APK as a downloadable artifact, with the emulator smoke test and UI validation.
+# It runs only when asked (Actions tab -> "Run workflow", on any branch) or for a pull request that changes the
+# native project or a script that builds or tests it (owner, 20 Oct 2026). The 2,000 Actions minutes a month are
+# shared with the main repo, whose deploys now depend on them, so a sync of the web app from upstream no longer
+# builds an APK by itself: run this by hand when you want one.
 on:
   workflow_dispatch: {}
-  push:
-    branches: [main]
+  pull_request:
+    paths:
+      - 'native/**'
+      - 'assets-src/**'
+      - 'capacitor.config.ts'
+      - 'android-toolchain.json'
+      - 'android-version.json'
+      - 'scripts/check-overlay-registered.mjs'
+      - 'scripts/patch-android-manifest.mjs'
+      - 'scripts/inject-android-native.mjs'
+      - 'scripts/setup-native-push.mjs'
+      - 'scripts/setup-native-push.test.mjs'
+      - 'scripts/gen-assets.mjs'
+      - 'scripts/ci-release.sh'
+      - 'scripts/pip-native-probe.mjs'
+      - 'scripts/tap-label.sh'
+      - 'scripts/ui-find.mjs'
+      - 'scripts/responsive-audit.sh'
+      - '.github/workflows/android-apk.yml'
+
+# A newer push to the same pull request (or a second run on the same branch) replaces a build still running.
+concurrency:
+  group: android-apk-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 # contents: write lets scripts/ci-release.sh hand files between jobs (and to us) as release assets.
 # Actions *artifacts* share an account-wide quota that, once hit, fails every upload — see that script.
@@ -14,6 +39,9 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  # A pull request's run checks out GitHub's merge commit, which is on no branch; tag the hand-off release at
+  # the pull request's head instead (scripts/ci-release.sh).
+  CI_RELEASE_TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   build:
