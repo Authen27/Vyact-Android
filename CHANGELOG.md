@@ -4,7 +4,7 @@
 >
 > The consumer React app at `react/` continues the version line that began with the v1.0–v5.0 vanilla-shell releases at the repo root. The vanilla shell is **frozen at v5.0** and superseded by **v6.0** (the React port). All v6+ versions are React-only.
 >
-> **Current production version: `v10.127.0`** (consumer)
+> **Current production version: `v10.129.0`** (consumer)
 > **Live URL:** https://vyact.app
 > **Money Map mode:** retired in v10.121.0. Every build's account pickers read the household's accounts.
 > **Next planned: see Roadmap at the bottom.**
@@ -21,6 +21,64 @@ The numbering history has some non-monotonic stretches that we keep documented h
 | v7.0 / v7.5 | Shipped before v6.2 (chronologically) | The v7.x line was a **major-feature track** (Onboarding, EMI, Recurring, Notifications, Planner, Chat) that ran in parallel with the v6.x **integration & polish track**. Going forward we abandon the parallel-track scheme — every release is on a single increasing number from v6.4 onward. |
 
 ---
+
+## v10.129.0 — Every migration is tried before production, and who can do what is tested *(2026-10-20)*
+
+Tests and docs; no app or schema change. Track Q, part 2: audit OPS-02, DB-SEC-10, OPS-08, XC-ARC-13 and the
+server half of ADM-07. Owner decision D10, 20 Oct 2026: "replay every migration, and an authz matrix".
+
+- **Every migration is applied before production sees it.**
+  - Until now a migration first ran on production, in Deploy. A new suite applies every file in
+    `supabase/migrations`, in order and exactly as written, to an empty database set up as a new Supabase project
+    (PGlite, with the platform's auth, storage, vault, realtime and default grants stood in).
+  - pg_cron and pg_net are created by the migrations themselves, so a job scheduled before its extension exists
+    would fail here too.
+  - A migration that does not apply after the ones before it now fails the pull request, naming the file.
+  - The suite also lists the ten scheduled jobs a new project gets, runs each job's command against the schema, and
+    requires row-level security on every table and a pinned `search_path` on every definer function.
+- **Who can read and change what is a test.**
+  - Nine kinds of person: signed out, someone from another household, the owner, an admin, a member, a viewer, and
+    the three staff tiers.
+  - It covers every table with a policy, the views, the Insights image bucket, and every household, split and staff
+    function.
+  - Nobody in one household reaches another's rows by any operation.
+  - Every function the API can call is placed: pure helpers for anyone, the rest by what they act on.
+- **Two gaps are recorded, not fixed here** (Track Q3 fixes them):
+  - `upsert_budget` lets a member or viewer write a budget, and in replace mode rewrites another household's
+    budget given its id (DB-SEC-03);
+  - `migration_issues` has no row-level security (DB-OPS-03).
+
+  When Q3 closes them, these tests fail until the gap entries are removed.
+
+## v10.128.0 — The app goes live only after the database and the server it needs *(2026-10-20)*
+
+Workflows, scripts and docs; no app or schema change. Track Q, part 1 (release safety): audit OPS-01, OPS-03,
+INT-PAR-08 and BE-FN-11. Owner decision D8, 20 Oct 2026: "Actions deploys the app last".
+
+- **Deploy now puts the apps live last.** Order: migrations → Edge Functions → apps.
+  - Vercel still builds every push.
+  - With "Auto-assign Custom Production Domains" off, the build waits, staged.
+  - The Deploy workflow promotes it for vyact.app and admin.vyact.app only after the migrations and the Edge
+    Functions succeeded (`scripts/promote-app.mjs`).
+  - A failed migration now keeps the previous app live, instead of shipping an app whose schema never arrived.
+  - Turning it on is two steps for the owner, in DEPLOY.md: a Vercel token, then the auto-assign toggle. Until
+    then the old rule holds: a schema PR merges first.
+- **Migrations apply in order or not at all.**
+  - `supabase db push` no longer runs with `--include-all`, which applied a migration older than the last one
+    out of order.
+  - A pull request's new migration must be newer than main's latest (`scripts/migration-order-check.mjs`, a CI
+    gate).
+- **The server is the code that was checked.**
+  - Before the Edge deploy, the bundled engine must match the app code at that commit.
+  - The commit is stored as `BUILD_SHA`, and a new `version` function must report it after the deploy, or the
+    run fails and the apps are not promoted.
+- **Production's sign-in settings are recorded** (`supabase/auth-config.json`), from the live project, with the
+  owner's decisions applied:
+  - sign-in returns to vyact.app (it fell back to the old vyact-twentyx host);
+  - auth email goes through a real sender at 30 an hour (Supabase's test mailer allows 2 an hour).
+
+  Until those are changed in the dashboard, each Deploy warns about them.
+- **The audit report** lost six copies of its summary that the stacked merges had replayed.
 
 ## v10.127.0 — The Android app can get lock-screen notifications (server side) *(2026-10-19)*
 
