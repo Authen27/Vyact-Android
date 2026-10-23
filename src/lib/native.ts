@@ -8,6 +8,7 @@ import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { supabase, APP_URL } from './supabase';
+import { applyCrashReportsChoice } from './crashReporting';
 
 export const isNative = (): boolean => Capacitor.isNativePlatform();
 
@@ -135,6 +136,7 @@ export function initNativeShell(): void {
   document.documentElement.classList.add('is-native');
 
   followThemeWithSystemBars();
+  void applyCrashReportsChoice(); // R6: hands the saved choice (off unless turned on) to Crashlytics; no-op in a build without it
   void dropServiceWorkers();
   routeWebOnlyLinksToBrowser();
 

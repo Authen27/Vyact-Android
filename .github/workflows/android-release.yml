@@ -72,6 +72,13 @@ jobs:
           node --test scripts/setup-native-push.test.mjs
           node scripts/setup-native-push.mjs
 
+      # Crash reports (rule R6): the Crashlytics SDK + Gradle plugin + the Settings switch's native half, only in a
+      # build that has Firebase's config (this runs after the step above), collection OFF in the manifest.
+      - name: Crash reports (Crashlytics)
+        run: |
+          node --test scripts/setup-crashlytics.test.mjs
+          node scripts/setup-crashlytics.mjs
+
       # Permanent release rules R1-R5 (ANDROID-BUILD-RULES.md): R8 full mode with the optimising rules,
       # resource shrinking, optimised resource shrinking, repackaged classes, current AGP/Gradle.
       - name: Apply the permanent release rules (R8, resource shrinking, AGP)
@@ -149,6 +156,15 @@ jobs:
             echo "- R8 ran and produced a mapping file: $LINES lines (kept for de-obfuscating future crash stack traces)." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- No mapping.txt found — R8 minification may not have run (check the 'Enable R8' step)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # R6 evidence: the Crashlytics tasks the build ran (mapping-file upload is what makes release crashes readable).
+          if grep -qi "crashlytics" "$RUNNER_TEMP/r8-build.log" 2>/dev/null; then
+            echo "### Crashlytics tasks (R6)" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -iE "crashlytics" "$RUNNER_TEMP/r8-build.log" | sort -u | head -20 >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Crashlytics: not in this build (no Firebase config)." >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "### R8/Gradle warnings" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

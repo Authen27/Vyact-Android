@@ -19,6 +19,7 @@ import { buildBackup } from '../lib/backup';
 import { analyticsState, setAnalyticsAllowed, type AnalyticsState } from '../lib/analyticsConsent';
 import { setAnalyticsUser } from '../lib/analytics';
 import PushNotifications from '../components/settings/PushNotifications';
+import CrashReportsCard from '../components/settings/CrashReportsCard'; // ANDROID-OVERLAY — renders nothing outside the Android app
 import { POLICY_VERSION } from './Privacy';
 import { formatPolicyDate } from '../lib/policyVersion';
 import Chip from '../components/ui/Chip';
@@ -759,6 +760,7 @@ export default function Settings() {
               </p>
             </div>
           </SettingRow>
+          <CrashReportsCard /> {/* ANDROID-OVERLAY */}
           <SettingRow icon="📄" label="Legal & policies"
             open={openRow === 'legal'} onToggle={() => toggleRow('legal')}>
             <div className="px-3.5 pb-3 grid sm:grid-cols-3 gap-3">

@@ -1,6 +1,8 @@
 {
-  "_note": "Android Gradle Plugin + Gradle that scripts/patch-build-gradle.mjs forces onto the generated android/ project for the RELEASE build (rule R5 in ANDROID-BUILD-RULES.md). Play Console asks for AGP 9.0+. To change any of these, edit it here — nothing else — and let the R8 smoke test in android-release.yml prove the build still runs. AGP 9.0 needs Gradle 9.1.0 or newer. googleServices is the Firebase build plugin (lock-screen notifications); Capacitor's template pins 4.4.4, which predates AGP 9.",
+  "_note": "Android Gradle Plugin + Gradle that scripts/patch-build-gradle.mjs forces onto the generated android/ project for the RELEASE build (rule R5 in ANDROID-BUILD-RULES.md). Play Console asks for AGP 9.0+. To change any of these, edit it here — nothing else — and let the R8 smoke test in android-release.yml prove the build still runs. AGP 9.0 needs Gradle 9.1.0 or newer. googleServices is the Firebase build plugin (lock-screen notifications); Capacitor's template pins 4.4.4, which predates AGP 9. crashlytics (Gradle plugin) and crashlyticsSdk are the crash-report pair that scripts/setup-crashlytics.mjs adds only to a build that has Firebase's config (rule R6); bump them together.",
   "agp": "9.0.1",
   "gradle": "9.1.0",
-  "googleServices": "4.5.0"
+  "googleServices": "4.5.0",
+  "crashlytics": "3.0.8",
+  "crashlyticsSdk": "21.0.1"
 }

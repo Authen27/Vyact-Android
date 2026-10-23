@@ -8,6 +8,8 @@
 //   R3  android.r8.optimizedResourceShrinking=true
 //   R4  -repackageclasses is in the merged R8 configuration
 //   R5  the AGP / Gradle in android-toolchain.json are the ones that built it
+//   R6  (only in a build that has Firebase's config) Crashlytics is in at the pinned versions and its
+//       collection is OFF by default in the manifest, with the Settings switch's native half present
 //
 // Usage (repo root, after the Gradle build):  node scripts/verify-android-r8.mjs
 
@@ -54,6 +56,18 @@ check(agp === toolchain.agp, `R5 AGP ${agp}`, `R5 AGP is ${agp}, android-toolcha
 const wrapper = read('android/gradle/wrapper/gradle-wrapper.properties') ?? '';
 const gradle = (wrapper.match(/gradle-([0-9.]+)-(?:all|bin)\.zip/) ?? [])[1];
 check(gradle === toolchain.gradle, `R5 Gradle ${gradle}`, `R5 Gradle is ${gradle}, android-toolchain.json says ${toolchain.gradle}`);
+
+// R6 — crash reports: a build that carries Firebase's config has Crashlytics in, pinned, and OFF by default.
+// (A build without the config has none of it, by design: scripts/setup-crashlytics.mjs skips.)
+if (existsSync('android/app/google-services.json')) {
+  const crashPlugin = (rootGradle.match(/firebase-crashlytics-gradle:([0-9][^'"\s]*)/) ?? [])[1];
+  check(crashPlugin === toolchain.crashlytics, `R6 Crashlytics Gradle plugin ${crashPlugin}`, `R6 Crashlytics Gradle plugin is ${crashPlugin ?? 'missing'}, android-toolchain.json says ${toolchain.crashlytics}`);
+  check(/apply plugin: 'com\.google\.firebase\.crashlytics'/.test(app), 'R6 Crashlytics plugin applied', "R6 android/app/build.gradle does not apply 'com.google.firebase.crashlytics'");
+  check(new RegExp(`firebase-crashlytics:${toolchain.crashlyticsSdk.replace(/\./g, '\\.')}`).test(app), `R6 Crashlytics SDK ${toolchain.crashlyticsSdk}`, `R6 the Crashlytics SDK in android/app/build.gradle is not the ${toolchain.crashlyticsSdk} android-toolchain.json pins`);
+  const manifest = read('android/app/src/main/AndroidManifest.xml') ?? '';
+  check(/firebase_crashlytics_collection_enabled"\s+android:value="false"/.test(manifest), 'R6 crash-report collection is OFF by default (manifest)', 'R6 the manifest does not set firebase_crashlytics_collection_enabled to false — reports would be sent without the person choosing');
+  check(existsSync('android/app/src/main/java/com/vyact/app/CrashReportingBridgePlugin.java'), 'R6 the Settings switch (CrashReporting plugin) is in the project', 'R6 CrashReportingBridgePlugin.java is missing from the project: the switch in Settings could not turn reports on');
+}
 
 for (const line of ok) console.log(`  ok   ${line}`);
 if (problems.length) {
