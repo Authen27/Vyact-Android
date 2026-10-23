@@ -23,6 +23,7 @@
     ".upstream-sync.json",
     "ANDROID-BUILD-RULES.md",
     "ANDROID-PUSH-SETUP.md",
+    "CLAUDE.md",
     "PLAY-STORE.md",
     "android-toolchain.json",
     "android-version.json",

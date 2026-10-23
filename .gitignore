@@ -18,3 +18,11 @@ vite.config.d.ts
 /node_modules/
 /dist/
 *.tsbuildinfo
+
+# Firebase files and keys are secrets of the build, never source. CI writes android/app/google-services.json
+# from the GOOGLE_SERVICES_JSON_BASE64 secret; service-account keys live only in Supabase's secrets.
+# scripts/check-overlay-registered.mjs fails the build if any of these is tracked (CLAUDE.md, "Secrets & files").
+google-services.json
+GoogleService-Info.plist
+*-adminsdk-*.json
+service-account*.json

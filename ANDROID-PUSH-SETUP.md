@@ -3,6 +3,16 @@
 How an alert reaches a locked Android phone, what you set up once, and how to check each link. It follows
 upstream `docs/PUSH_TROUBLESHOOTING.md` (Authen27/Vyact) and the Android side merged in PR #1.
 
+## Status — 23 Oct 2026
+| # | Piece | State |
+|---|-------|-------|
+| 1 | Server side (upstream #231 → #240) | **Done**: merged, deployed, `web-push` v110, cron every 15 min |
+| 2 | Firebase project `vyact-20x` + Android app `com.vyact.app` | **Done** (Spark plan; Play linked; 4 signing fingerprints registered) |
+| 3 | `GOOGLE_SERVICES_JSON_BASE64` GitHub secret | **Done** (from `Downloads\vyact-firebase\`, outside the repo) |
+| 4 | FCM API (V1) enabled · `FCM_SERVICE_ACCOUNT_JSON` Supabase secret | **Done** (V1 on, legacy off; secret set 23 Oct) |
+| 5 | App synced to upstream ≥ 10.127 and built **with** the secret | **Done**: run 39898787316, versionCode 13 / 0.6, log said "built in: Firebase project vyact-20x" |
+| 6 | Installed on a phone, test notification on the lock screen, `fcm` row in the database | **Pending**: needs the build on a phone (see step 7) |
+
 ## The picture
 
 ```
@@ -39,7 +49,8 @@ Check (Supabase SQL editor): `select column_name from information_schema.columns
 
 ### 2. Firebase project and the Android app
 1. https://console.firebase.google.com → **Add project** (or pick the Google Cloud project you already use).
-   Google Analytics can stay **off**; push does not need it.
+   Google Analytics can stay **off**; push does not need it. (`vyact-20x` has the integration switched on; the app
+   ships no Analytics SDK, so it collects nothing. Leave it.)
 2. Project overview → **Add app → Android**. Package name exactly **`com.vyact.app`**. Nickname: Vyact.
    Leave **SHA-1 empty**: FCM does not use it (it is for Google sign-in, which this app does through Supabase).
 3. **Register app**, then **Download google-services.json**. Skip the "add the Firebase SDK" steps: the
@@ -53,7 +64,10 @@ base64 -w0 google-services.json | gh secret set GOOGLE_SERVICES_JSON_BASE64 --re
 gh secret list --repo Authen27/Vyact-Android      # the name must be listed
 ```
 Or in the web UI: repo → Settings → Secrets and variables → Actions → New repository secret → paste the output of
-`base64 -w0 google-services.json | clip`. The file is public client configuration, but keep it out of the repo.
+`base64 -w0 google-services.json | clip`. The file is client configuration, not a password, but keep it **out of the
+repo**: put it in a private folder (`Downloads\vyact-firebase\`). `.gitignore` ignores it and
+`scripts/check-overlay-registered.mjs` fails the build if it is ever tracked. (A copy at the repo root is useless anyway:
+CI writes `android/app/google-services.json` itself from the secret.)
 
 With the secret set, the build installs `@capacitor/push-notifications`, writes `google-services.json` into the
 app (checking it is for `com.vyact.app`) and names the notification channel/icon/colour. Without it the app is
@@ -76,6 +90,13 @@ does not use it.
    ```
 3. **Delete the file** (and empty the Recycle Bin). The key can send as your app; treat it like a password. If it
    ever leaks: Firebase → Service accounts → *Manage service account permissions* → delete the key, generate a new one.
+   Delete it only after the phone test passes (step 7): if the pasted value was cut short you would need a new one.
+
+   *Pasting without exposing the key:* this prints nothing and puts the key on the clipboard as one line, ready for
+   Ctrl+V in the Value box (afterwards clear the clipboard with `echo -n | clip`). In Git Bash:
+   ```bash
+   node -e 'process.stdout.write(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))))' key.json | clip
+   ```
 
 Without this secret, phones are skipped (`fcm_not_configured`) and browsers are unaffected.
 
@@ -89,8 +110,11 @@ comment in the code marks the spot) so "Show details on the lock screen" applies
 1. Run **Android Release AAB** (versionCode higher than the last upload). The *Lock-screen notifications (Firebase)*
    step must print `Lock-screen notifications built in: Firebase project <id>, channel vyact_alerts.`
    (a `::notice` saying "not built in" means the secret is missing).
-2. Install (internal testing track, or the debug APK: Actions → **Android Debug APK** → Run workflow; it no longer
-   runs by itself after a sync). On first start Android asks **Allow Vyact to send you
+2. Install. **Signing matters:** the release APK/AAB is signed with the *upload* key, Play re-signs with its own
+   key, so a sideloaded release APK cannot update over a copy installed from Play (uninstall first; cloud data stays in
+   Supabase). Routes: a Play closed-testing update (no uninstall, but Play review first), or App Distribution / the
+   debug APK (Actions → **Android Debug APK** → Run workflow; it no longer runs by itself after a sync) after
+   uninstalling. On first start Android asks **Allow Vyact to send you
    notifications?** → Allow (Android 13+; the app asks once).
 3. Settings → Notifications → **Send a test notification**. Swipe the app away first: it must arrive on the lock
    screen with the app closed. Real alerts follow the server's 15-minute cycle.
