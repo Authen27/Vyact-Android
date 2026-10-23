@@ -91,6 +91,23 @@ for (const f of ['vite.config.js', 'vite.config.d.ts']) {
   }
 }
 
+// 7) Firebase files and keys are secrets of the build, never source (CLAUDE.md, "Secrets and files"):
+//    nothing of that shape is tracked, .gitignore still ignores it, and no tracked file holds a PEM private key.
+{
+  const secretFile = /(^|\/)(google-services\.json|GoogleService-Info\.plist)$|-adminsdk-[^/]*\.json$|(^|\/)service-account[^/]*\.json$/;
+  for (const f of tracked) {
+    if (secretFile.test(f)) problems.push(`${f} is a Firebase secret file and is tracked by git: run \`git rm --cached ${f}\` and keep it outside the repo (CLAUDE.md).`);
+  }
+  for (const pattern of ['google-services.json', '*-adminsdk-*.json', 'service-account*.json']) {
+    if (!giLines.includes(pattern)) problems.push(`.gitignore no longer ignores ${pattern} (CLAUDE.md, "Secrets and files").`);
+  }
+  // Built from parts so this file does not match its own search.
+  const pem = ['PRIVATE', 'KEY-----'].join(' ');
+  let leaked = '';
+  try { leaked = git('grep', '-l', '-F', '-e', `-----BEGIN ${pem}`, '-e', `-----BEGIN RSA ${pem}`, '--', '.'); } catch (e) { if (e.status !== 1) throw e; }
+  for (const f of leaked.split('\n').filter(Boolean)) problems.push(`${f} contains a PEM private key: remove it, and rotate the key if it was ever pushed.`);
+}
+
 if (problems.length) {
   console.error(`overlay check FAILED (${problems.length}):\n` + problems.map(p => `  - ${p}`).join('\n'));
   process.exit(1);
