@@ -30,6 +30,8 @@
 -keep class com.vyact.app.ExpenseWidgetProvider { *; }
 -keep class com.vyact.app.BudgetWidgetConfigActivity { *; }
 -keep class com.vyact.app.MainActivity { *; }
+# R6 — MainActivity finds this one by NAME (Class.forName), and it exists only in a build with Firebase's config.
+-keep class com.vyact.app.CrashReportingBridgePlugin { *; }
 
 # ── Permanent release rules (ANDROID-BUILD-RULES.md) ─────────────────────────────────────────
 # R4 — repackage classes: move every class R8 is free to rename into one package, which shrinks

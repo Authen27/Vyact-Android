@@ -240,6 +240,10 @@ screen currently reads as "0% used" rather than showing real progress.)
   - *Personal info* (email/name for sign-in) — collected.
   - *Device or other IDs*: the Firebase Cloud Messaging token, collected only to send the person's own
     notifications. Not shared, not used for ads. Declare it once lock-screen notifications ship (section 0b).
+  - *Crash logs* (App info and performance): Firebase Crashlytics reports, **optional**: off until the person
+    turns them on in Settings → About → Crash reports (rule R6). Technical error, phone model, Android and app
+    versions and a random install ID; collected only to fix crashes. Not shared, not used for ads. Declare it,
+    and have the Privacy Policy say so, before a build with Crashlytics goes to Play.
   - *App activity* (Google Analytics: the pages and features used), which is on in the app as part of its
     permissions (upstream v10.125.0).
   - Data is **not sold**; users can **request deletion** (state the path in your policy).

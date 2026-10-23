@@ -19,6 +19,8 @@ on:
       - 'scripts/inject-android-native.mjs'
       - 'scripts/setup-native-push.mjs'
       - 'scripts/setup-native-push.test.mjs'
+      - 'scripts/setup-crashlytics.mjs'
+      - 'scripts/setup-crashlytics.test.mjs'
       - 'scripts/gen-assets.mjs'
       - 'scripts/ci-release.sh'
       - 'scripts/pip-native-probe.mjs'
@@ -110,6 +112,13 @@ jobs:
         run: |
           node --test scripts/setup-native-push.test.mjs
           node scripts/setup-native-push.mjs
+
+      # Crash reports (rule R6): the Crashlytics SDK + Gradle plugin + the Settings switch's native half, only in a
+      # build that has Firebase's config (this runs after the step above), collection OFF in the manifest.
+      - name: Crash reports (Crashlytics)
+        run: |
+          node --test scripts/setup-crashlytics.test.mjs
+          node scripts/setup-crashlytics.mjs
 
       - name: Generate launcher icon + splash (pip)
         run: |

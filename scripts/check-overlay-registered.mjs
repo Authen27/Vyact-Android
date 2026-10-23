@@ -89,6 +89,16 @@ for (const f of ['vite.config.js', 'vite.config.d.ts']) {
   else if (Number(String(tc.agp).split('.')[0]) < 9 && !tc.blocked) {
     problems.push(`android-toolchain.json has AGP ${tc.agp}; rule R5 needs 9.0+ — or a written "blocked" reason in that file.`);
   }
+
+  // R6 — crash reports are off until the person turns them on, and only builds with Firebase's config carry them.
+  const crash = existsSync('scripts/setup-crashlytics.mjs') ? read('scripts/setup-crashlytics.mjs') : '';
+  for (const needle of ['firebase_crashlytics_collection_enabled', 'android:value="false"', 'google-services.json']) {
+    if (!crash.includes(needle)) problems.push(`scripts/setup-crashlytics.mjs no longer contains "${needle}" — rule R6 (crash reports off by default, only with Firebase's config) was dropped.`);
+  }
+  if (tc && !(tc.crashlytics && tc.crashlyticsSdk)) problems.push('android-toolchain.json has no "crashlytics" / "crashlyticsSdk" versions (rule R6).');
+  for (const f of ['.github/workflows/android-release.yml', '.github/workflows/android-apk.yml']) {
+    if (existsSync(f) && !read(f).includes('scripts/setup-crashlytics.mjs')) problems.push(`${f} no longer runs scripts/setup-crashlytics.mjs — rule R6.`);
+  }
 }
 
 // 7) Firebase files and keys are secrets of the build, never source (CLAUDE.md, "Secrets and files"):

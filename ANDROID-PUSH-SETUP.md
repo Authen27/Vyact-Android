@@ -50,7 +50,7 @@ Check (Supabase SQL editor): `select column_name from information_schema.columns
 ### 2. Firebase project and the Android app
 1. https://console.firebase.google.com → **Add project** (or pick the Google Cloud project you already use).
    Google Analytics can stay **off**; push does not need it. (`vyact-20x` has the integration switched on; the app
-   ships no Analytics SDK, so it collects nothing. Leave it.)
+   has no Firebase Analytics SDK, so it receives nothing. The app's own web analytics, GA4, is separate. Leave it.)
 2. Project overview → **Add app → Android**. Package name exactly **`com.vyact.app`**. Nickname: Vyact.
    Leave **SHA-1 empty**: FCM does not use it (it is for Google sign-in, which this app does through Supabase).
 3. **Register app**, then **Download google-services.json**. Skip the "add the Firebase SDK" steps: the
